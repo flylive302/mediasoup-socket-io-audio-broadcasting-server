@@ -1,0 +1,43 @@
+import type { Socket } from 'socket.io';
+import type { AuthenticatedUser } from '../auth/types.js';
+
+export interface ClientData {
+  socketId: string;
+  userId: number;
+  user: AuthenticatedUser;
+  roomId?: string;
+  isSpeaker: boolean;
+  joinedAt: number;
+  device?: object;
+  // Mediasoup tracking
+  producers: Map<string, string>; // kind -> producerId
+  consumers: Map<string, string>; // producerId -> consumerId
+  transports: Map<string, string>; // transportId -> type
+}
+
+export class ClientManager {
+  private readonly clients = new Map<string, ClientData>();
+
+  addClient(socket: Socket): void {
+    const user = socket.data.user as AuthenticatedUser;
+    
+    this.clients.set(socket.id, {
+      socketId: socket.id,
+      userId: user.id,
+      user,
+      isSpeaker: false,
+      joinedAt: Date.now(),
+      producers: new Map(),
+      consumers: new Map(),
+      transports: new Map(),
+    });
+  }
+
+  removeClient(socketId: string): void {
+    this.clients.delete(socketId);
+  }
+
+  getClient(socketId: string): ClientData | undefined {
+    return this.clients.get(socketId);
+  }
+}
