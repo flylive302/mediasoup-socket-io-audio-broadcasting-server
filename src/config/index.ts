@@ -20,6 +20,7 @@ const configSchema = z.object({
   REDIS_PORT: z.coerce.number().default(6379),
   REDIS_PASSWORD: z.string().optional(),
   REDIS_DB: z.coerce.number().default(3), // Separate DB from Laravel
+  REDIS_TLS: z.enum(['true', 'false', '1', '0', '']).default('').transform(v => v === 'true' || v === '1'),
   
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
@@ -37,7 +38,7 @@ const configSchema = z.object({
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
 
   // Security
-  CORS_ORIGINS: z.string().default('http://localhost:3000').transform(s => s.split(',').map(o => o.trim())),
+  CORS_ORIGINS: z.string().default('https://backend-laravel-12-master-txvbmd.laravel.cloud/').transform(s => s.split(',').map(o => o.trim())),
 });
 
 export type Config = z.infer<typeof configSchema>;
