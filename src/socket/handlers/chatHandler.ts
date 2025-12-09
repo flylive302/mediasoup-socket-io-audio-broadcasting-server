@@ -42,7 +42,7 @@ export const chatHandler = (
       id: randomUUID(),
       userId: socket.data.user.id,
       userName: socket.data.user.name,
-      avatar: socket.data.user.avatar_url,
+      avatar: socket.data.user.avatar,
       content: payload.content,
       type: payload.type || 'text',
       timestamp: Date.now(),

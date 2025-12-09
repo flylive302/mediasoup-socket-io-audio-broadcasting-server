@@ -40,4 +40,18 @@ export class ClientManager {
   getClient(socketId: string): ClientData | undefined {
     return this.clients.get(socketId);
   }
+
+  /**
+   * Get all clients in a specific room.
+   * Used to send initial state when a user joins.
+   */
+  getClientsInRoom(roomId: string): ClientData[] {
+    const clients: ClientData[] = [];
+    for (const client of this.clients.values()) {
+      if (client.roomId === roomId) {
+        clients.push(client);
+      }
+    }
+    return clients;
+  }
 }

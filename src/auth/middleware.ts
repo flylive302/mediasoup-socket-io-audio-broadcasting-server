@@ -39,7 +39,7 @@ export async function authMiddleware(
         token: cleanToken,
       } as AuthSocketData;
 
-      logger.info({ socketId: socket.id, userId: user.id }, 'Client authenticated');
+      logger.info({ socketId: socket.id, userId: user.id, user }, 'Client authenticated');
       next();
   } catch (err) {
       logger.error({ err, socketId: socket.id }, 'Authentication error');

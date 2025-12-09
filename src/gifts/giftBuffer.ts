@@ -74,8 +74,9 @@ export class GiftBuffer {
       for (const failure of result.failed) {
         if (failure.sender_socket_id) {
             this.io.to(failure.sender_socket_id).emit('gift:error', {
-            transactionId: failure.transaction_id,
-            error: failure.error,
+              transactionId: failure.transaction_id,
+              code: failure.code,     // Error code per protocol
+              reason: failure.reason, // Error reason per protocol
             });
         }
       }

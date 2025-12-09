@@ -61,7 +61,7 @@ export class GiftHandler {
       socket.to(payload.roomId).emit('gift:received', {
         senderId: user.id,
         senderName: user.name,
-        senderAvatar: user.avatar_url,
+        senderAvatar: user.avatar, // Changed from avatar_url per protocol
         ...payload
       });
 

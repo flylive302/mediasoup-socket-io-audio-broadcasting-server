@@ -10,6 +10,7 @@ import { ClientManager } from '../client/clientManager.js';
 import { roomHandler } from './handlers/roomHandler.js';
 import { mediaHandler } from './handlers/mediaHandler.js';
 import { chatHandler } from './handlers/chatHandler.js';
+import { seatHandler, clearUserSeat } from './handlers/seatHandler.js';
 import { GiftHandler } from '../gifts/giftHandler.js';
 import { LaravelClient } from '../integrations/laravelClient.js';
 import { RateLimiter } from '../utils/rateLimiter.js';
@@ -54,6 +55,7 @@ export async function initializeSocket(io: Server, redis: Redis): Promise<AppCon
     roomHandler(socket, appContext);
     mediaHandler(socket, appContext);
     chatHandler(socket, appContext);
+    seatHandler(socket, appContext);
     giftHandler.handle(socket);
 
     // Disconnect
@@ -62,6 +64,15 @@ export async function initializeSocket(io: Server, redis: Redis): Promise<AppCon
       
       const client = clientManager.getClient(socket.id);
       if (client?.roomId) {
+          const userId = String(client.userId);
+          
+          // Clear user's seat if seated
+          const clearedSeatIndex = clearUserSeat(client.roomId, userId);
+          if (clearedSeatIndex !== null) {
+            socket.to(client.roomId).emit('seat:cleared', { seatIndex: clearedSeatIndex });
+            logger.debug({ roomId: client.roomId, userId, seatIndex: clearedSeatIndex }, 'User seat cleared on disconnect');
+          }
+          
           // Cleanup transports
           for (const [transportId] of client.transports) {
              try {

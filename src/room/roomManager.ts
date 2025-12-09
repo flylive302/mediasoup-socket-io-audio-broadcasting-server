@@ -102,7 +102,7 @@ export class RoomManager {
     await this.laravelClient.updateRoomStatus(roomId, {
       is_live: false,
       participant_count: 0,
-      closed_at: new Date().toISOString(),
+      ended_at: new Date().toISOString(), // Changed from closed_at per protocol
     });
 
     // 3. Cleanup Mediasoup

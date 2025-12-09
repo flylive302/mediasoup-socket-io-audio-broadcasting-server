@@ -105,6 +105,14 @@ export const mediaHandler = (
             appData: { userId: socket.data.user.id }
         });
 
+        // Track producer on client for discovery by new joiners
+        const client = clientManager.getClient(socket.id);
+        if (client) {
+            client.producers.set(kind, producer.id);
+            client.isSpeaker = true;
+            logger.debug({ userId: client.userId, producerId: producer.id, kind }, 'Producer tracked on client');
+        }
+
         // Add to active speaker observer
         if (routerMgr?.audioObserver) {
             await routerMgr.audioObserver.addProducer({ producerId: producer.id });
@@ -117,7 +125,14 @@ export const mediaHandler = (
             kind: 'audio'
         });
 
-        producer.on('transportclose', () => producer.close());
+        producer.on('transportclose', () => {
+            // Clean up client tracking
+            if (client) {
+                client.producers.delete(kind);
+                client.isSpeaker = client.producers.size > 0;
+            }
+            producer.close();
+        });
         
         if (callback) callback({ id: producer.id });
     } catch (error) {
