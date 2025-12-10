@@ -11,6 +11,7 @@ export function getRedisClient(): Redis {
     host: config.REDIS_HOST,
     port: config.REDIS_PORT,
     db: config.REDIS_DB,
+    ...(config.REDIS_USERNAME && { username: config.REDIS_USERNAME }),
     ...(config.REDIS_PASSWORD && { password: config.REDIS_PASSWORD }),
     ...(config.REDIS_TLS && { tls: { rejectUnauthorized: true } }),
     connectTimeout: 10_000,
