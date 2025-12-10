@@ -38,7 +38,7 @@ const configSchema = z.object({
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
 
   // Security
-  CORS_ORIGINS: z.string().default('https://backend-laravel-12-master-txvbmd.laravel.cloud').transform(s => s.split(',').map(o => o.trim())),
+  CORS_ORIGINS: z.string().default('https://flyliveapp.com,https://www.flyliveapp.com').transform(s => s.split(',').map(o => o.trim())),
 });
 
 export type Config = z.infer<typeof configSchema>;

@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { FastifyInstance } from 'fastify';
 import { Server } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { config } from '../config/index.js';
@@ -10,11 +10,26 @@ import { initializeSocket } from '../socket/index.js';
 import { logger } from './logger.js';
 
 import { createMetricsRoutes } from './metrics.js';
+import fs from 'fs';
+
 
 export async function bootstrapServer() {
-  const fastify = Fastify({
-    loggerInstance: logger,
-  });
+  // Configure HTTPS if certificates are provided
+  const httpsOptions = config.SSL_KEY_PATH && config.SSL_CERT_PATH 
+    ? {
+        key: fs.readFileSync(config.SSL_KEY_PATH),
+        cert: fs.readFileSync(config.SSL_CERT_PATH),
+      }
+    : null;
+
+  const fastify = (httpsOptions 
+    ? Fastify({
+        loggerInstance: logger,
+        https: httpsOptions,
+      })
+    : Fastify({
+        loggerInstance: logger,
+      })) as unknown as FastifyInstance;
 
 
 

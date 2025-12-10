@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyPluginAsync } from 'fastify';
 import { getRedisClient } from './redis.js';
 import type { RoomManager } from '../room/roomManager.js';
 import type { WorkerManager } from '../mediasoup/workerManager.js';
@@ -6,7 +6,8 @@ import type { WorkerManager } from '../mediasoup/workerManager.js';
 export const createHealthRoutes = (
     roomManager: RoomManager, 
     workerManager: WorkerManager
-) => async (fastify: FastifyInstance) => {
+): FastifyPluginAsync => {
+  return async (fastify) => {
   
   fastify.get('/health', async (_request, reply) => {
     const redis = getRedisClient();
@@ -41,5 +42,6 @@ export const createHealthRoutes = (
       rooms: roomManager.getRoomCount(), 
       timestamp: new Date().toISOString(),
     };
-  });
-}
+    });
+  };
+};

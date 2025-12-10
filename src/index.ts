@@ -15,8 +15,12 @@ const start = async () => {
       host: '0.0.0.0' 
     });
 
+    const protocol = config.SSL_KEY_PATH && config.SSL_CERT_PATH ? 'https' : 'http';
+    const wsProtocol = config.SSL_KEY_PATH && config.SSL_CERT_PATH ? 'wss' : 'ws';
+    
     logger.info(`Server listening at ${address}`);
     logger.info(`Environment: ${config.NODE_ENV}`);
+    logger.info(`Protocol: ${protocol.toUpperCase()} / ${wsProtocol.toUpperCase()}`);
 
     // Graceful Shutdown Logic
     let isShuttingDown = false;
