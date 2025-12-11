@@ -1,14 +1,14 @@
-import type { FastifyPluginAsync } from 'fastify';
-import os from 'os';
-import type { RoomManager } from '../room/roomManager.js';
-import type { WorkerManager } from '../mediasoup/workerManager.js';
+import type { FastifyPluginAsync } from "fastify";
+import os from "os";
+import type { RoomManager } from "../room/roomManager.js";
+import type { WorkerManager } from "../mediasoup/workerManager.js";
 
 export const createMetricsRoutes = (
   roomManager: RoomManager,
-  workerManager: WorkerManager
+  workerManager: WorkerManager,
 ): FastifyPluginAsync => {
   return async (fastify) => {
-    fastify.get('/metrics', async () => {
+    fastify.get("/metrics", async () => {
       const memoryUsage = process.memoryUsage();
       const cpuUsage = process.cpuUsage();
       const uptime = process.uptime();

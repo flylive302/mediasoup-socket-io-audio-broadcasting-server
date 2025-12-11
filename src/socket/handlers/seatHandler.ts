@@ -1,13 +1,13 @@
-import type { Socket } from 'socket.io';
-import type { AppContext } from '../../context.js';
-import { logger } from '../../core/logger.js';
+import type { Socket } from "socket.io";
+import type { AppContext } from "../../context.js";
+import { logger } from "../../core/logger.js";
 import {
   seatTakeSchema,
   seatLeaveSchema,
   seatAssignSchema,
   seatRemoveSchema,
   seatMuteSchema,
-} from '../schemas.js';
+} from "../schemas.js";
 
 export interface SeatData {
   userId: string;
@@ -29,7 +29,7 @@ function getOrCreateRoomSeats(roomId: string): Map<number, SeatData> {
 function findUserSeat(roomId: string, userId: string): number | null {
   const seats = roomSeats.get(roomId);
   if (!seats) return null;
-  
+
   for (const [index, seat] of seats) {
     if (seat.userId === userId) return index;
   }
@@ -40,7 +40,9 @@ function findUserSeat(roomId: string, userId: string): number | null {
  * Get current seat assignments for a room.
  * Used by roomHandler to send initial state when a user joins.
  */
-export function getRoomSeats(roomId: string): Map<number, SeatData> | undefined {
+export function getRoomSeats(
+  roomId: string,
+): Map<number, SeatData> | undefined {
   return roomSeats.get(roomId);
 }
 
@@ -52,7 +54,7 @@ export function getRoomSeats(roomId: string): Map<number, SeatData> | undefined 
 export function clearUserSeat(roomId: string, userId: string): number | null {
   const seatIndex = findUserSeat(roomId, userId);
   if (seatIndex === null) return null;
-  
+
   const seats = roomSeats.get(roomId);
   if (seats) {
     seats.delete(seatIndex);
@@ -60,220 +62,267 @@ export function clearUserSeat(roomId: string, userId: string): number | null {
   return seatIndex;
 }
 
-export const seatHandler = (
-  socket: Socket,
-  _context: AppContext
-): void => {
+export const seatHandler = (socket: Socket, _context: AppContext): void => {
   const userId = String(socket.data.user.id);
 
   // seat:take - User takes an available seat
-  socket.on('seat:take', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatTakeSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:take",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatTakeSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId, seatIndex } = result.data;
-    const seats = getOrCreateRoomSeats(roomId);
+      const { roomId, seatIndex } = result.data;
+      const seats = getOrCreateRoomSeats(roomId);
 
-    // Check if seat is already taken
-    if (seats.has(seatIndex)) {
-      if (callback) callback({ success: false, error: 'Seat is already taken' });
-      return;
-    }
+      // Check if seat is already taken
+      if (seats.has(seatIndex)) {
+        if (callback)
+          callback({ success: false, error: "Seat is already taken" });
+        return;
+      }
 
-    // Check if user is already in another seat
-    const existingSeat = findUserSeat(roomId, userId);
-    if (existingSeat !== null) {
-      // Remove from existing seat first
-      seats.delete(existingSeat);
-      socket.to(roomId).emit('seat:cleared', { seatIndex: existingSeat });
-    }
+      // Check if user is already in another seat
+      const existingSeat = findUserSeat(roomId, userId);
+      if (existingSeat !== null) {
+        // Remove from existing seat first
+        seats.delete(existingSeat);
+        socket.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
+      }
 
-    // Assign user to seat
-    seats.set(seatIndex, { userId, muted: false });
+      // Assign user to seat
+      seats.set(seatIndex, { userId, muted: false });
 
-    logger.info({ roomId, userId, seatIndex }, 'User took seat');
+      logger.info({ roomId, userId, seatIndex }, "User took seat");
 
-    // Broadcast to room
-    const user = socket.data.user;
-    const seatUpdate = {
-      seatIndex,
-      user: {
-        id: user.id,
-        name: user.name,
-        avatar: user.avatar,
-      },
-      isMuted: false,
-    };
+      // Broadcast to room
+      const user = socket.data.user;
+      const seatUpdate = {
+        seatIndex,
+        user: {
+          id: user.id,
+          name: user.name,
+          avatar: user.avatar,
+        },
+        isMuted: false,
+      };
 
-    socket.to(roomId).emit('seat:updated', seatUpdate);
-    socket.emit('seat:updated', seatUpdate);
+      socket.to(roomId).emit("seat:updated", seatUpdate);
+      socket.emit("seat:updated", seatUpdate);
 
-    if (callback) callback({ success: true });
-  });
+      if (callback) callback({ success: true });
+    },
+  );
 
   // seat:leave - User leaves their seat
-  socket.on('seat:leave', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatLeaveSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:leave",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatLeaveSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId } = result.data;
-    const seatIndex = findUserSeat(roomId, userId);
+      const { roomId } = result.data;
+      const seatIndex = findUserSeat(roomId, userId);
 
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: 'You are not seated' });
-      return;
-    }
+      if (seatIndex === null) {
+        if (callback) callback({ success: false, error: "You are not seated" });
+        return;
+      }
 
-    const seats = getOrCreateRoomSeats(roomId);
-    seats.delete(seatIndex);
+      const seats = getOrCreateRoomSeats(roomId);
+      seats.delete(seatIndex);
 
-    logger.info({ roomId, userId, seatIndex }, 'User left seat');
+      logger.info({ roomId, userId, seatIndex }, "User left seat");
 
-    // Broadcast to room
-    socket.to(roomId).emit('seat:cleared', { seatIndex });
-    socket.emit('seat:cleared', { seatIndex });
+      // Broadcast to room
+      socket.to(roomId).emit("seat:cleared", { seatIndex });
+      socket.emit("seat:cleared", { seatIndex });
 
-    if (callback) callback({ success: true });
-  });
+      if (callback) callback({ success: true });
+    },
+  );
 
   // seat:assign - Owner assigns user to specific seat
-  socket.on('seat:assign', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatAssignSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:assign",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatAssignSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId, userId: targetUserId, seatIndex } = result.data;
-    const seats = getOrCreateRoomSeats(roomId);
+      const { roomId, userId: targetUserId, seatIndex } = result.data;
+      const seats = getOrCreateRoomSeats(roomId);
 
-    // TODO: Check if socket.data.user is room owner
-    // For now, allow any user to assign (should be restricted in production)
+      // TODO: Check if socket.data.user is room owner
+      // For now, allow any user to assign (should be restricted in production)
 
-    if (seats.has(seatIndex)) {
-      if (callback) callback({ success: false, error: 'Seat is already taken' });
-      return;
-    }
+      if (seats.has(seatIndex)) {
+        if (callback)
+          callback({ success: false, error: "Seat is already taken" });
+        return;
+      }
 
-    const targetUserIdStr = String(targetUserId);
-    
-    // Remove from existing seat if any
-    const existingSeat = findUserSeat(roomId, targetUserIdStr);
-    if (existingSeat !== null) {
-      seats.delete(existingSeat);
-      socket.nsp.to(roomId).emit('seat:cleared', { seatIndex: existingSeat });
-    }
+      const targetUserIdStr = String(targetUserId);
 
-    seats.set(seatIndex, { userId: targetUserIdStr, muted: false });
+      // Remove from existing seat if any
+      const existingSeat = findUserSeat(roomId, targetUserIdStr);
+      if (existingSeat !== null) {
+        seats.delete(existingSeat);
+        socket.nsp.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
+      }
 
-    logger.info({ roomId, targetUserId, seatIndex, assignedBy: userId }, 'User assigned to seat');
+      seats.set(seatIndex, { userId: targetUserIdStr, muted: false });
 
-    // Broadcast seat update - frontend will look up user info from participants
-    socket.nsp.to(roomId).emit('seat:updated', {
-      seatIndex,
-      user: { id: targetUserId },
-      isMuted: false,
-    });
+      logger.info(
+        { roomId, targetUserId, seatIndex, assignedBy: userId },
+        "User assigned to seat",
+      );
 
-    if (callback) callback({ success: true });
-  });
+      // Broadcast seat update - frontend will look up user info from participants
+      socket.nsp.to(roomId).emit("seat:updated", {
+        seatIndex,
+        user: { id: targetUserId },
+        isMuted: false,
+      });
+
+      if (callback) callback({ success: true });
+    },
+  );
 
   // seat:remove - Owner removes user from seat
-  socket.on('seat:remove', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatRemoveSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:remove",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatRemoveSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId, userId: targetUserId } = result.data;
-    const targetUserIdStr = String(targetUserId);
-    const seatIndex = findUserSeat(roomId, targetUserIdStr);
+      const { roomId, userId: targetUserId } = result.data;
+      const targetUserIdStr = String(targetUserId);
+      const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: 'User is not seated' });
-      return;
-    }
+      if (seatIndex === null) {
+        if (callback) callback({ success: false, error: "User is not seated" });
+        return;
+      }
 
-    const seats = getOrCreateRoomSeats(roomId);
-    seats.delete(seatIndex);
+      const seats = getOrCreateRoomSeats(roomId);
+      seats.delete(seatIndex);
 
-    logger.info({ roomId, targetUserId, seatIndex, removedBy: userId }, 'User removed from seat');
+      logger.info(
+        { roomId, targetUserId, seatIndex, removedBy: userId },
+        "User removed from seat",
+      );
 
-    socket.nsp.to(roomId).emit('seat:cleared', { seatIndex });
+      socket.nsp.to(roomId).emit("seat:cleared", { seatIndex });
 
-    if (callback) callback({ success: true });
-  });
+      if (callback) callback({ success: true });
+    },
+  );
 
   // seat:mute - Owner mutes user
-  socket.on('seat:mute', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatMuteSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:mute",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatMuteSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId, userId: targetUserId } = result.data;
-    const targetUserIdStr = String(targetUserId);
-    const seatIndex = findUserSeat(roomId, targetUserIdStr);
+      const { roomId, userId: targetUserId } = result.data;
+      const targetUserIdStr = String(targetUserId);
+      const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: 'User is not seated' });
-      return;
-    }
+      if (seatIndex === null) {
+        if (callback) callback({ success: false, error: "User is not seated" });
+        return;
+      }
 
-    const seats = getOrCreateRoomSeats(roomId);
-    const seat = seats.get(seatIndex);
-    if (seat) {
-      seat.muted = true;
-    }
+      const seats = getOrCreateRoomSeats(roomId);
+      const seat = seats.get(seatIndex);
+      if (seat) {
+        seat.muted = true;
+      }
 
-    logger.info({ roomId, targetUserId, seatIndex, mutedBy: userId }, 'User muted');
+      logger.info(
+        { roomId, targetUserId, seatIndex, mutedBy: userId },
+        "User muted",
+      );
 
-    socket.nsp.to(roomId).emit('seat:userMuted', {
-      userId: targetUserId,
-      isMuted: true,
-    });
+      socket.nsp.to(roomId).emit("seat:userMuted", {
+        userId: targetUserId,
+        isMuted: true,
+      });
 
-    if (callback) callback({ success: true });
-  });
+      if (callback) callback({ success: true });
+    },
+  );
 
   // seat:unmute - Owner unmutes user
-  socket.on('seat:unmute', (rawPayload: unknown, callback?: (response: { success: boolean; error?: string }) => void) => {
-    const result = seatMuteSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: 'Invalid payload' });
-      return;
-    }
+  socket.on(
+    "seat:unmute",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatMuteSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
 
-    const { roomId, userId: targetUserId } = result.data;
-    const targetUserIdStr = String(targetUserId);
-    const seatIndex = findUserSeat(roomId, targetUserIdStr);
+      const { roomId, userId: targetUserId } = result.data;
+      const targetUserIdStr = String(targetUserId);
+      const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: 'User is not seated' });
-      return;
-    }
+      if (seatIndex === null) {
+        if (callback) callback({ success: false, error: "User is not seated" });
+        return;
+      }
 
-    const seats = getOrCreateRoomSeats(roomId);
-    const seat = seats.get(seatIndex);
-    if (seat) {
-      seat.muted = false;
-    }
+      const seats = getOrCreateRoomSeats(roomId);
+      const seat = seats.get(seatIndex);
+      if (seat) {
+        seat.muted = false;
+      }
 
-    logger.info({ roomId, targetUserId, seatIndex, unmutedBy: userId }, 'User unmuted');
+      logger.info(
+        { roomId, targetUserId, seatIndex, unmutedBy: userId },
+        "User unmuted",
+      );
 
-    socket.nsp.to(roomId).emit('seat:userMuted', {
-      userId: targetUserId,
-      isMuted: false,
-    });
+      socket.nsp.to(roomId).emit("seat:userMuted", {
+        userId: targetUserId,
+        isMuted: false,
+      });
 
-    if (callback) callback({ success: true });
-  });
+      if (callback) callback({ success: true });
+    },
+  );
 };

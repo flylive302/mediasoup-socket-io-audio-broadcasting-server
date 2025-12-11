@@ -1,5 +1,5 @@
-import type { Socket } from 'socket.io';
-import type { AuthenticatedUser } from '../auth/types.js';
+import type { Socket } from "socket.io";
+import type { AuthenticatedUser } from "../auth/types.js";
 
 export interface ClientData {
   socketId: string;
@@ -20,7 +20,7 @@ export class ClientManager {
 
   addClient(socket: Socket): void {
     const user = socket.data.user as AuthenticatedUser;
-    
+
     this.clients.set(socket.id, {
       socketId: socket.id,
       userId: user.id,

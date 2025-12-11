@@ -1,0 +1,223 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      droplet:
+        description: 'Specific droplet to deploy to (optional, deploys to all if empty)'
+        required: false
+        type: string
+
+# Ensure only one deployment runs at a time
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  PROJECT_NAME: flylive-audio
+  DO_REGION: sgp1
+
+jobs:
+  # First run CI checks
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24          
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type Check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Test
+        run: npm test
+
+  # Deploy to production after CI passes
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Get production droplets
+        id: droplets
+        run: |
+          DROPLETS=$(doctl compute droplet list --tag-name "$PROJECT_NAME" --format ID,Name,PublicIPv4 --no-header)
+          if [ -z "$DROPLETS" ]; then
+            echo "No droplets found with tag '$PROJECT_NAME'"
+            exit 1
+          fi
+          echo "Found droplets:"
+          echo "$DROPLETS"
+          echo "droplets<<EOF" >> $GITHUB_OUTPUT
+          echo "$DROPLETS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get Load Balancer ID
+        id: lb
+        run: |
+          LB_ID=$(doctl compute load-balancer list --format ID,Name --no-header | grep "$PROJECT_NAME-lb" | awk '{print $1}')
+          echo "lb_id=$LB_ID" >> $GITHUB_OUTPUT
+          echo "Load Balancer ID: $LB_ID"
+
+      - name: Get Valkey connection info
+        id: valkey
+        run: |
+          VALKEY_INFO=$(doctl databases connection "$PROJECT_NAME-valkey" --format Host,Port,User --no-header)
+          VALKEY_HOST=$(echo "$VALKEY_INFO" | awk '{print $1}')
+          VALKEY_PORT=$(echo "$VALKEY_INFO" | awk '{print $2}')
+          VALKEY_USER=$(echo "$VALKEY_INFO" | awk '{print $3}')
+          echo "valkey_host=$VALKEY_HOST" >> $GITHUB_OUTPUT
+          echo "valkey_port=$VALKEY_PORT" >> $GITHUB_OUTPUT
+          echo "valkey_user=$VALKEY_USER" >> $GITHUB_OUTPUT
+
+      - name: Rolling deployment
+        env:
+          LARAVEL_INTERNAL_KEY: ${{ secrets.LARAVEL_INTERNAL_KEY }}
+          VALKEY_PASSWORD: ${{ secrets.VALKEY_PASSWORD }}
+          VALKEY_HOST: ${{ steps.valkey.outputs.valkey_host }}
+          VALKEY_PORT: ${{ steps.valkey.outputs.valkey_port }}
+          VALKEY_USER: ${{ steps.valkey.outputs.valkey_user }}
+          LB_ID: ${{ steps.lb.outputs.lb_id }}
+          SPECIFIC_DROPLET: ${{ inputs.droplet }}
+        run: |
+          set -e
+          
+          # Process each droplet
+          echo "${{ steps.droplets.outputs.droplets }}" | while IFS= read -r line; do
+            DROPLET_ID=$(echo "$line" | awk '{print $1}')
+            DROPLET_NAME=$(echo "$line" | awk '{print $2}')
+            DROPLET_IP=$(echo "$line" | awk '{print $3}')
+            
+            # Skip if specific droplet requested and this isn't it
+            if [ -n "$SPECIFIC_DROPLET" ] && [ "$DROPLET_NAME" != "$SPECIFIC_DROPLET" ]; then
+              echo "Skipping $DROPLET_NAME (not the requested droplet)"
+              continue
+            fi
+            
+            echo ""
+            echo "========================================="
+            echo "Deploying to $DROPLET_NAME ($DROPLET_IP)"
+            echo "========================================="
+            
+            # Step 1: Remove from load balancer
+            echo "Removing from load balancer..."
+            doctl compute load-balancer remove-droplets "$LB_ID" --droplet-ids "$DROPLET_ID" || true
+            sleep 5
+            
+            # Step 2: Deploy via SSH
+            echo "Deploying..."
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 "root@$DROPLET_IP" << DEPLOY_SCRIPT
+          set -e
+          cd /opt/audio-server
+          
+          # Pull latest code
+          git fetch origin
+          git reset --hard origin/master
+          
+          # Update environment
+          cat > .env << 'ENV_EOF'
+          NODE_ENV=production
+          PORT=3030
+          LOG_LEVEL=info
+          
+          REDIS_HOST=${VALKEY_HOST}
+          REDIS_PORT=${VALKEY_PORT}
+          REDIS_USERNAME=${VALKEY_USER}
+          REDIS_PASSWORD=${VALKEY_PASSWORD}
+          REDIS_TLS=true
+          REDIS_DB=3
+          
+          LARAVEL_API_URL=https://api.flyliveapp.com
+          LARAVEL_INTERNAL_KEY=${LARAVEL_INTERNAL_KEY}
+          
+          MEDIASOUP_LISTEN_IP=0.0.0.0
+          MEDIASOUP_ANNOUNCED_IP=${DROPLET_IP}
+          MEDIASOUP_RTC_MIN_PORT=10000
+          MEDIASOUP_RTC_MAX_PORT=59999
+          
+          CORS_ORIGINS=https://flyliveapp.com,https://www.flyliveapp.com
+          ENV_EOF
+          
+          # Rebuild and restart
+          docker build -t audio-server:latest -f docker/Dockerfile .
+          docker stop audio-server || true
+          docker rm audio-server || true
+          docker run -d --name audio-server --restart unless-stopped --network host --env-file .env audio-server:latest
+          
+          echo "Deployment complete on $DROPLET_NAME"
+          DEPLOY_SCRIPT
+            
+            # Step 3: Wait for health check
+            echo "Waiting for health check..."
+            HEALTH_CHECK_PASSED=0
+            for i in {1..30}; do
+              if curl -sf "http://$DROPLET_IP:3030/health" > /dev/null 2>&1; then
+                echo "Health check passed!"
+                HEALTH_CHECK_PASSED=1
+                break
+              fi
+              echo "Attempt $i/30 - waiting..."
+              sleep 10
+            done
+            # Step 4: Add back to load balancer
+            echo "Adding back to load balancer..."
+            if ! doctl compute load-balancer add-droplets "$LB_ID" --droplet-ids "$DROPLET_ID"; then
+              echo "⚠️ Failed to add $DROPLET_NAME back to load balancer!"
+              exit 1
+            fi
+            sleep 5              
+            echo "❌ Health check failed after 30 attempts. Aborting deployment."
+              exit 1
+            fi            
+            # Step 4: Add back to load balancer
+            echo "Adding back to load balancer..."
+            doctl compute load-balancer add-droplets "$LB_ID" --droplet-ids "$DROPLET_ID"
+            sleep 5
+            
+            echo "✅ $DROPLET_NAME updated successfully"
+          done
+          
+          echo ""
+          echo "========================================="
+          echo "Deployment complete!"
+          echo "========================================="
+
+      - name: Verify deployment
+        run: |
+          LB_IP=$(doctl compute load-balancer list --format IP,Name --no-header | grep "$PROJECT_NAME-lb" | awk '{print $1}')
+          echo "Load Balancer IP: $LB_IP"
+          echo "Checking health..."
+          curl -sf "http://$LB_IP:80/health" || echo "Warning: Health check via LB failed (may need SSL)"
+
+          echo "|---------|----|----|" >> $GITHUB_STEP_SUMMARY
+          doctl compute droplet list --tag-name "$PROJECT_NAME" --format Name,PublicIPv4,Status --no-header | while read name ip status; do
+            echo "| $name | $ip | $status |" >> $GITHUB_STEP_SUMMARY
+          done          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Droplet | IP | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----|--------|" >> $GITHUB_STEP_SUMMARY
+          doctl compute droplet list --tag-name "$PROJECT_NAME" --format Name,PublicIPv4,Status --no-header | while read name ip status; do
+            echo "| $name | $ip | $status |" >> $GITHUB_STEP_SUMMARY
+          done

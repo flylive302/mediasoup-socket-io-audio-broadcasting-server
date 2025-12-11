@@ -1,13 +1,17 @@
-import type { Redis } from 'ioredis';
-import type { Seat } from './types.js';
+import type { Redis } from "ioredis";
+import type { Seat } from "./types.js";
 
 export class SeatManager {
-  private readonly PREFIX = 'room:seats:';
+  private readonly PREFIX = "room:seats:";
   private readonly SEAT_COUNT = 9; // Grid of 9 speakers
 
   constructor(private readonly redis: Redis) {}
 
-  async takeSeat(roomId: string, userId: string, position?: number): Promise<number | null> {
+  async takeSeat(
+    roomId: string,
+    userId: string,
+    position?: number,
+  ): Promise<number | null> {
     const key = `${this.PREFIX}${roomId}`;
     const reqPos = position !== undefined ? position : -1;
 
@@ -44,7 +48,7 @@ export class SeatManager {
       key,
       userId,
       this.SEAT_COUNT.toString(),
-      reqPos.toString()
+      reqPos.toString(),
     );
 
     return result as number | null;
@@ -53,7 +57,7 @@ export class SeatManager {
   async leaveSeat(roomId: string, userId: string): Promise<void> {
     const key = `${this.PREFIX}${roomId}`;
     const seats = await this.redis.hgetall(key);
-    
+
     for (const [pos, occupant] of Object.entries(seats)) {
       if (occupant === userId) {
         await this.redis.hdel(key, pos);
@@ -65,14 +69,14 @@ export class SeatManager {
   async getSeats(roomId: string): Promise<Seat[]> {
     const key = `${this.PREFIX}${roomId}`;
     const data = await this.redis.hgetall(key);
-    
+
     const seats: Seat[] = [];
     for (let i = 0; i < this.SEAT_COUNT; i++) {
-        seats.push({
-            index: i,
-            userId: data[i.toString()] || null,
-            muted: false // Mute state tracks separately if needed
-        });
+      seats.push({
+        index: i,
+        userId: data[i.toString()] || null,
+        muted: false, // Mute state tracks separately if needed
+      });
     }
     return seats;
   }

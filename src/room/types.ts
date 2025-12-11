@@ -1,4 +1,4 @@
-export type RoomStatus = 'CREATED' | 'ACTIVE' | 'CLOSING' | 'CLOSED';
+export type RoomStatus = "CREATED" | "ACTIVE" | "CLOSING" | "CLOSED";
 
 export interface RoomState {
   id: string;

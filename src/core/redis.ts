@@ -1,6 +1,6 @@
-import { Redis } from 'ioredis';
-import { config } from '../config/index.js';
-import { logger } from './logger.js';
+import { Redis } from "ioredis";
+import { config } from "../config/index.js";
+import { logger } from "./logger.js";
 
 let redisInstance: Redis | null = null;
 
@@ -23,12 +23,12 @@ export function getRedisClient(): Redis {
     },
   });
 
-  redisInstance.on('error', (err) => {
-    logger.error({ err }, 'Redis connection error');
+  redisInstance.on("error", (err) => {
+    logger.error({ err }, "Redis connection error");
   });
 
-  redisInstance.on('connect', () => {
-    logger.info('Redis connected');
+  redisInstance.on("connect", () => {
+    logger.info("Redis connected");
   });
 
   return redisInstance;

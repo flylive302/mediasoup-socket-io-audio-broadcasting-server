@@ -1,10 +1,10 @@
-import type { Socket, Server } from 'socket.io';
-import type { Redis } from 'ioredis';
-import { GiftBuffer } from './giftBuffer.js';
-import { LaravelClient } from '../integrations/laravelClient.js';
-import { logger } from '../core/logger.js';
-import { sendGiftSchema } from '../socket/schemas.js';
-import { RateLimiter } from '../utils/rateLimiter.js';
+import type { Socket, Server } from "socket.io";
+import type { Redis } from "ioredis";
+import { GiftBuffer } from "./giftBuffer.js";
+import { LaravelClient } from "../integrations/laravelClient.js";
+import { logger } from "../core/logger.js";
+import { sendGiftSchema } from "../socket/schemas.js";
+import { RateLimiter } from "../utils/rateLimiter.js";
 
 const GIFT_RATE_LIMIT = 30; // 30 gifts per minute
 const GIFT_RATE_WINDOW = 60; // 60 seconds
@@ -24,24 +24,27 @@ export class GiftHandler {
   }
 
   handle(socket: Socket) {
-    socket.on('gift:send', async (rawPayload: unknown) => {
+    socket.on("gift:send", async (rawPayload: unknown) => {
       const user = socket.data.user;
-      
+
       // Rate limit check
       const allowed = await this.rateLimiter.isAllowed(
         `gift:${user.id}`,
         GIFT_RATE_LIMIT,
-        GIFT_RATE_WINDOW
+        GIFT_RATE_WINDOW,
       );
       if (!allowed) {
-        socket.emit('error', { message: 'Too many gifts, please slow down' });
+        socket.emit("error", { message: "Too many gifts, please slow down" });
         return;
       }
-      
+
       // Validate payload using Zod schema
       const payloadResult = sendGiftSchema.safeParse(rawPayload);
       if (!payloadResult.success) {
-        socket.emit('error', { message: 'Invalid gift payload', errors: payloadResult.error.format() });
+        socket.emit("error", {
+          message: "Invalid gift payload",
+          errors: payloadResult.error.format(),
+        });
         return;
       }
       const payload = payloadResult.data;
@@ -58,11 +61,11 @@ export class GiftHandler {
       };
 
       // 2. Broadcast immediately (Optimistic UI)
-      socket.to(payload.roomId).emit('gift:received', {
+      socket.to(payload.roomId).emit("gift:received", {
         senderId: user.id,
         senderName: user.name,
         senderAvatar: user.avatar, // Changed from avatar_url per protocol
-        ...payload
+        ...payload,
       });
 
       // 3. Queue for persistence

@@ -1,11 +1,11 @@
-import { pino } from 'pino';
-import { config, isDev } from '../config/index.js';
+import { pino } from "pino";
+import { config, isDev } from "../config/index.js";
 
 const devTransport = {
-  target: 'pino-pretty',
+  target: "pino-pretty",
   options: {
-    translateTime: 'HH:MM:ss Z',
-    ignore: 'pid,hostname',
+    translateTime: "HH:MM:ss Z",
+    ignore: "pid,hostname",
     colorize: true,
   },
 };

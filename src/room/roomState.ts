@@ -1,8 +1,8 @@
-import type { Redis } from 'ioredis';
-import type { RoomState } from './types.js';
+import type { Redis } from "ioredis";
+import type { RoomState } from "./types.js";
 
 export class RoomStateRepository {
-  private readonly PREFIX = 'room:state:';
+  private readonly PREFIX = "room:state:";
   private readonly TTL = 86400; // 24 hours
 
   constructor(private readonly redis: Redis) {}
@@ -24,9 +24,12 @@ export class RoomStateRepository {
   }
 
   /** Atomic increment of participant count */
-  async adjustParticipantCount(roomId: string, delta: number): Promise<number | null> {
+  async adjustParticipantCount(
+    roomId: string,
+    delta: number,
+  ): Promise<number | null> {
     const key = `${this.PREFIX}${roomId}`;
-    
+
     // Lua script for atomic increment
     // Updates participantCount and lastActivityAt, updates TTL
     const luaScript = `
@@ -41,16 +44,16 @@ export class RoomStateRepository {
       redis.call('SETEX', KEYS[1], tonumber(ARGV[3]), newState)
       return state.participantCount
     `;
-    
+
     const result = await this.redis.eval(
-      luaScript, 
-      1, 
-      key, 
-      delta.toString(), 
+      luaScript,
+      1,
+      key,
+      delta.toString(),
       Date.now().toString(),
-      this.TTL.toString()
+      this.TTL.toString(),
     );
-    
+
     return result as number | null;
   }
 }

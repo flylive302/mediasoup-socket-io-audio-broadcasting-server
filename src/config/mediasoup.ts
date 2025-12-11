@@ -1,19 +1,19 @@
-import type * as mediasoup from 'mediasoup';
-import { config } from './index.js';
+import type * as mediasoup from "mediasoup";
+import { config } from "./index.js";
 
 export const mediasoupConfig = {
   // Worker settings
   worker: {
     rtcMinPort: config.MEDIASOUP_RTC_MIN_PORT,
     rtcMaxPort: config.MEDIASOUP_RTC_MAX_PORT,
-    logLevel: 'warn',
+    logLevel: "warn",
     logTags: [
-      'info',
-      'ice',
-      'dtls',
-      'rtp',
-      'srtp',
-      'rtcp',
+      "info",
+      "ice",
+      "dtls",
+      "rtp",
+      "srtp",
+      "rtcp",
     ] as mediasoup.types.WorkerLogTag[],
   } as mediasoup.types.WorkerSettings,
 
@@ -21,15 +21,15 @@ export const mediasoupConfig = {
   router: {
     mediaCodecs: [
       {
-        kind: 'audio',
-        mimeType: 'audio/opus',
+        kind: "audio",
+        mimeType: "audio/opus",
         clockRate: 48000,
         channels: 2,
         parameters: {
           useinbandfec: 1, // Forward error correction
-          usedtx: 0,       // Disable discontinuous transmission (keep alive)
-          minptime: 10,    // Low latency packets (10ms)
-          'sprop-stereo': 1,
+          usedtx: 0, // Disable discontinuous transmission (keep alive)
+          minptime: 10, // Low latency packets (10ms)
+          "sprop-stereo": 1,
         },
       },
     ] as unknown as mediasoup.types.RtpCodecCapability[],
@@ -39,17 +39,17 @@ export const mediasoupConfig = {
   webRtcTransport: {
     listenInfos: [
       {
-        protocol: 'udp',
+        protocol: "udp",
         ip: config.MEDIASOUP_LISTEN_IP,
         announcedAddress: config.MEDIASOUP_ANNOUNCED_IP,
       },
       {
-        protocol: 'tcp',
+        protocol: "tcp",
         ip: config.MEDIASOUP_LISTEN_IP,
         announcedAddress: config.MEDIASOUP_ANNOUNCED_IP,
       },
     ] as mediasoup.types.TransportListenInfo[],
-    
+
     // Bandwidth settings (Audio-only optimization)
     // 128kbps max incoming per stream is plenty for high quality Opus
     maxIncomingBitrate: 128000,
@@ -58,7 +58,7 @@ export const mediasoupConfig = {
 
   // Active Speaker settings
   activeSpeakerObserver: {
-    interval: 200,   // Check every 200ms
-    minVolume: -50,  // dB threshold
+    interval: 200, // Check every 200ms
+    minVolume: -50, // dB threshold
   },
 };

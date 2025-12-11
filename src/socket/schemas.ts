@@ -1,11 +1,11 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 // Reusable validators
 // roomId accepts both numeric IDs ("1", "42") and UUIDs for flexibility with Laravel backend
 const roomIdSchema = z.string().min(1);
 
 export const transportCreateSchema = z.object({
-  type: z.enum(['producer', 'consumer']),
+  type: z.enum(["producer", "consumer"]),
   roomId: roomIdSchema,
 });
 
@@ -18,7 +18,7 @@ export const transportConnectSchema = z.object({
 export const audioProduceSchema = z.object({
   roomId: roomIdSchema,
   transportId: z.string().uuid(),
-  kind: z.enum(['audio']), // Only audio supported
+  kind: z.enum(["audio"]), // Only audio supported
   rtpParameters: z.object({}).passthrough(), // Allow any valid RTP parameters
 });
 
