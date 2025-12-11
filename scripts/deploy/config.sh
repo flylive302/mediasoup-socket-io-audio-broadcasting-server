@@ -41,11 +41,10 @@ fi
 # -----------------------------------------------------------------------------
 
 # Your SSH key fingerprint from Digital Ocean
-DO_SSH_KEY_FINGERPRINT="${DO_SSH_KEY_FINGERPRINT:-}"
-
-# Shared secret key with Laravel backend
-LARAVEL_INTERNAL_KEY="${LARAVEL_INTERNAL_KEY:-}"
 DO_SSH_KEY_FINGERPRINT="${DO_SSH_KEY_FINGERPRINT?Error: DO_SSH_KEY_FINGERPRINT must be set}"
+
+# Path to your SSH private key file (must correspond to DO_SSH_KEY_FINGERPRINT)
+DO_SSH_PRIVATE_KEY="${DO_SSH_PRIVATE_KEY?Error: DO_SSH_PRIVATE_KEY must be set}"
 
 # Shared secret key with Laravel backend
 LARAVEL_INTERNAL_KEY="${LARAVEL_INTERNAL_KEY?Error: LARAVEL_INTERNAL_KEY must be set}"
@@ -134,6 +133,7 @@ VALKEY_NAME="${PROJECT_NAME}-valkey"
 
 # Required secrets
 export DO_SSH_KEY_FINGERPRINT
+export DO_SSH_PRIVATE_KEY
 export LARAVEL_INTERNAL_KEY
 
 # Project settings
@@ -213,12 +213,56 @@ check_doctl() {
     fi
 }
 
+# Validate SSH private key file
+check_ssh_private_key() {
+    local key_file="${DO_SSH_PRIVATE_KEY}"
+    
+    # Check if file path is provided
+    if [[ -z "$key_file" ]]; then
+        log_error "DO_SSH_PRIVATE_KEY is not set"
+        exit 1
+    fi
+    
+    # Check if file exists
+    if [[ ! -f "$key_file" ]]; then
+        log_error "SSH private key file not found: ${key_file}"
+        log_info "Please set DO_SSH_PRIVATE_KEY to the path of your SSH private key file"
+        exit 1
+    fi
+    
+    # Check if file is readable
+    if [[ ! -r "$key_file" ]]; then
+        log_error "SSH private key file is not readable: ${key_file}"
+        log_info "Check file permissions with: ls -l ${key_file}"
+        exit 1
+    fi
+    
+    # Check file permissions (should be 600 or 400 for security)
+    local perms=$(stat -c "%a" "$key_file" 2>/dev/null || stat -f "%OLp" "$key_file" 2>/dev/null || echo "")
+    if [[ -n "$perms" ]]; then
+        # Remove leading zeros for comparison
+        perms=$((10#$perms))
+        if [[ $perms -ne 600 && $perms -ne 400 ]]; then
+            log_error "SSH private key file has insecure permissions: ${key_file} (current: ${perms})"
+            log_error "Private key files should have permissions 600 (rw-------) or 400 (r--------)"
+            log_info "Fix permissions with: chmod 600 ${key_file}"
+            exit 1
+        fi
+    fi
+    
+    log_success "SSH private key validated: ${key_file}"
+}
+
 # Check required environment variables
 check_required_vars() {
     local missing=()
     
     if [[ -z "${DO_SSH_KEY_FINGERPRINT:-}" ]]; then
         missing+=("DO_SSH_KEY_FINGERPRINT")
+    fi
+    
+    if [[ -z "${DO_SSH_PRIVATE_KEY:-}" ]]; then
+        missing+=("DO_SSH_PRIVATE_KEY")
     fi
     
     if [[ -z "${LARAVEL_INTERNAL_KEY:-}" ]]; then
@@ -234,6 +278,9 @@ check_required_vars() {
         echo "Edit your .env file and add these values."
         exit 1
     fi
+    
+    # Validate SSH private key file
+    check_ssh_private_key
     
     log_success "All required variables are set"
 }
@@ -573,7 +620,7 @@ generate_droplet_name() {
 
 # Export all functions for subshells
 export -f log_info log_success log_warn log_error
-export -f check_doctl check_required_vars
+export -f check_doctl check_required_vars check_ssh_private_key
 export -f get_droplet_ip get_all_droplets get_lb_id get_vpc_id get_firewall_id get_valkey_info
 export -f wait_for_droplet check_health generate_droplet_name
 

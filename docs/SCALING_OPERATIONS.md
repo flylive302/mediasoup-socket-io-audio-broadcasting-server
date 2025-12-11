@@ -67,9 +67,19 @@ Edit `.env.deploy` and set the **required** values:
 # Required - your SSH key fingerprint
 DO_SSH_KEY_FINGERPRINT=ab:cd:ef:12:34:...
 
+# Required - path to your SSH private key file (must correspond to DO_SSH_KEY_FINGERPRINT)
+# The private key file must exist, be readable, and have secure permissions (600 or 400)
+DO_SSH_PRIVATE_KEY=~/.ssh/id_ed25519
+
 # Required - shared secret with Laravel (must match MSAB_INTERNAL_KEY in Laravel Cloud)
 LARAVEL_INTERNAL_KEY=your-32-character-key
 ```
+
+**Note:** The SSH private key file must:
+- Exist and be readable
+- Have secure permissions (600: `rw-------` or 400: `r--------`)
+- Correspond to the public key whose fingerprint is in `DO_SSH_KEY_FINGERPRINT`
+- Fix permissions if needed: `chmod 600 ~/.ssh/id_ed25519`
 
 All other values (GitHub repo, domains, regions) have sensible defaults. Uncomment and change if needed.
 

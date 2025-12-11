@@ -78,20 +78,68 @@ jobs:
       - name: Get Load Balancer ID
         id: lb
         run: |
-          LB_ID=$(doctl compute load-balancer list --format ID,Name --no-header | grep "$PROJECT_NAME-lb" | awk '{print $1}')
+          set -e
+          
+          # Run doctl command and capture output, checking for failures
+          if ! LB_OUTPUT=$(doctl compute load-balancer list --format ID,Name --no-header 2>&1); then
+            echo "Error: Failed to list load balancers" >&2
+            echo "$LB_OUTPUT" >&2
+            exit 1
+          fi
+          
+          # Extract Load Balancer ID
+          LB_ID=$(echo "$LB_OUTPUT" | grep "$PROJECT_NAME-lb" | awk '{print $1}')
+          
+          # Validate that LB_ID is non-empty
+          if [ -z "$LB_ID" ]; then
+            echo "Error: Load Balancer with name '$PROJECT_NAME-lb' not found" >&2
+            echo "Available load balancers:" >&2
+            echo "$LB_OUTPUT" >&2
+            exit 1
+          fi
+          
+          # Only write to GITHUB_OUTPUT when LB_ID is valid
           echo "lb_id=$LB_ID" >> $GITHUB_OUTPUT
           echo "Load Balancer ID: $LB_ID"
 
       - name: Get Valkey connection info
         id: valkey
         run: |
+          if ! doctl databases get "$PROJECT_NAME-valkey" > /dev/null 2>&1; then
+            echo "Valkey database not found: $PROJECT_NAME-valkey"
+            exit 1
+          fi
           VALKEY_INFO=$(doctl databases connection "$PROJECT_NAME-valkey" --format Host,Port,User --no-header)
+          if [ -z "$VALKEY_INFO" ]; then
+            echo "Failed to retrieve Valkey connection info"
+            exit 1
+          fi
           VALKEY_HOST=$(echo "$VALKEY_INFO" | awk '{print $1}')
           VALKEY_PORT=$(echo "$VALKEY_INFO" | awk '{print $2}')
           VALKEY_USER=$(echo "$VALKEY_INFO" | awk '{print $3}')
+          if [ -z "$VALKEY_HOST" ] || [ -z "$VALKEY_PORT" ] || [ -z "$VALKEY_USER" ]; then
+            echo "Malformed Valkey connection info: $VALKEY_INFO"
+            exit 1
+          fi
           echo "valkey_host=$VALKEY_HOST" >> $GITHUB_OUTPUT
           echo "valkey_port=$VALKEY_PORT" >> $GITHUB_OUTPUT
           echo "valkey_user=$VALKEY_USER" >> $GITHUB_OUTPUT
+      - name: Setup SSH key
+        run: |
+          set -e
+          # Create .ssh directory if it doesn't exist
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Write the private key to a file with secure permissions
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Add the key to SSH agent for convenience (optional but recommended)
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/deploy_key
+          
+          echo "SSH key configured"
 
       - name: Rolling deployment
         env:
@@ -124,12 +172,26 @@ jobs:
             
             # Step 1: Remove from load balancer
             echo "Removing from load balancer..."
-            doctl compute load-balancer remove-droplets "$LB_ID" --droplet-ids "$DROPLET_ID" || true
+            REMOVE_OUTPUT=$(doctl compute load-balancer remove-droplets "$LB_ID" --droplet-ids "$DROPLET_ID" 2>&1)
+            REMOVE_EXIT_CODE=$?
+            
+            if [ $REMOVE_EXIT_CODE -ne 0 ]; then
+              # Check if this is a benign error (droplet not found/not attached)
+              if echo "$REMOVE_OUTPUT" | grep -qiE "(not found|not attached|does not exist|not a member)"; then
+                echo "⚠️  Droplet not attached to load balancer (benign): $REMOVE_OUTPUT"
+              else
+                # This is a real error (authentication, malformed request, etc.)
+                echo "❌ Failed to remove droplet from load balancer: $REMOVE_OUTPUT"
+                exit $REMOVE_EXIT_CODE
+              fi
+            else
+              echo "✓ Droplet removed from load balancer"
+            fi
             sleep 5
             
             # Step 2: Deploy via SSH
             echo "Deploying..."
-            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 "root@$DROPLET_IP" << DEPLOY_SCRIPT
+            ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 "root@$DROPLET_IP" << DEPLOY_SCRIPT
           set -e
           cd /opt/audio-server
           
@@ -138,7 +200,7 @@ jobs:
           git reset --hard origin/master
           
           # Update environment
-          cat > .env << 'ENV_EOF'
+          cat > .env << EOF
           NODE_ENV=production
           PORT=3030
           LOG_LEVEL=info
@@ -159,8 +221,7 @@ jobs:
           MEDIASOUP_RTC_MAX_PORT=59999
           
           CORS_ORIGINS=https://flyliveapp.com,https://www.flyliveapp.com
-          ENV_EOF
-          
+          EOF          
           # Rebuild and restart
           docker build -t audio-server:latest -f docker/Dockerfile .
           docker stop audio-server || true
@@ -182,19 +243,19 @@ jobs:
               echo "Attempt $i/30 - waiting..."
               sleep 10
             done
+            
+            # Check if health check passed
+            if [ "$HEALTH_CHECK_PASSED" -ne 1 ]; then
+              echo "❌ Health check failed after 30 attempts. Aborting deployment."
+              exit 1
+            fi
+            
             # Step 4: Add back to load balancer
             echo "Adding back to load balancer..."
             if ! doctl compute load-balancer add-droplets "$LB_ID" --droplet-ids "$DROPLET_ID"; then
               echo "⚠️ Failed to add $DROPLET_NAME back to load balancer!"
               exit 1
             fi
-            sleep 5              
-            echo "❌ Health check failed after 30 attempts. Aborting deployment."
-              exit 1
-            fi            
-            # Step 4: Add back to load balancer
-            echo "Adding back to load balancer..."
-            doctl compute load-balancer add-droplets "$LB_ID" --droplet-ids "$DROPLET_ID"
             sleep 5
             
             echo "✅ $DROPLET_NAME updated successfully"
@@ -205,6 +266,17 @@ jobs:
           echo "Deployment complete!"
           echo "========================================="
 
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          # Remove the private key file
+          rm -f ~/.ssh/deploy_key
+          # Kill SSH agent if it was started
+          if [ -n "$SSH_AGENT_PID" ]; then
+            ssh-agent -k 2>/dev/null || true
+          fi
+          echo "SSH key cleaned up"
+
       - name: Verify deployment
         run: |
           LB_IP=$(doctl compute load-balancer list --format IP,Name --no-header | grep "$PROJECT_NAME-lb" | awk '{print $1}')
@@ -212,12 +284,9 @@ jobs:
           echo "Checking health..."
           curl -sf "http://$LB_IP:80/health" || echo "Warning: Health check via LB failed (may need SSL)"
 
-          echo "|---------|----|----|" >> $GITHUB_STEP_SUMMARY
-          doctl compute droplet list --tag-name "$PROJECT_NAME" --format Name,PublicIPv4,Status --no-header | while read name ip status; do
-            echo "| $name | $ip | $status |" >> $GITHUB_STEP_SUMMARY
-          done          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Droplet | IP | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|----|--------|" >> $GITHUB_STEP_SUMMARY
           doctl compute droplet list --tag-name "$PROJECT_NAME" --format Name,PublicIPv4,Status --no-header | while read name ip status; do
             echo "| $name | $ip | $status |" >> $GITHUB_STEP_SUMMARY
           done
+          echo "" >> $GITHUB_STEP_SUMMARY

@@ -96,4 +96,39 @@ export class LaravelClient {
       clearTimeout(timeoutId);
     }
   }
+
+  private async get(endpoint: string): Promise<Response> {
+    const url = `${config.LARAVEL_API_URL}${endpoint}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10_000);
+
+    try {
+      return await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${config.LARAVEL_INTERNAL_KEY}`,
+          "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
+        },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Fetch room metadata (including owner_id)
+   */
+  async getRoomData(roomId: string): Promise<{ owner_id: number }> {
+    const response = await this.get(`/api/v1/internal/rooms/${roomId}`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch room data: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { owner_id: number };
+  }
 }

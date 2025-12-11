@@ -36,14 +36,26 @@ main() {
     else
         COMMIT_SHA=$(git ls-remote "${GITHUB_REPO}" "${GITHUB_BRANCH}" | awk '{print $1}')
         if [[ -z "${COMMIT_SHA}" ]]; then
-             log_warn "Could not resolve SHA. Deploying 'HEAD'."
+            log_warn "Could not resolve SHA. Deploying 'HEAD'."
         else
-             log_info "Pinning deployment to commit: ${COMMIT_SHA}"
+            log_info "Pinning deployment to commit: ${COMMIT_SHA}"
         fi
     fi
     
     # Get all droplets
-    local droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --format ID,Name,PublicIPv4 --no-header)
+    # Get all droplets with robust parsing (CSV: ID,Name,IP)
+    # Use JSON output to handle names with spaces and flexible network structures.
+    local droplets
+    if command -v jq &> /dev/null; then
+        droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --output json | \
+                   jq -r '.[] | [.id, (.name|sub(",";" ")), (.networks.v4[] | select(.type=="public") | .ip_address // "")] | join(",")')
+    elif command -v python3 &> /dev/null; then
+        droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --output json | \
+                   python3 -c 'import sys,json; print("\n".join(["{},{},{}".format(d.get("id"),d.get("name","").replace(","," "),next((n["ip_address"] for n in d.get("networks",{}).get("v4",[]) if n.get("type")=="public"),"")) for d in json.load(sys.stdin)]))')
+    else
+        log_warn "Neither 'jq' nor 'python3' found. Falling back to fragile column parsing."
+        droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --format ID,Name,PublicIPv4 --no-header | awk '{print $1 "," $2 "," $3}')
+    fi
     
     if [[ -z "$droplets" ]]; then
         log_error "No droplets found with tag '${PROJECT_NAME}'"
@@ -59,6 +71,12 @@ main() {
         log_warn "Load Balancer not found, updating without LB management"
     fi
     
+    # Pre-check: Verify deploy-droplet.sh exists and is executable
+    if [[ ! -x "${SCRIPT_DIR}/deploy-droplet.sh" ]]; then
+        log_error "Deployment helper script not found or not executable: ${SCRIPT_DIR}/deploy-droplet.sh"
+        exit 1
+    fi
+
     local success_count=0
     local fail_count=0
     local current=0
@@ -73,12 +91,8 @@ main() {
     fi
     
     # Update each droplet one at a time
-    while IFS= read -r line; do
+    while IFS=',' read -r droplet_id droplet_name droplet_ip; do
         current=$((current + 1))
-        
-        local droplet_id=$(echo "$line" | awk '{print $1}')
-        local droplet_name=$(echo "$line" | awk '{print $2}')
-        local droplet_ip=$(echo "$line" | awk '{print $3}')
         
         echo ""
         log_info "=== Updating ${droplet_name} (${current}/${droplet_count}) ==="

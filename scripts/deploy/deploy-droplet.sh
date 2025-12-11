@@ -94,7 +94,9 @@ main() {
 
     # Securely copy environment file to remote host
     log_info "Transferring deployment configuration..."
-    scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \
+    scp -i "${DO_SSH_PRIVATE_KEY}" \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=30 \
         "${temp_env_file}" "root@${DROPLET_IP}:${remote_env_file}" || {
         rm -f "${temp_env_file}"
         log_error "Failed to transfer deployment configuration"
@@ -106,7 +108,10 @@ main() {
     
     # Deploy via SSH - source the env file on remote host
     # Use a trap to ensure cleanup of the remote env file even on failure
-    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 "root@${DROPLET_IP}" \
+    ssh -i "${DO_SSH_PRIVATE_KEY}" \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=30 \
+        "root@${DROPLET_IP}" \
         "trap 'rm -f \"${remote_env_file}\"' EXIT; source \"${remote_env_file}\" && bash -s" << 'REMOTE_SCRIPT'
 set -e
 

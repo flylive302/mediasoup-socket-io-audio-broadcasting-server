@@ -98,8 +98,75 @@ main() {
     # We need to update the forwarding rules to use this certificate
     # entry_protocol:https,entry_port:443,target_protocol:http,target_port:3030,certificate_id:UUID
     
+    local forwarding_rules=""
+    
+    # Try to merge with existing rules if jq is available
+    if command -v jq &> /dev/null; then
+        log_info "Fetching current forwarding rules to merge with new SSL configuration..."
+        
+        # Get LB details in JSON
+        # doctl get output might be a single object or list depending on version/context, handling both
+        local lb_json
+        if lb_json=$(doctl compute load-balancer get "$lb_id" --output json 2>/dev/null); then
+            # Use jq to update or append the HTTPS rule while preserving others
+            if forwarding_rules=$(echo "$lb_json" | jq -r --arg CERT_ID "$CERT_ID" --arg SERVER_PORT "$SERVER_PORT" '
+                    (if type=="array" then .[0] else . end) | .forwarding_rules as $rules |
+                    $rules |
+                    if (map(select(.entry_port == 443)) | length) > 0 then
+                        map(if .entry_port == 443 then 
+                            . + {
+                                "entry_protocol": "https",
+                                "entry_port": 443,
+                                "target_protocol": "http",
+                                "target_port": ($SERVER_PORT | tonumber),
+                                "certificate_id": $CERT_ID
+                            }
+                        else . end)
+                    else
+                        . + [{
+                            "entry_protocol": "https",
+                            "entry_port": 443,
+                            "target_protocol": "http",
+                            "target_port": ($SERVER_PORT | tonumber),
+                            "certificate_id": $CERT_ID
+                        }]
+                    end |
+                    map(
+                        "entry_protocol:" + .entry_protocol +
+                        ",entry_port:" + (.entry_port | tostring) +
+                        ",target_protocol:" + .target_protocol +
+                        ",target_port:" + (.target_port | tostring) +
+                        (if .certificate_id and .certificate_id != "" then ",certificate_id:" + .certificate_id else "" end)
+                    ) |
+                    join(" ")
+                ' 2>/dev/null); then
+                if [[ -n "$forwarding_rules" ]]; then
+                    log_info "Merged forwarding rules: $forwarding_rules"
+                else
+                    log_warn "Failed to parse forwarding rules with jq. Fallback to overwrite."
+                fi
+            else
+                log_warn "jq failed while parsing forwarding rules. Fallback to overwrite."
+                forwarding_rules=""
+            fi
+        else
+            log_warn "Failed to fetch Load Balancer details. Fallback to overwrite."
+        fi
+    else
+        log_warn "jq not found. Cannot merge forwarding rules safely."
+        log_warn "Installing jq is recommended to preserve existing redirects (HTTP->HTTPS)."
+    fi
+    
+    # Fallback if merging failed or jq missing
+    if [[ -z "$forwarding_rules" ]]; then
+        log_warn "Overwriting ALL forwarding rules with single HTTPS rule."
+        log_warn "Any existing custom rules (like HTTP->HTTPS redirects) will be REMOVED."
+        log_warn "You may need to manually re-add redirects after this runs."
+        forwarding_rules="entry_protocol:https,entry_port:443,target_protocol:http,target_port:${SERVER_PORT},certificate_id:${CERT_ID}"
+    fi
+
     doctl compute load-balancer update "$lb_id" \
-        --forwarding-rules "entry_protocol:https,entry_port:443,target_protocol:http,target_port:${SERVER_PORT},certificate_id:${CERT_ID}"
+        --forwarding-rules "$forwarding_rules"
         
     log_success "SSL configured successfully for Load Balancer!"
     log_info "https://${AUDIO_DOMAIN} should now be secure."

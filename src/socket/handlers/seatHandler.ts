@@ -62,7 +62,7 @@ export function clearUserSeat(roomId: string, userId: string): number | null {
   return seatIndex;
 }
 
-export const seatHandler = (socket: Socket, _context: AppContext): void => {
+export const seatHandler = (socket: Socket, context: AppContext): void => {
   const userId = String(socket.data.user.id);
 
   // seat:take - User takes an available seat
@@ -114,7 +114,6 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       };
 
       socket.to(roomId).emit("seat:updated", seatUpdate);
-      socket.emit("seat:updated", seatUpdate);
 
       if (callback) callback({ success: true });
     },
@@ -148,7 +147,6 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
 
       // Broadcast to room
       socket.to(roomId).emit("seat:cleared", { seatIndex });
-      socket.emit("seat:cleared", { seatIndex });
 
       if (callback) callback({ success: true });
     },
@@ -157,7 +155,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
   // seat:assign - Owner assigns user to specific seat
   socket.on(
     "seat:assign",
-    (
+    async (
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
@@ -170,9 +168,30 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       const { roomId, userId: targetUserId, seatIndex } = result.data;
       const seats = getOrCreateRoomSeats(roomId);
 
-      // TODO: Check if socket.data.user is room owner
-      // For now, allow any user to assign (should be restricted in production)
+      try {
+        // Fetch room owner to verify authorization
+        const roomMetadata = await context.laravelClient.getRoomData(roomId);
+        const ownerId = String(roomMetadata.owner_id);
 
+        if (userId !== ownerId) {
+          logger.warn(
+            { roomId, userId, ownerId },
+            "Unauthorized attempt to assign seat",
+          );
+          if (callback) callback({ success: false, error: "Not authorized" });
+          return;
+        }
+      } catch (err) {
+        logger.error(
+          { err, roomId, userId },
+          "Failed to verify room ownership during seat assignment",
+        );
+        if (callback)
+          callback({ success: false, error: "Authorization check failed" });
+        return;
+      }
+
+      
       if (seats.has(seatIndex)) {
         if (callback)
           callback({ success: false, error: "Seat is already taken" });
@@ -185,7 +204,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       const existingSeat = findUserSeat(roomId, targetUserIdStr);
       if (existingSeat !== null) {
         seats.delete(existingSeat);
-        socket.nsp.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
+        socket.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
       }
 
       seats.set(seatIndex, { userId: targetUserIdStr, muted: false });
@@ -196,7 +215,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       );
 
       // Broadcast seat update - frontend will look up user info from participants
-      socket.nsp.to(roomId).emit("seat:updated", {
+      socket.to(roomId).emit("seat:updated", {
         seatIndex,
         user: { id: targetUserId },
         isMuted: false,
@@ -209,7 +228,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
   // seat:remove - Owner removes user from seat
   socket.on(
     "seat:remove",
-    (
+    async (
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
@@ -220,6 +239,30 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       }
 
       const { roomId, userId: targetUserId } = result.data;
+
+      try {
+        // Fetch room owner to verify authorization
+        const roomMetadata = await context.laravelClient.getRoomData(roomId);
+        const ownerId = String(roomMetadata.owner_id);
+
+        if (userId !== ownerId) {
+          logger.warn(
+            { roomId, userId, ownerId },
+            "Unauthorized attempt to remove seat",
+          );
+          if (callback) callback({ success: false, error: "Not authorized" });
+          return;
+        }
+      } catch (err) {
+        logger.error(
+          { err, roomId, userId },
+          "Failed to verify room ownership during seat removal",
+        );
+        if (callback)
+          callback({ success: false, error: "Authorization check failed" });
+        return;
+      }
+
       const targetUserIdStr = String(targetUserId);
       const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
@@ -236,7 +279,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
         "User removed from seat",
       );
 
-      socket.nsp.to(roomId).emit("seat:cleared", { seatIndex });
+      socket.to(roomId).emit("seat:cleared", { seatIndex });
 
       if (callback) callback({ success: true });
     },
@@ -245,7 +288,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
   // seat:mute - Owner mutes user
   socket.on(
     "seat:mute",
-    (
+    async (
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
@@ -256,6 +299,29 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       }
 
       const { roomId, userId: targetUserId } = result.data;
+
+      try {
+        const roomMetadata = await context.laravelClient.getRoomData(roomId);
+        const ownerId = String(roomMetadata.owner_id);
+
+        if (userId !== ownerId) {
+          logger.warn(
+            { roomId, userId, ownerId },
+            "Unauthorized attempt to mute user",
+          );
+          if (callback) callback({ success: false, error: "Not authorized" });
+          return;
+        }
+      } catch (err) {
+        logger.error(
+          { err, roomId, userId },
+          "Failed to verify room ownership during mute",
+        );
+        if (callback)
+          callback({ success: false, error: "Authorization check failed" });
+        return;
+      }
+
       const targetUserIdStr = String(targetUserId);
       const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
@@ -275,7 +341,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
         "User muted",
       );
 
-      socket.nsp.to(roomId).emit("seat:userMuted", {
+      socket.to(roomId).emit("seat:userMuted", {
         userId: targetUserId,
         isMuted: true,
       });
@@ -283,11 +349,10 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       if (callback) callback({ success: true });
     },
   );
-
   // seat:unmute - Owner unmutes user
   socket.on(
     "seat:unmute",
-    (
+    async (
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
@@ -298,6 +363,29 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
       }
 
       const { roomId, userId: targetUserId } = result.data;
+
+      try {
+        const roomMetadata = await context.laravelClient.getRoomData(roomId);
+        const ownerId = String(roomMetadata.owner_id);
+
+        if (userId !== ownerId) {
+          logger.warn(
+            { roomId, userId, ownerId },
+            "Unauthorized attempt to unmute user",
+          );
+          if (callback) callback({ success: false, error: "Not authorized" });
+          return;
+        }
+      } catch (err) {
+        logger.error(
+          { err, roomId, userId },
+          "Failed to verify room ownership during unmute",
+        );
+        if (callback)
+          callback({ success: false, error: "Authorization check failed" });
+        return;
+      }
+
       const targetUserIdStr = String(targetUserId);
       const seatIndex = findUserSeat(roomId, targetUserIdStr);
 
@@ -317,7 +405,7 @@ export const seatHandler = (socket: Socket, _context: AppContext): void => {
         "User unmuted",
       );
 
-      socket.nsp.to(roomId).emit("seat:userMuted", {
+      socket.to(roomId).emit("seat:userMuted", {
         userId: targetUserId,
         isMuted: false,
       });

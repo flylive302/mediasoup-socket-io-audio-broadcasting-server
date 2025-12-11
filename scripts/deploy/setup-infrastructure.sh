@@ -26,7 +26,12 @@ main() {
     echo "  FlyLive Audio Server - Infrastructure Setup"
     echo "=============================================="
     echo ""
-    
+    local lb_ip=$(doctl compute load-balancer list --format IP,Name --no-header | grep "^[0-9.]* ${LB_NAME}$" | awk '{print $1}')
+    if [[ -z "$lb_ip" ]]; then
+        log_warn "Load balancer IP not yet assigned (pending)"
+        lb_ip="<pending>"
+    fi
+
     check_doctl
     check_required_vars
     
@@ -54,7 +59,6 @@ main() {
     # Step 7 (Post-Setup): Print Summary
     print_summary
 }
-
 # -----------------------------------------------------------------------------
 # Step 1: Create VPC
 # -----------------------------------------------------------------------------
@@ -151,7 +155,6 @@ create_firewall() {
 # -----------------------------------------------------------------------------
 # Step 4: Create First Droplet
 # -----------------------------------------------------------------------------
-
 create_first_droplet() {
     log_info "Step 4/6: Creating first droplet..."
     
@@ -164,6 +167,25 @@ create_first_droplet() {
         log_info "Get your SSH key fingerprint with: doctl compute ssh-key list"
         exit 1
     fi
+    
+    if [[ -z "${DO_SSH_PRIVATE_KEY}" ]]; then
+        log_error "DO_SSH_PRIVATE_KEY is required"
+        log_info "Set DO_SSH_PRIVATE_KEY to the path of your SSH private key file"
+        log_info "Example: DO_SSH_PRIVATE_KEY=~/.ssh/id_ed25519"
+        exit 1
+    fi
+    
+    # Validate private key file exists and is readable
+    local expanded_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+    if [[ ! -f "$expanded_key_path" ]]; then
+        log_error "SSH private key file not found: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    
+    if [[ ! -r "$expanded_key_path" ]]; then
+        log_error "SSH private key file is not readable: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi    fi
     
     DROPLET_NAME="${PROJECT_NAME}-01"
     
@@ -191,11 +213,20 @@ create_first_droplet() {
     
     log_success "Droplet created: ${DROPLET_NAME} (${DROPLET_IP})"
     
-    # Wait a bit for SSH to be ready
-    log_info "Waiting for SSH to be ready..."
-    sleep 30
-}
-
+    local valkey_info=$(doctl databases connection "${VALKEY_NAME}" --format Host,Port,User,Password --no-header 2>/dev/null)
+    if [[ -z "$valkey_info" ]]; then
+        log_error "Failed to retrieve Valkey connection info"
+        exit 1
+    fi
+    local valkey_host=$(echo "$valkey_info" | awk '{print $1}')
+    local valkey_port=$(echo "$valkey_info" | awk '{print $2}')
+    local valkey_user=$(echo "$valkey_info" | awk '{print $3}')
+    local valkey_password=$(echo "$valkey_info" | awk '{print $4}')
+    if [[ -z "$valkey_host" || -z "$valkey_port" || -z "$valkey_user" || -z "$valkey_password" ]]; then
+        log_error "Incomplete Valkey connection info: host=$valkey_host port=$valkey_port user=$valkey_user"
+        exit 1
+    fi
+    
 # -----------------------------------------------------------------------------
 # Step 5: Deploy to First Droplet
 # -----------------------------------------------------------------------------
@@ -224,11 +255,12 @@ deploy_to_droplet() {
     mkdir -p "$(dirname "${known_hosts_file}")"
     
     # Deploy via SSH with secure host key checking
-    # Note: Outer here-doc is unquoted so local variables are expanded and passed to remote
-    ssh -o UserKnownHostsFile="${known_hosts_file}" \
+    ssh -i "${DO_SSH_PRIVATE_KEY}" \
+        -o UserKnownHostsFile="${known_hosts_file}" \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout=30 \
-        "root@${DROPLET_IP}" << REMOTE_SCRIPT
+        "root@${DROPLET_IP}" << REMOTE_SCRIPT        
+
 set -e
 
 echo "Cloning repository..."

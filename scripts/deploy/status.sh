@@ -58,10 +58,7 @@ main() {
                 health="${GREEN}healthy${NC}"
             else
                 health="${RED}unhealthy${NC}"
-            fi
-                health="${RED}unhealthy${NC}"
-            fi
-            
+            fi            
             printf "  %-20s %-16s %4s vCPUs  %6s MB  %-10s %b\n" "$name" "$ip" "$vcpus" "$mem" "$status" "$health"
         done <<< "$droplets"
         
@@ -140,12 +137,10 @@ main() {
     if [[ -n "${lb_info:-}" ]]; then
         if curl -sf --max-time 5 "http://${lb_ip}:80/health" > /dev/null 2>&1; then
             log_success "Load Balancer health check: PASSED"
+    if [[ -n "${lb_info:-}" ]]; then
+        if curl -sf --max-time 5 "http://${lb_ip}:80/health" > /dev/null 2>&1; then
+            log_success "Load Balancer health check: PASSED"
         else
             log_warn "Load Balancer health check: FAILED (check SSL or port config)"
         fi
-        fi
     fi
-    echo ""
-}
-
-main "$@"

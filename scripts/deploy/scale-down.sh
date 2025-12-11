@@ -256,7 +256,10 @@ except:
     
     # Capture SSH command output and exit code
     # Redirect stderr to stdout to capture all output
-    ssh_output=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@${droplet_ip}" \
+    ssh_output=$(ssh -i "${DO_SSH_PRIVATE_KEY}" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=10 \
+        "root@${droplet_ip}" \
         "docker stop ${CONTAINER_NAME}" 2>&1) || ssh_exit_code=$?
     
     # Check if SSH itself failed (connection/authentication issues)

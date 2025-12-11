@@ -31,7 +31,7 @@ is_valid_ipv4() {
         # Validate each octet is 0-255
         IFS='.' read -ra ADDR <<< "$ip"
         for octet in "${ADDR[@]}"; do
-            if [[ "$octet" -lt 0 || "$octet" -gt 255 ]]; then
+            if [[ 10#$octet -lt 0 || 10#$octet -gt 255 ]]; then
                 return 1
             fi
         done
@@ -39,7 +39,6 @@ is_valid_ipv4() {
     fi
     return 1
 }
-
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -232,4 +231,4 @@ main() {
     "${SCRIPT_DIR}/status.sh"
 }
 
-main "$@" "${2:-}"
+main "$@"
