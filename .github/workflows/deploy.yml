@@ -125,25 +125,22 @@ jobs:
           echo "valkey_port=$VALKEY_PORT" >> $GITHUB_OUTPUT
           echo "valkey_user=$VALKEY_USER" >> $GITHUB_OUTPUT
       - name: Setup SSH key
+        if: ${{ env.SSH_PRIVATE_KEY != '' }}
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           set -e
           # Create .ssh directory if it doesn't exist
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          
+
           # Write the private key to a file with secure permissions
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          cat <<EOF > ~/.ssh/deploy_key
+          $SSH_PRIVATE_KEY
+          EOF
           chmod 600 ~/.ssh/deploy_key
+          echo "SSH key configured"
           
-          # Add the key to SSH agent for convenience (optional but recommended)
-          eval "$(ssh-agent -s)"
-          ssh-add ~/.ssh/deploy_key
-          
-          # Persist SSH agent variables to next steps
-          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
-          
-          echo "SSH key configured"      
       - name: Rolling deployment
         env:
           LARAVEL_INTERNAL_KEY: ${{ secrets.LARAVEL_INTERNAL_KEY }}
@@ -274,10 +271,6 @@ jobs:
         run: |
           # Remove the private key file
           rm -f ~/.ssh/deploy_key
-          # Kill SSH agent if it was started
-          if [ -n "$SSH_AGENT_PID" ]; then
-            ssh-agent -k 2>/dev/null || true
-          fi
           echo "SSH key cleaned up"
 
       - name: Verify deployment

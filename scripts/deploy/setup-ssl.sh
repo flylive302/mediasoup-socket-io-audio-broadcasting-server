@@ -6,6 +6,8 @@
 # 
 # Usage:
 #   ./setup-ssl.sh
+# NOTE: Fallback overwrite mode is DESTRUCTIVE and replaces ALL forwarding rules.
+#       Use the fallback overwrite path ONLY as a last resort after backups.
 # =============================================================================
 
 set -euo pipefail
@@ -19,6 +21,7 @@ source "${SCRIPT_DIR}/config.sh"
 # -----------------------------------------------------------------------------
 
 FORCE_OVERWRITE=false
+REDIRECT_HTTP_TO_HTTPS=false
 
 parse_args() {
     for arg in "$@"; do
@@ -198,11 +201,29 @@ main() {
         log_error "Could not safely merge forwarding rules; no updates applied."
         log_info "Backup of current forwarding rules saved to: ${backup_rules_path}"
         log_info "To restore: doctl compute load-balancer update \"$lb_id\" --forwarding-rules \"$(cat "${backup_rules_path}")\""
+        local existing_rule_count
+        existing_rule_count=$(echo "$lb_json" | jq -r '(if type=="array" then .[0] else . end) | (.forwarding_rules | length)' 2>/dev/null || echo "unknown")
+        local new_https_rule="entry_protocol:https,entry_port:443,target_protocol:http,target_port:${SERVER_PORT},certificate_id:${CERT_ID}"
+        log_warn "WARNING: FALLBACK WILL OVERWRITE EVERY EXISTING FORWARDING RULE ON LB '${LB_NAME}'."
+        log_warn "WARNING: THIS REMOVES ALL HTTP ENTRIES AND ANY CUSTOM RULES."
+        log_info "Existing rule count: ${existing_rule_count}"
+        if [[ -n "$existing_forwarding_rules" ]]; then
+            log_info "Existing rules that will be deleted: ${existing_forwarding_rules}"
+        else
+            log_info "Existing rules that will be deleted: none detected (raw JSON saved in backup)."
+        fi
+        log_info "New rules that will be applied (preview): ${new_https_rule}"
         
         if [[ "$FORCE_OVERWRITE" != "true" ]]; then
             if [[ -t 0 ]]; then
-                read -r -p "Type 'overwrite' to replace ALL forwarding rules with HTTPS-only: " confirmation
-                if [[ "$confirmation" != "overwrite" ]]; then
+                read -r -p "Optional: Add HTTP->HTTPS redirect alongside HTTPS-only rule? (y/N): " redirect_choice
+                if [[ "${redirect_choice,,}" == "y" || "${redirect_choice,,}" == "yes" ]]; then
+                    REDIRECT_HTTP_TO_HTTPS=true
+                    log_info "Will request load balancer to redirect HTTP to HTTPS."
+                fi
+                log_warn "WARNING: ALL EXISTING FORWARDING RULES WILL BE LOST. THIS IS DESTRUCTIVE."
+                read -r -p "Type '${LB_NAME}' or 'CONFIRM OVERWRITE' to proceed: " confirmation
+                if [[ "$confirmation" != "${LB_NAME}" && "$confirmation" != "CONFIRM OVERWRITE" ]]; then
                     log_error "Confirmation not received; aborting without changes. Re-run with --force to skip the prompt."
                     exit 1
                 fi
@@ -214,11 +235,15 @@ main() {
             log_warn "--force supplied: proceeding to overwrite ALL forwarding rules after backup."
         fi
         
-        forwarding_rules="entry_protocol:https,entry_port:443,target_protocol:http,target_port:${SERVER_PORT},certificate_id:${CERT_ID}"
+        forwarding_rules="$new_https_rule"
+        if [[ "$REDIRECT_HTTP_TO_HTTPS" == "true" ]]; then
+            log_info "Redirect flag enabled: HTTP traffic will be redirected to HTTPS by the load balancer."
+        fi
     fi
 
     doctl compute load-balancer update "$lb_id" \
-        --forwarding-rules "$forwarding_rules"
+        --forwarding-rules "$forwarding_rules" \
+        $( [[ "$REDIRECT_HTTP_TO_HTTPS" == "true" ]] && echo "--redirect-http-to-https true" )
         
     log_success "SSL configured successfully for Load Balancer!"
     log_info "https://${AUDIO_DOMAIN} should now be secure."

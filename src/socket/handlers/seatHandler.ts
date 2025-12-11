@@ -79,14 +79,20 @@ async function fetchRoomOwner(
     return cached.ownerId;
   }
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("Authorization timeout")), OWNER_FETCH_TIMEOUT_MS),
-  );
+  let timeoutId: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error("Authorization timeout")),
+      OWNER_FETCH_TIMEOUT_MS,
+    );
+  });
 
   const roomMetadata = await Promise.race([
     context.laravelClient.getRoomData(roomId),
     timeoutPromise,
-  ]);
+  ]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
 
   const ownerId = String(roomMetadata.owner_id);
   roomOwnerCache.set(roomId, { ownerId, expiresAt: now + OWNER_CACHE_TTL_MS });
