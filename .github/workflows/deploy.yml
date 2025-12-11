@@ -139,8 +139,11 @@ jobs:
           eval "$(ssh-agent -s)"
           ssh-add ~/.ssh/deploy_key
           
-          echo "SSH key configured"
-
+          # Persist SSH agent variables to next steps
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+          
+          echo "SSH key configured"      
       - name: Rolling deployment
         env:
           LARAVEL_INTERNAL_KEY: ${{ secrets.LARAVEL_INTERNAL_KEY }}

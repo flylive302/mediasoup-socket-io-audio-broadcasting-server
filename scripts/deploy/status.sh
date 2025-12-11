@@ -25,15 +25,16 @@ main() {
     echo "=============================================="
     echo ""
     
-    # Check if doctl is available
-    if ! command -v doctl &> /dev/null; then
-        log_error "doctl CLI not installed"
-        exit 1
-    fi
+    check_doctl
     
-    if ! doctl account get &> /dev/null 2>&1; then
-        log_error "doctl not authenticated. Run: doctl auth init"
-        exit 1
+    # Ensure SSH key path is valid for potential ssh usage in future additions
+    if [[ -n "${DO_SSH_PRIVATE_KEY:-}" ]]; then
+        local ssh_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+        if [[ ! -f "$ssh_key_path" ]]; then
+            log_warn "SSH private key not found at: ${DO_SSH_PRIVATE_KEY} (not fatal for status)"
+        elif [[ ! -r "$ssh_key_path" ]]; then
+            log_warn "SSH private key not readable: ${DO_SSH_PRIVATE_KEY} (not fatal for status)"
+        fi
     fi
     
     # Droplets
@@ -52,6 +53,7 @@ main() {
             local mem=$(echo "$line" | awk '{print $3}')
             local vcpus=$(echo "$line" | awk '{print $4}')
             local status=$(echo "$line" | awk '{print $5}')
+            local health
             total_vcpus=$((total_vcpus + vcpus))
             
             if curl -sf --max-time 5 "http://${ip}:${SERVER_PORT}/health" > /dev/null 2>&1; then
@@ -137,10 +139,10 @@ main() {
     if [[ -n "${lb_info:-}" ]]; then
         if curl -sf --max-time 5 "http://${lb_ip}:80/health" > /dev/null 2>&1; then
             log_success "Load Balancer health check: PASSED"
-    if [[ -n "${lb_info:-}" ]]; then
-        if curl -sf --max-time 5 "http://${lb_ip}:80/health" > /dev/null 2>&1; then
-            log_success "Load Balancer health check: PASSED"
         else
             log_warn "Load Balancer health check: FAILED (check SSL or port config)"
         fi
     fi
+}
+
+main "$@"

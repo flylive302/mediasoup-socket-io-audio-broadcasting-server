@@ -16,6 +16,13 @@ export interface SeatData {
 
 // In-memory seat storage per room (could be moved to Redis for persistence)
 const roomSeats = new Map<string, Map<number, SeatData>>();
+// Simple owner cache to avoid fetching on every action
+const OWNER_CACHE_TTL_MS = 30_000;
+const OWNER_FETCH_TIMEOUT_MS = 5_000;
+const roomOwnerCache = new Map<
+  string,
+  { ownerId: string; expiresAt: number }
+>();
 
 function getOrCreateRoomSeats(roomId: string): Map<number, SeatData> {
   let seats = roomSeats.get(roomId);
@@ -60,6 +67,56 @@ export function clearUserSeat(roomId: string, userId: string): number | null {
     seats.delete(seatIndex);
   }
   return seatIndex;
+}
+
+async function fetchRoomOwner(
+  roomId: string,
+  context: AppContext,
+): Promise<string> {
+  const cached = roomOwnerCache.get(roomId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.ownerId;
+  }
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("Authorization timeout")), OWNER_FETCH_TIMEOUT_MS),
+  );
+
+  const roomMetadata = await Promise.race([
+    context.laravelClient.getRoomData(roomId),
+    timeoutPromise,
+  ]);
+
+  const ownerId = String(roomMetadata.owner_id);
+  roomOwnerCache.set(roomId, { ownerId, expiresAt: now + OWNER_CACHE_TTL_MS });
+  return ownerId;
+}
+
+async function verifyRoomOwner(
+  roomId: string,
+  requesterId: string,
+  context: AppContext,
+): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  try {
+    const ownerId = await fetchRoomOwner(roomId, context);
+
+    if (requesterId !== ownerId) {
+      logger.warn(
+        { roomId, requesterId, ownerId },
+        "Unauthorized attempt to perform owner action",
+      );
+      return { allowed: false, error: "Not authorized" };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    logger.error(
+      { err, roomId, requesterId },
+      "Failed to verify room ownership",
+    );
+    return { allowed: false, error: "Authorization check failed" };
+  }
 }
 
 export const seatHandler = (socket: Socket, context: AppContext): void => {
@@ -168,26 +225,9 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       const { roomId, userId: targetUserId, seatIndex } = result.data;
       const seats = getOrCreateRoomSeats(roomId);
 
-      try {
-        // Fetch room owner to verify authorization
-        const roomMetadata = await context.laravelClient.getRoomData(roomId);
-        const ownerId = String(roomMetadata.owner_id);
-
-        if (userId !== ownerId) {
-          logger.warn(
-            { roomId, userId, ownerId },
-            "Unauthorized attempt to assign seat",
-          );
-          if (callback) callback({ success: false, error: "Not authorized" });
-          return;
-        }
-      } catch (err) {
-        logger.error(
-          { err, roomId, userId },
-          "Failed to verify room ownership during seat assignment",
-        );
-        if (callback)
-          callback({ success: false, error: "Authorization check failed" });
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
         return;
       }
 
@@ -240,26 +280,9 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
 
       const { roomId, userId: targetUserId } = result.data;
 
-      try {
-        // Fetch room owner to verify authorization
-        const roomMetadata = await context.laravelClient.getRoomData(roomId);
-        const ownerId = String(roomMetadata.owner_id);
-
-        if (userId !== ownerId) {
-          logger.warn(
-            { roomId, userId, ownerId },
-            "Unauthorized attempt to remove seat",
-          );
-          if (callback) callback({ success: false, error: "Not authorized" });
-          return;
-        }
-      } catch (err) {
-        logger.error(
-          { err, roomId, userId },
-          "Failed to verify room ownership during seat removal",
-        );
-        if (callback)
-          callback({ success: false, error: "Authorization check failed" });
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
         return;
       }
 
@@ -300,25 +323,9 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
 
       const { roomId, userId: targetUserId } = result.data;
 
-      try {
-        const roomMetadata = await context.laravelClient.getRoomData(roomId);
-        const ownerId = String(roomMetadata.owner_id);
-
-        if (userId !== ownerId) {
-          logger.warn(
-            { roomId, userId, ownerId },
-            "Unauthorized attempt to mute user",
-          );
-          if (callback) callback({ success: false, error: "Not authorized" });
-          return;
-        }
-      } catch (err) {
-        logger.error(
-          { err, roomId, userId },
-          "Failed to verify room ownership during mute",
-        );
-        if (callback)
-          callback({ success: false, error: "Authorization check failed" });
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
         return;
       }
 
@@ -364,25 +371,9 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
 
       const { roomId, userId: targetUserId } = result.data;
 
-      try {
-        const roomMetadata = await context.laravelClient.getRoomData(roomId);
-        const ownerId = String(roomMetadata.owner_id);
-
-        if (userId !== ownerId) {
-          logger.warn(
-            { roomId, userId, ownerId },
-            "Unauthorized attempt to unmute user",
-          );
-          if (callback) callback({ success: false, error: "Not authorized" });
-          return;
-        }
-      } catch (err) {
-        logger.error(
-          { err, roomId, userId },
-          "Failed to verify room ownership during unmute",
-        );
-        if (callback)
-          callback({ success: false, error: "Authorization check failed" });
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
         return;
       }
 

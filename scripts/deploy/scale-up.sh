@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # =============================================================================
 # FlyLive Audio Server - Scale Up
@@ -49,6 +50,13 @@ main() {
     
     check_doctl
     check_required_vars
+
+    # Validate count is a positive integer
+    if ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -le 0 ]]; then
+        log_error "Count must be a positive integer (got: '${count}')"
+        echo "Usage: $0 [count] [commit-sha]"
+        exit 1
+    fi
     
     log_info "Scaling up: Adding ${count} new droplet(s)..."
     if [[ -n "${commit_sha}" ]]; then

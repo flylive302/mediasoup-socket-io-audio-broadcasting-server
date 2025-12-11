@@ -22,6 +22,17 @@ source "${SCRIPT_DIR}/config.sh"
 main() {
     check_doctl
     
+    # Expand tilde in SSH key path and validate early (deploy-droplet uses it)
+    local ssh_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+    if [[ ! -f "$ssh_key_path" ]]; then
+        log_error "SSH private key not found at: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    if [[ ! -r "$ssh_key_path" ]]; then
+        log_error "SSH private key is not readable: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    
     log_info "Starting rolling update..."
     
     # 1. Determine which commit SHA to deploy
@@ -48,7 +59,7 @@ main() {
     local droplets
     if command -v jq &> /dev/null; then
         droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --output json | \
-                   jq -r '.[] | [.id, (.name|sub(",";" ")), (.networks.v4[] | select(.type=="public") | .ip_address // "")] | join(",")')
+                   jq -r '.[] | [.id, (.name|sub(",";" ")), ([.networks.v4[] | select(.type=="public") | .ip_address] | first // "")] | join(",")')
     elif command -v python3 &> /dev/null; then
         droplets=$(doctl compute droplet list --tag-name "${PROJECT_NAME}" --output json | \
                    python3 -c 'import sys,json; print("\n".join(["{},{},{}".format(d.get("id"),d.get("name","").replace(","," "),next((n["ip_address"] for n in d.get("networks",{}).get("v4",[]) if n.get("type")=="public"),"")) for d in json.load(sys.stdin)]))')

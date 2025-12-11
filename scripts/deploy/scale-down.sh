@@ -24,6 +24,17 @@ main() {
     
     check_doctl
     
+    # Expand tilde in SSH key path and validate
+    local ssh_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+    if [[ ! -f "$ssh_key_path" ]]; then
+        log_error "SSH private key not found at: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    if [[ ! -r "$ssh_key_path" ]]; then
+        log_error "SSH private key is not readable: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    
     log_info "Scaling down: Removing droplet '${droplet_name}'..."
     
     # Get droplet info using JSON for robust parsing
@@ -256,7 +267,7 @@ except:
     
     # Capture SSH command output and exit code
     # Redirect stderr to stdout to capture all output
-    ssh_output=$(ssh -i "${DO_SSH_PRIVATE_KEY}" \
+    ssh_output=$(ssh -i "${ssh_key_path}" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         "root@${droplet_ip}" \

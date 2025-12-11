@@ -26,14 +26,15 @@ main() {
     echo "  FlyLive Audio Server - Infrastructure Setup"
     echo "=============================================="
     echo ""
+
+    check_doctl
+    check_required_vars
+
     local lb_ip=$(doctl compute load-balancer list --format IP,Name --no-header | grep "^[0-9.]* ${LB_NAME}$" | awk '{print $1}')
     if [[ -z "$lb_ip" ]]; then
         log_warn "Load balancer IP not yet assigned (pending)"
         lb_ip="<pending>"
     fi
-
-    check_doctl
-    check_required_vars
     
     log_info "Starting infrastructure setup in region: ${DO_REGION}"
     echo ""
@@ -175,17 +176,18 @@ create_first_droplet() {
         exit 1
     fi
     
-    # Validate private key file exists and is readable
-    local expanded_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
-    if [[ ! -f "$expanded_key_path" ]]; then
+    # Validate private key file exists and is readable, export for later steps
+    DEPLOY_SSH_KEY_PATH="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+    if [[ ! -f "$DEPLOY_SSH_KEY_PATH" ]]; then
         log_error "SSH private key file not found: ${DO_SSH_PRIVATE_KEY}"
         exit 1
     fi
     
-    if [[ ! -r "$expanded_key_path" ]]; then
+    if [[ ! -r "$DEPLOY_SSH_KEY_PATH" ]]; then
         log_error "SSH private key file is not readable: ${DO_SSH_PRIVATE_KEY}"
         exit 1
-    fi    fi
+    fi
+    export DEPLOY_SSH_KEY_PATH
     
     DROPLET_NAME="${PROJECT_NAME}-01"
     
@@ -226,6 +228,7 @@ create_first_droplet() {
         log_error "Incomplete Valkey connection info: host=$valkey_host port=$valkey_port user=$valkey_user"
         exit 1
     fi
+}
     
 # -----------------------------------------------------------------------------
 # Step 5: Deploy to First Droplet
@@ -255,7 +258,7 @@ deploy_to_droplet() {
     mkdir -p "$(dirname "${known_hosts_file}")"
     
     # Deploy via SSH with secure host key checking
-    ssh -i "${DO_SSH_PRIVATE_KEY}" \
+    ssh -i "${DEPLOY_SSH_KEY_PATH}" \
         -o UserKnownHostsFile="${known_hosts_file}" \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout=30 \

@@ -129,6 +129,60 @@ export class LaravelClient {
       throw new Error(`Failed to fetch room data: ${response.statusText}`);
     }
 
-    return (await response.json()) as { owner_id: number };
+    const rawBody = await response.text();
+    const sanitizedBody = this.sanitizeBody(rawBody);
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch (error) {
+      this.logger.debug(
+        { status: response.status, bodyPreview: sanitizedBody },
+        "Laravel getRoomData response body (sanitized)",
+      );
+      throw new Error(
+        `Failed to parse room data JSON (status ${response.status}): ${String(error)}. Body preview: ${sanitizedBody}`,
+      );
+    }
+
+    if (typeof parsed !== "object" || parsed === null) {
+      this.logger.debug(
+        { status: response.status, bodyPreview: sanitizedBody },
+        "Laravel getRoomData response body (sanitized)",
+      );
+      throw new Error(
+        `Invalid room data shape (status ${response.status}): expected object. Body preview: ${sanitizedBody}`,
+      );
+    }
+
+    const ownerId = (parsed as { owner_id?: unknown }).owner_id;
+    if (typeof ownerId !== "number" || !Number.isFinite(ownerId)) {
+      this.logger.debug(
+        { status: response.status, bodyPreview: sanitizedBody },
+        "Laravel getRoomData response body (sanitized)",
+      );
+      throw new Error(
+        `Invalid or missing owner_id (status ${response.status}): expected finite number, received ${String(ownerId)}. Body preview: ${sanitizedBody}`,
+      );
+    }
+
+    return { owner_id: ownerId };
+  }
+
+  /**
+   * Return a whitespace-collapsed, truncated version of a response body to avoid
+   * leaking large or sensitive payloads into error messages or logs.
+   */
+  private sanitizeBody(rawBody: string, maxLength = 200): string {
+    if (!rawBody) {
+      return "[empty body]";
+    }
+
+    const collapsed = rawBody.replace(/\s+/g, " ").trim();
+    if (collapsed.length <= maxLength) {
+      return collapsed;
+    }
+
+    return `${collapsed.slice(0, maxLength)}... [truncated]`;
   }
 }

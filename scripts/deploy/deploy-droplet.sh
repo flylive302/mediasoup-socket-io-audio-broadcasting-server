@@ -27,6 +27,17 @@ main() {
     
     check_doctl
     
+    # Expand potential tilde in SSH key path and validate
+    local ssh_key_path="${DO_SSH_PRIVATE_KEY/#\~/$HOME}"
+    if [[ ! -f "$ssh_key_path" ]]; then
+        log_error "SSH private key not found at: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    if [[ ! -r "$ssh_key_path" ]]; then
+        log_error "SSH private key is not readable: ${DO_SSH_PRIVATE_KEY}"
+        exit 1
+    fi
+    
     # Determine if target is IP or name
     if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         DROPLET_IP="$target"
@@ -94,7 +105,7 @@ main() {
 
     # Securely copy environment file to remote host
     log_info "Transferring deployment configuration..."
-    scp -i "${DO_SSH_PRIVATE_KEY}" \
+    scp -i "${ssh_key_path}" \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout=30 \
         "${temp_env_file}" "root@${DROPLET_IP}:${remote_env_file}" || {
@@ -108,7 +119,7 @@ main() {
     
     # Deploy via SSH - source the env file on remote host
     # Use a trap to ensure cleanup of the remote env file even on failure
-    ssh -i "${DO_SSH_PRIVATE_KEY}" \
+    ssh -i "${ssh_key_path}" \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout=30 \
         "root@${DROPLET_IP}" \
