@@ -45,11 +45,11 @@ main() {
     # Step 2: Create Managed Valkey
     create_valkey
     
-    # Step 3: Create Firewall
-    create_firewall
-    
-    # Step 4: Create First Droplet
+    # Step 3: Create First Droplet (creates the tag for firewall)
     create_first_droplet
+    
+    # Step 4: Create Firewall (now tag exists from droplet)
+    create_firewall
     
     # Step 5: Deploy to First Droplet
     deploy_to_droplet
@@ -75,12 +75,19 @@ create_vpc() {
         return 0
     fi
     
-    VPC_ID=$(doctl vpcs create \
+    # Create VPC and extract ID from JSON output (--format not supported for vpcs create)
+    local vpc_output=$(doctl vpcs create \
         --name "${VPC_NAME}" \
         --region "${DO_REGION}" \
         --ip-range "10.10.10.0/24" \
-        --format ID \
-        --no-header)
+        --output json)
+    
+    VPC_ID=$(echo "$vpc_output" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    
+    if [[ -z "$VPC_ID" ]]; then
+        log_error "Failed to create VPC or extract ID"
+        exit 1
+    fi
     
     export VPC_ID
     log_success "Created VPC: ${VPC_ID}"
@@ -215,19 +222,7 @@ create_first_droplet() {
     
     log_success "Droplet created: ${DROPLET_NAME} (${DROPLET_IP})"
     
-    local valkey_info=$(doctl databases connection "${VALKEY_NAME}" --format Host,Port,User,Password --no-header 2>/dev/null)
-    if [[ -z "$valkey_info" ]]; then
-        log_error "Failed to retrieve Valkey connection info"
-        exit 1
-    fi
-    local valkey_host=$(echo "$valkey_info" | awk '{print $1}')
-    local valkey_port=$(echo "$valkey_info" | awk '{print $2}')
-    local valkey_user=$(echo "$valkey_info" | awk '{print $3}')
-    local valkey_password=$(echo "$valkey_info" | awk '{print $4}')
-    if [[ -z "$valkey_host" || -z "$valkey_port" || -z "$valkey_user" || -z "$valkey_password" ]]; then
-        log_error "Incomplete Valkey connection info: host=$valkey_host port=$valkey_port user=$valkey_user"
-        exit 1
-    fi
+    # Valkey connection info will be retrieved in deploy_to_droplet step
 }
     
 # -----------------------------------------------------------------------------
@@ -242,8 +237,17 @@ deploy_to_droplet() {
     fi
     
     # Get Valkey connection info (Redis-compatible)
-    # Username is typically 'default' for DO Managed Valkey
-    local valkey_info=$(doctl databases connection "${VALKEY_NAME}" --format Host,Port,User,Password --no-header)
+    # Need to use database ID, not name, for doctl databases connection
+    local valkey_id=$(get_valkey_id)
+    if [[ -z "$valkey_id" ]]; then
+        log_error "Failed to get Valkey database ID"
+        exit 1
+    fi
+    local valkey_info=$(doctl databases connection "$valkey_id" --format Host,Port,User,Password --no-header)
+    if [[ -z "$valkey_info" ]]; then
+        log_error "Failed to retrieve Valkey connection info"
+        exit 1
+    fi
     local valkey_host=$(echo "$valkey_info" | awk '{print $1}')
     local valkey_port=$(echo "$valkey_info" | awk '{print $2}')
     local valkey_user=$(echo "$valkey_info" | awk '{print $3}')
@@ -328,8 +332,28 @@ REMOTE_SCRIPT
 
     log_success "Deployed to ${DROPLET_IP}"
     
-    # Wait for health check
-    check_health "${DROPLET_IP}"
+    # Wait for health check - run from INSIDE the droplet via SSH
+    # This avoids firewall propagation delays and ensures the container is healthy
+    log_info "Checking health of ${DROPLET_IP} (via SSH)..."
+    local retries=${HEALTH_CHECK_RETRIES:-30}
+    local interval=${HEALTH_CHECK_INTERVAL:-10}
+    
+    for ((i=1; i<=retries; i++)); do
+        if ssh -i "${DEPLOY_SSH_KEY_PATH}" \
+            -o UserKnownHostsFile="${known_hosts_file}" \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=10 \
+            "root@${DROPLET_IP}" \
+            "curl -sf http://localhost:${SERVER_PORT}/health" > /dev/null 2>&1; then
+            log_success "Health check passed"
+            return 0
+        fi
+        echo "  Attempt $i/$retries - waiting ${interval}s..."
+        sleep "$interval"
+    done
+    
+    log_error "Health check failed after $retries attempts"
+    exit 1
 }
 
 # -----------------------------------------------------------------------------

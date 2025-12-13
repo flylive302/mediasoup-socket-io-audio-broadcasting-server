@@ -77,8 +77,8 @@ DO_REGION="${DO_REGION:-blr1}"
 # c-16: ~40,000 users - $336/mo
 DO_DROPLET_SIZE="${DO_DROPLET_SIZE:-c-4}"
 
-# Droplet image
-DO_IMAGE="${DO_IMAGE:-docker-22-04}"
+# Droplet image (Docker on Ubuntu - slug from: doctl compute image list --public | grep docker)
+DO_IMAGE="${DO_IMAGE:-docker-20-04}"
 
 # Project name prefix
 PROJECT_NAME="${PROJECT_NAME:-flylive-audio}"
@@ -182,19 +182,19 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 # Check if doctl is installed and authenticated
@@ -475,9 +475,23 @@ get_firewall_id() {
     return 0
 }
 
-# Get Valkey connection info
+# Get Valkey database ID by name
+get_valkey_id() {
+    local valkey_name="${1:-${VALKEY_NAME}}"
+    local valkey_id
+    valkey_id=$(doctl databases list --format ID,Name --no-header 2>/dev/null | grep -F "$valkey_name" | awk '{print $1}')
+    if [[ -z "$valkey_id" ]]; then
+        log_error "get_valkey_id: Valkey database '$valkey_name' not found"
+        return 1
+    fi
+    echo "$valkey_id"
+}
+
+# Get Valkey connection info (uses ID, not name)
 get_valkey_info() {
-    doctl databases get "${VALKEY_NAME}" --format Host,Port,Password --no-header 2>/dev/null || echo ""
+    local valkey_id
+    valkey_id=$(get_valkey_id) || return 1
+    doctl databases connection "$valkey_id" --format Host,Port,User,Password --no-header 2>/dev/null || echo ""
 }
 
 # Wait for droplet to be active
@@ -621,6 +635,6 @@ generate_droplet_name() {
 # Export all functions for subshells
 export -f log_info log_success log_warn log_error
 export -f check_doctl check_required_vars check_ssh_private_key
-export -f get_droplet_ip get_all_droplets get_lb_id get_vpc_id get_firewall_id get_valkey_info
+export -f get_droplet_ip get_all_droplets get_lb_id get_vpc_id get_firewall_id get_valkey_id get_valkey_info
 export -f wait_for_droplet check_health generate_droplet_name
 
