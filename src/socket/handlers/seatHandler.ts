@@ -145,8 +145,12 @@ async function verifyRoomOwner(
   requesterId: string,
   context: AppContext,
 ): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  const startTime = Date.now();
   try {
+    logger.info({ roomId, requesterId }, "verifyRoomOwner: starting");
     const ownerId = await fetchRoomOwner(roomId, context);
+    const fetchTime = Date.now() - startTime;
+    logger.info({ roomId, requesterId, ownerId, fetchTimeMs: fetchTime }, "verifyRoomOwner: fetched owner");
 
     if (requesterId !== ownerId) {
       logger.warn(
@@ -156,10 +160,13 @@ async function verifyRoomOwner(
       return { allowed: false, error: "Not authorized" };
     }
 
+    const totalTime = Date.now() - startTime;
+    logger.info({ roomId, requesterId, totalTimeMs: totalTime }, "verifyRoomOwner: success");
     return { allowed: true };
   } catch (err) {
+    const totalTime = Date.now() - startTime;
     logger.error(
-      { err, roomId, requesterId },
+      { err, roomId, requesterId, totalTimeMs: totalTime, errorMessage: err instanceof Error ? err.message : String(err), errorStack: err instanceof Error ? err.stack : undefined },
       "Failed to verify room ownership",
     );
     return { allowed: false, error: "Authorization check failed" };
@@ -474,16 +481,22 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
+      const startTime = Date.now();
+      logger.info({ userId, payload: rawPayload }, "seat:lock received");
       try {
         const result = seatLockSchema.safeParse(rawPayload);
         if (!result.success) {
+          logger.warn({ userId, error: result.error }, "seat:lock invalid payload");
           if (callback) callback({ success: false, error: "Invalid payload" });
           return;
         }
 
         const { roomId, seatIndex } = result.data;
+        logger.info({ userId, roomId, seatIndex }, "seat:lock verifying ownership");
 
         const ownership = await verifyRoomOwner(roomId, userId, context);
+        const verifyTime = Date.now() - startTime;
+        logger.info({ userId, roomId, seatIndex, allowed: ownership.allowed, verifyTimeMs: verifyTime }, "seat:lock ownership verified");
         if (!ownership.allowed) {
           if (callback) callback({ success: false, error: ownership.error });
           return;
@@ -527,10 +540,21 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         socket.to(roomId).emit("seat:locked", lockEvent);
         socket.emit("seat:locked", lockEvent);
 
-        if (callback) callback({ success: true });
+        const totalTime = Date.now() - startTime;
+        logger.info({ userId, roomId, seatIndex, totalTimeMs: totalTime }, "seat:lock success, calling callback");
+        if (callback) {
+          callback({ success: true });
+          logger.info({ userId, roomId, seatIndex }, "seat:lock callback executed");
+        } else {
+          logger.warn({ userId, roomId, seatIndex }, "seat:lock no callback provided");
+        }
       } catch (error) {
-        logger.error({ error, userId }, "seat:lock handler exception");
-        if (callback) callback({ success: false, error: "Internal server error" });
+        const totalTime = Date.now() - startTime;
+        logger.error({ error, userId, totalTimeMs: totalTime, stack: error instanceof Error ? error.stack : undefined }, "seat:lock handler exception");
+        if (callback) {
+          callback({ success: false, error: "Internal server error" });
+          logger.info({ userId }, "seat:lock error callback executed");
+        }
       }
     },
   );
@@ -586,16 +610,22 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
+      const startTime = Date.now();
+      logger.info({ userId, payload: rawPayload }, "seat:invite received");
       try {
         const result = seatInviteSchema.safeParse(rawPayload);
         if (!result.success) {
+          logger.warn({ userId, error: result.error }, "seat:invite invalid payload");
           if (callback) callback({ success: false, error: "Invalid payload" });
           return;
         }
 
         const { roomId, userId: targetUserId, seatIndex } = result.data;
+        logger.info({ userId, roomId, targetUserId, seatIndex }, "seat:invite verifying ownership");
 
         const ownership = await verifyRoomOwner(roomId, userId, context);
+        const verifyTime = Date.now() - startTime;
+        logger.info({ userId, roomId, targetUserId, seatIndex, allowed: ownership.allowed, verifyTimeMs: verifyTime }, "seat:invite ownership verified");
         if (!ownership.allowed) {
           if (callback) callback({ success: false, error: ownership.error });
           return;
@@ -669,10 +699,21 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
           targetUserId,
         });
 
-        if (callback) callback({ success: true });
+        const totalTime = Date.now() - startTime;
+        logger.info({ userId, roomId, targetUserId, seatIndex, totalTimeMs: totalTime }, "seat:invite success, calling callback");
+        if (callback) {
+          callback({ success: true });
+          logger.info({ userId, roomId, targetUserId, seatIndex }, "seat:invite callback executed");
+        } else {
+          logger.warn({ userId, roomId, targetUserId, seatIndex }, "seat:invite no callback provided");
+        }
       } catch (error) {
-        logger.error({ error, userId }, "seat:invite handler exception");
-        if (callback) callback({ success: false, error: "Internal server error" });
+        const totalTime = Date.now() - startTime;
+        logger.error({ error, userId, totalTimeMs: totalTime, stack: error instanceof Error ? error.stack : undefined }, "seat:invite handler exception");
+        if (callback) {
+          callback({ success: false, error: "Internal server error" });
+          logger.info({ userId }, "seat:invite error callback executed");
+        }
       }
     },
   );
