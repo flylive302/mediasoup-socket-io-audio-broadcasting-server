@@ -53,7 +53,7 @@ main() {
     
     # Get Valkey connection info (Redis-compatible)
     # Username is typically 'default' for DO Managed Valkey
-    local valkey_info=$(doctl databases connection "${VALKEY_NAME}" --format Host,Port,User,Password --no-header 2>/dev/null || echo "")
+    local valkey_info=$(get_valkey_info)
     if [[ -z "$valkey_info" ]]; then
         log_error "Could not get Valkey connection info. Is Valkey cluster '${VALKEY_NAME}' running?"
         exit 1
@@ -173,6 +173,20 @@ MEDIASOUP_RTC_MAX_PORT=${RTC_MAX_PORT}
 
 CORS_ORIGINS=${CORS_ORIGINS}
 ENV_EOF
+
+# Generate version.json for health check
+echo "Generating version info..."
+# Get commit message (first line only)
+COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+# Create JSON file
+cat > src/version.json << VERSION_EOF
+{
+  "commit": "${COMMIT_SHA:-$(git rev-parse HEAD)}",
+  "branch": "${GITHUB_BRANCH}",
+  "message": "$(echo "$COMMIT_MSG" | sed 's/"/\\"/g')", 
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+VERSION_EOF
 
 # Build Docker image
 echo "Building Docker image..."

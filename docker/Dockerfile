@@ -41,6 +41,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get remove -y python3-pip build-essential \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+    
+# Copy version.json if available (generated during build)
+COPY --from=builder /app/src/version.json ./version.json*
 
 # Copy built assets
 COPY --from=builder /app/dist ./dist
