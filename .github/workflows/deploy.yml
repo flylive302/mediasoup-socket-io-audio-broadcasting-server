@@ -56,6 +56,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate DigitalOcean token
+        run: |
+          if [ -z "${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" ]; then
+            echo "❌ Error: DIGITALOCEAN_ACCESS_TOKEN secret is not configured"
+            echo ""
+            echo "This workflow uses the 'production' environment, which requires secrets to be configured"
+            echo "at the environment level, not just at the repository level."
+            echo ""
+            echo "To fix this:"
+            echo "1. Go to your repository settings"
+            echo "2. Navigate to Settings > Environments > production"
+            echo "3. Add the DIGITALOCEAN_ACCESS_TOKEN secret"
+            exit 1
+          fi
+          echo "✓ DigitalOcean token is configured"
+
+      - name: Validate deployment secrets
+        run: |
+          MISSING_SECRETS=()
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            MISSING_SECRETS+=("SSH_PRIVATE_KEY")
+          fi
+          if [ -z "${{ secrets.LARAVEL_INTERNAL_KEY }}" ]; then
+            MISSING_SECRETS+=("LARAVEL_INTERNAL_KEY")
+          fi
+          if [ -z "${{ secrets.VALKEY_PASSWORD }}" ]; then
+            MISSING_SECRETS+=("VALKEY_PASSWORD")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "❌ Error: The following secrets are not configured in the 'production' environment:"
+            for secret in "${MISSING_SECRETS[@]}"; do
+              echo "  - $secret"
+            done
+            echo ""
+            echo "To fix this:"
+            echo "1. Go to your repository settings"
+            echo "2. Navigate to Settings > Environments > production"
+            echo "3. Add the missing secrets listed above"
+            exit 1
+          fi
+          echo "✓ All required secrets are configured"
+
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
         with:
@@ -125,7 +168,7 @@ jobs:
           echo "valkey_port=$VALKEY_PORT" >> $GITHUB_OUTPUT
           echo "valkey_user=$VALKEY_USER" >> $GITHUB_OUTPUT
       - name: Setup SSH key
-        if: ${{ env.SSH_PRIVATE_KEY != '' }}
+        if: ${{ secrets.SSH_PRIVATE_KEY != '' }}
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
