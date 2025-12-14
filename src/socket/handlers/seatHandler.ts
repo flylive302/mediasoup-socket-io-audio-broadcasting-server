@@ -11,7 +11,6 @@ import {
   seatInviteSchema,
   seatInviteResponseSchema,
 } from "../schemas.js";
-import { appendFileSync } from "fs";
 
 export interface SeatData {
   userId: string;
@@ -475,28 +474,16 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
-      // #region agent log
-      try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:471',message:'seat:lock called',data:{userId,payload:rawPayload},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-      // #endregion
       try {
         const result = seatLockSchema.safeParse(rawPayload);
         if (!result.success) {
-          // #region agent log
-          try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:477',message:'seat:lock invalid payload',data:{userId,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-          // #endregion
           if (callback) callback({ success: false, error: "Invalid payload" });
           return;
         }
 
         const { roomId, seatIndex } = result.data;
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:485',message:'seat:lock before verifyRoomOwner',data:{userId,roomId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
-        // #endregion
 
         const ownership = await verifyRoomOwner(roomId, userId, context);
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:488',message:'seat:lock after verifyRoomOwner',data:{userId,roomId,seatIndex,allowed:ownership.allowed,error:ownership.allowed?undefined:ownership.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
-        // #endregion
         if (!ownership.allowed) {
           if (callback) callback({ success: false, error: ownership.error });
           return;
@@ -540,14 +527,8 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         socket.to(roomId).emit("seat:locked", lockEvent);
         socket.emit("seat:locked", lockEvent);
 
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:529',message:'seat:lock success before callback',data:{userId,roomId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-        // #endregion
         if (callback) callback({ success: true });
       } catch (error) {
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:532',message:'seat:lock exception',data:{userId,error:String(error),stack:error instanceof Error?error.stack:undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})+'\n'); } catch {}
-        // #endregion
         logger.error({ error, userId }, "seat:lock handler exception");
         if (callback) callback({ success: false, error: "Internal server error" });
       }
@@ -605,28 +586,16 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
-      // #region agent log
-      try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:577',message:'seat:invite called',data:{userId,payload:rawPayload},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-      // #endregion
       try {
         const result = seatInviteSchema.safeParse(rawPayload);
         if (!result.success) {
-          // #region agent log
-          try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:584',message:'seat:invite invalid payload',data:{userId,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-          // #endregion
           if (callback) callback({ success: false, error: "Invalid payload" });
           return;
         }
 
         const { roomId, userId: targetUserId, seatIndex } = result.data;
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:592',message:'seat:invite before verifyRoomOwner',data:{userId,roomId,targetUserId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
-        // #endregion
 
         const ownership = await verifyRoomOwner(roomId, userId, context);
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:595',message:'seat:invite after verifyRoomOwner',data:{userId,roomId,targetUserId,seatIndex,allowed:ownership.allowed,error:ownership.allowed?undefined:ownership.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
-        // #endregion
         if (!ownership.allowed) {
           if (callback) callback({ success: false, error: ownership.error });
           return;
@@ -700,14 +669,8 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
           targetUserId,
         });
 
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:666',message:'seat:invite success before callback',data:{userId,roomId,targetUserId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
-        // #endregion
         if (callback) callback({ success: true });
       } catch (error) {
-        // #region agent log
-        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:669',message:'seat:invite exception',data:{userId,error:String(error),stack:error instanceof Error?error.stack:undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})+'\n'); } catch {}
-        // #endregion
         logger.error({ error, userId }, "seat:invite handler exception");
         if (callback) callback({ success: false, error: "Internal server error" });
       }
