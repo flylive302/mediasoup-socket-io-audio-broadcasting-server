@@ -29,8 +29,11 @@ export const audioConsumeSchema = z.object({
   rtpCapabilities: z.object({}).passthrough(),
 });
 
+export const lockedSeatsSchema = z.array(z.number());
+
 export const joinRoomSchema = z.object({
-  roomId: roomIdSchema,
+  roomId: z.string(),
+  ownerId: z.number().optional(), // Owner ID sent from frontend to verify ownership
 });
 
 export const chatMessageSchema = z.object({
@@ -79,4 +82,19 @@ export const seatRemoveSchema = z.object({
 export const seatMuteSchema = z.object({
   roomId: roomIdSchema,
   userId: z.number().int().positive(),
+});
+
+export const seatLockSchema = z.object({
+  roomId: roomIdSchema,
+  seatIndex: z.number().int().min(0).max(14),
+});
+
+export const seatInviteSchema = z.object({
+  roomId: roomIdSchema,
+  userId: z.number().int().positive(),
+  seatIndex: z.number().int().min(0).max(14),
+});
+
+export const seatInviteResponseSchema = z.object({
+  roomId: roomIdSchema,
 });

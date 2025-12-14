@@ -7,6 +7,9 @@ import {
   seatAssignSchema,
   seatRemoveSchema,
   seatMuteSchema,
+  seatLockSchema,
+  seatInviteSchema,
+  seatInviteResponseSchema,
 } from "../schemas.js";
 
 export interface SeatData {
@@ -16,6 +19,19 @@ export interface SeatData {
 
 // In-memory seat storage per room (could be moved to Redis for persistence)
 const roomSeats = new Map<string, Map<number, SeatData>>();
+// Track locked seats per room (empty locked seats)
+const roomLockedSeats = new Map<string, Set<number>>();
+// Pending invites per room: Map<roomId, Map<seatIndex, invite>>
+interface PendingInvite {
+  userId: string;
+  seatIndex: number;
+  invitedBy: string;
+  inviterName: string;
+  expiresAt: number;
+  timeoutId: NodeJS.Timeout;
+}
+const pendingInvites = new Map<string, Map<number, PendingInvite>>();
+const INVITE_EXPIRY_MS = 30_000;
 // Simple owner cache to avoid fetching on every action
 const OWNER_CACHE_TTL_MS = 30_000;
 const OWNER_FETCH_TIMEOUT_MS = 5_000;
@@ -23,6 +39,31 @@ const roomOwnerCache = new Map<
   string,
   { ownerId: string; expiresAt: number }
 >();
+
+/**
+ * Check if a seat is locked
+ */
+export function isSeatLocked(roomId: string, seatIndex: number): boolean {
+  return roomLockedSeats.get(roomId)?.has(seatIndex) ?? false;
+}
+
+/**
+ * Get all locked seat indices for a room
+ */
+export const getLockedSeats = (roomId: string): number[] => {
+  const lockedSet = roomLockedSeats.get(roomId);
+  return lockedSet ? Array.from(lockedSet) : [];
+};
+
+/**
+ * Set room owner (called when room is created to avoid Laravel API dependency)
+ */
+export function setRoomOwner(roomId: string, ownerId: string): void {
+  roomOwnerCache.set(roomId, {
+    ownerId,
+    expiresAt: Date.now() + OWNER_CACHE_TTL_MS * 10, // 5 minutes for manually set owners
+  });
+}
 
 function getOrCreateRoomSeats(roomId: string): Map<number, SeatData> {
   let seats = roomSeats.get(roomId);
@@ -144,6 +185,12 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       const { roomId, seatIndex } = result.data;
       const seats = getOrCreateRoomSeats(roomId);
 
+      // Check if seat is locked
+      if (isSeatLocked(roomId, seatIndex)) {
+        if (callback) callback({ success: false, error: "Seat is locked" });
+        return;
+      }
+
       // Check if seat is already taken
       if (seats.has(seatIndex)) {
         if (callback)
@@ -237,7 +284,6 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         return;
       }
 
-      
       if (seats.has(seatIndex)) {
         if (callback)
           callback({ success: false, error: "Seat is already taken" });
@@ -358,6 +404,11 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         userId: targetUserId,
         isMuted: true,
       });
+      // Also emit to sender so their UI updates
+      socket.emit("seat:userMuted", {
+        userId: targetUserId,
+        isMuted: true,
+      });
 
       if (callback) callback({ success: true });
     },
@@ -405,6 +456,350 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       socket.to(roomId).emit("seat:userMuted", {
         userId: targetUserId,
         isMuted: false,
+      });
+      // Also emit to sender so their UI updates
+      socket.emit("seat:userMuted", {
+        userId: targetUserId,
+        isMuted: false,
+      });
+
+      if (callback) callback({ success: true });
+    },
+  );
+
+  // seat:lock - Owner locks a seat (kicks user if occupied)
+  socket.on(
+    "seat:lock",
+    async (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatLockSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId, seatIndex } = result.data;
+
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
+        return;
+      }
+
+      // Check if already locked
+      if (isSeatLocked(roomId, seatIndex)) {
+        if (callback)
+          callback({ success: false, error: "Seat is already locked" });
+        return;
+      }
+
+      const seats = getOrCreateRoomSeats(roomId);
+      const existingSeat = seats.get(seatIndex);
+
+      // If someone is on this seat, kick them
+      if (existingSeat) {
+        seats.delete(seatIndex);
+        socket.to(roomId).emit("seat:cleared", { seatIndex });
+        // Also emit to self
+        socket.emit("seat:cleared", { seatIndex });
+
+        logger.info(
+          { roomId, userId: existingSeat.userId, seatIndex, lockedBy: userId },
+          "User kicked from seat due to lock",
+        );
+      }
+
+      // Add to locked seats
+      let lockedSet = roomLockedSeats.get(roomId);
+      if (!lockedSet) {
+        lockedSet = new Set();
+        roomLockedSeats.set(roomId, lockedSet);
+      }
+      lockedSet.add(seatIndex);
+
+      logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
+
+      // Broadcast to all including sender
+      const lockEvent = { seatIndex, isLocked: true };
+      socket.to(roomId).emit("seat:locked", lockEvent);
+      socket.emit("seat:locked", lockEvent);
+
+      if (callback) callback({ success: true });
+    },
+  );
+
+  // seat:unlock - Owner unlocks a seat
+  socket.on(
+    "seat:unlock",
+    async (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatLockSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId, seatIndex } = result.data;
+
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
+        return;
+      }
+
+      // Check if not locked
+      if (!isSeatLocked(roomId, seatIndex)) {
+        if (callback) callback({ success: false, error: "Seat is not locked" });
+        return;
+      }
+
+      // Remove from locked seats
+      const lockedSet = roomLockedSeats.get(roomId);
+      if (lockedSet) {
+        lockedSet.delete(seatIndex);
+      }
+
+      logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
+
+      // Broadcast to all including sender
+      const unlockEvent = { seatIndex, isLocked: false };
+      socket.to(roomId).emit("seat:locked", unlockEvent);
+      socket.emit("seat:locked", unlockEvent);
+
+      if (callback) callback({ success: true });
+    },
+  );
+
+  // seat:invite - Owner invites user to a seat
+  socket.on(
+    "seat:invite",
+    async (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatInviteSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId, userId: targetUserId, seatIndex } = result.data;
+
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
+        return;
+      }
+
+      const seats = getOrCreateRoomSeats(roomId);
+
+      // Check if seat is occupied
+      if (seats.has(seatIndex)) {
+        if (callback)
+          callback({ success: false, error: "Seat is already occupied" });
+        return;
+      }
+
+      // Check if seat is locked
+      if (isSeatLocked(roomId, seatIndex)) {
+        if (callback) callback({ success: false, error: "Seat is locked" });
+        return;
+      }
+
+      // Check if there's already a pending invite for this seat
+      let roomInvites = pendingInvites.get(roomId);
+      if (!roomInvites) {
+        roomInvites = new Map();
+        pendingInvites.set(roomId, roomInvites);
+      }
+
+      if (roomInvites.has(seatIndex)) {
+        if (callback)
+          callback({
+            success: false,
+            error: "Invite already pending for this seat",
+          });
+        return;
+      }
+
+      const targetUserIdStr = String(targetUserId);
+      const expiresAt = Date.now() + INVITE_EXPIRY_MS;
+
+      // Set up auto-expiry
+      const timeoutId = setTimeout(() => {
+        roomInvites?.delete(seatIndex);
+        // Notify target user that invite expired
+        socket.to(roomId).emit("seat:invite:expired", { seatIndex });
+        logger.info({ roomId, seatIndex, targetUserId }, "Seat invite expired");
+      }, INVITE_EXPIRY_MS);
+
+      const inviterUser = socket.data.user;
+      roomInvites.set(seatIndex, {
+        userId: targetUserIdStr,
+        seatIndex,
+        invitedBy: userId,
+        inviterName: inviterUser.name,
+        expiresAt,
+        timeoutId,
+      });
+
+      logger.info(
+        { roomId, targetUserId, seatIndex, invitedBy: userId },
+        "User invited to seat",
+      );
+
+      // Send invite to target user (they need to be in the room)
+      socket.to(roomId).emit("seat:invite:received", {
+        seatIndex,
+        invitedBy: {
+          id: inviterUser.id,
+          name: inviterUser.name,
+        },
+        expiresAt,
+        targetUserId,
+      });
+
+      if (callback) callback({ success: true });
+    },
+  );
+
+  // seat:invite:accept - User accepts invite
+  socket.on(
+    "seat:invite:accept",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatInviteResponseSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId } = result.data;
+      const roomInvites = pendingInvites.get(roomId);
+
+      // Find invite for this user
+      let foundInvite: PendingInvite | undefined;
+      let foundSeatIndex: number | undefined;
+
+      if (roomInvites) {
+        for (const [seatIndex, invite] of roomInvites) {
+          if (invite.userId === userId) {
+            foundInvite = invite;
+            foundSeatIndex = seatIndex;
+            break;
+          }
+        }
+      }
+
+      if (!foundInvite || foundSeatIndex === undefined) {
+        if (callback)
+          callback({ success: false, error: "No pending invite found" });
+        return;
+      }
+
+      // Clear the timeout
+      clearTimeout(foundInvite.timeoutId);
+      roomInvites?.delete(foundSeatIndex);
+
+      const seats = getOrCreateRoomSeats(roomId);
+
+      // Check if seat is still available
+      if (seats.has(foundSeatIndex)) {
+        if (callback)
+          callback({ success: false, error: "Seat is no longer available" });
+        return;
+      }
+
+      // Remove from existing seat if any
+      const existingSeat = findUserSeat(roomId, userId);
+      if (existingSeat !== null) {
+        seats.delete(existingSeat);
+        socket.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
+        socket.emit("seat:cleared", { seatIndex: existingSeat });
+      }
+
+      // Assign user to seat
+      seats.set(foundSeatIndex, { userId, muted: false });
+
+      logger.info(
+        { roomId, userId, seatIndex: foundSeatIndex },
+        "User accepted seat invite",
+      );
+
+      // Broadcast seat update
+      const user = socket.data.user;
+      const seatUpdate = {
+        seatIndex: foundSeatIndex,
+        user: {
+          id: user.id,
+          name: user.name,
+          avatar: user.avatar,
+        },
+        isMuted: false,
+      };
+
+      socket.to(roomId).emit("seat:updated", seatUpdate);
+      socket.emit("seat:updated", seatUpdate);
+
+      if (callback) callback({ success: true });
+    },
+  );
+
+  // seat:invite:decline - User declines invite
+  socket.on(
+    "seat:invite:decline",
+    (
+      rawPayload: unknown,
+      callback?: (response: { success: boolean; error?: string }) => void,
+    ) => {
+      const result = seatInviteResponseSchema.safeParse(rawPayload);
+      if (!result.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId } = result.data;
+      const roomInvites = pendingInvites.get(roomId);
+
+      // Find invite for this user
+      let foundInvite: PendingInvite | undefined;
+      let foundSeatIndex: number | undefined;
+
+      if (roomInvites) {
+        for (const [seatIndex, invite] of roomInvites) {
+          if (invite.userId === userId) {
+            foundInvite = invite;
+            foundSeatIndex = seatIndex;
+            break;
+          }
+        }
+      }
+
+      if (!foundInvite || foundSeatIndex === undefined) {
+        if (callback)
+          callback({ success: false, error: "No pending invite found" });
+        return;
+      }
+
+      // Clear the timeout
+      clearTimeout(foundInvite.timeoutId);
+      roomInvites?.delete(foundSeatIndex);
+
+      logger.info(
+        { roomId, userId, seatIndex: foundSeatIndex },
+        "User declined seat invite",
+      );
+
+      // Notify owner
+      socket.to(roomId).emit("seat:invite:declined", {
+        seatIndex: foundSeatIndex,
+        userId: parseInt(userId),
       });
 
       if (callback) callback({ success: true });

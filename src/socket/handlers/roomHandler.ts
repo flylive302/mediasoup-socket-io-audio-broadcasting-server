@@ -2,7 +2,12 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { joinRoomSchema, leaveRoomSchema } from "../schemas.js";
-import { getRoomSeats, clearUserSeat } from "./seatHandler.js";
+import {
+  getRoomSeats,
+  clearUserSeat,
+  setRoomOwner,
+  getLockedSeats,
+} from "./seatHandler.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const { roomManager, clientManager, laravelClient } = context;
@@ -22,23 +27,59 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const routerManager = await roomManager.getOrCreateRoom(roomId);
       const rtpCapabilities = routerManager.router?.rtpCapabilities;
 
+      // Cache room owner if provided by frontend
+      const { ownerId } = payloadResult.data;
+      if (ownerId) {
+        setRoomOwner(roomId, String(ownerId));
+        logger.debug({ roomId, ownerId }, "Room owner set from frontend");
+      }
+
       // Update Client Data
       const client = clientManager.getClient(socket.id);
       if (client) client.roomId = roomId;
 
-      // Gather current room state BEFORE joining (so we don't include self)
-      const existingClients = clientManager.getClientsInRoom(roomId);
+      // Gather current room state BEFORE joining (so we don't include self for notifications,
+      // but we DO include everything in the initial state payload for the joiner)
 
-      // Build participants list
-      const participants = existingClients.map((c) => ({
-        id: c.userId,
-        name: c.user.name,
-        avatar: c.user.avatar,
-        isSpeaker: c.isSpeaker,
-      }));
+      const userId = socket.data.user.id;
 
-      // Build seats list from seat handler state
+      // Helper to get participants (excluding self for initial state)
+      const getParticipants = async (roomId: string) => {
+        const existingClients = clientManager.getClientsInRoom(roomId);
+        return existingClients
+          .filter((c) => c.socketId !== socket.id) // Exclude self
+          .map((c) => ({
+            id: c.userId,
+            name: c.user.name,
+            avatar: c.user.avatar,
+            isSpeaker: c.isSpeaker,
+          }));
+      };
+
+      // Helper to get producers (excluding self for initial state)
+      const getProducers = async (roomId: string) => {
+        const existingClients = clientManager.getClientsInRoom(roomId);
+        const producers: { producerId: string; userId: number }[] = [];
+        for (const c of existingClients) {
+          if (c.socketId === socket.id) continue; // Exclude self
+          const audioProducerId = c.producers.get("audio");
+          if (audioProducerId) {
+            producers.push({
+              producerId: audioProducerId,
+              userId: c.userId,
+            });
+          }
+        }
+        return producers;
+      };
+
+      // Get initial state using imported handlers
+      const participants = await getParticipants(roomId);
       const roomSeats = getRoomSeats(roomId);
+      const existingProducers = await getProducers(roomId);
+      const lockedSeats = getLockedSeats(roomId);
+
+      // Transform seats map to array
       const seats: { seatIndex: number; userId: string; isMuted: boolean }[] =
         [];
       if (roomSeats) {
@@ -47,19 +88,6 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
             seatIndex,
             userId: seatData.userId,
             isMuted: seatData.muted,
-          });
-        }
-      }
-
-      // Build existing producers list (for audio consumption)
-      const existingProducers: { producerId: string; userId: number }[] = [];
-      for (const c of existingClients) {
-        // Get audio producer if exists
-        const audioProducerId = c.producers.get("audio");
-        if (audioProducerId) {
-          existingProducers.push({
-            producerId: audioProducerId,
-            userId: c.userId,
           });
         }
       }
@@ -84,11 +112,13 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         user: socket.data.user,
       });
 
-      logger.debug(
+      logger.info(
         {
           roomId,
+          userId,
           participantCount: participants.length,
           seatCount: seats.length,
+          lockedSeatsCount: lockedSeats.length,
           producerCount: existingProducers.length,
         },
         "Sending initial room state",
@@ -99,6 +129,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
           rtpCapabilities,
           participants,
           seats,
+          lockedSeats,
           existingProducers,
         });
     } catch (err: unknown) {
