@@ -58,7 +58,6 @@ export async function initializeSocket(
     clientManager.addClient(socket);
 
     // Debug: Log all incoming socket events (temporary for debugging)
-    const originalEmit = socket.emit.bind(socket);
     socket.onAny((eventName, ...args) => {
       if (eventName === "seat:lock" || eventName === "seat:invite") {
         logger.info(
