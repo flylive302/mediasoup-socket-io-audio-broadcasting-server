@@ -11,6 +11,7 @@ import {
   seatInviteSchema,
   seatInviteResponseSchema,
 } from "../schemas.js";
+import { appendFileSync } from "fs";
 
 export interface SeatData {
   userId: string;
@@ -474,59 +475,82 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
-      const result = seatLockSchema.safeParse(rawPayload);
-      if (!result.success) {
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
+      // #region agent log
+      try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:471',message:'seat:lock called',data:{userId,payload:rawPayload},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+      // #endregion
+      try {
+        const result = seatLockSchema.safeParse(rawPayload);
+        if (!result.success) {
+          // #region agent log
+          try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:477',message:'seat:lock invalid payload',data:{userId,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+          // #endregion
+          if (callback) callback({ success: false, error: "Invalid payload" });
+          return;
+        }
+
+        const { roomId, seatIndex } = result.data;
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:485',message:'seat:lock before verifyRoomOwner',data:{userId,roomId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
+        // #endregion
+
+        const ownership = await verifyRoomOwner(roomId, userId, context);
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:488',message:'seat:lock after verifyRoomOwner',data:{userId,roomId,seatIndex,allowed:ownership.allowed,error:ownership.allowed?undefined:ownership.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
+        // #endregion
+        if (!ownership.allowed) {
+          if (callback) callback({ success: false, error: ownership.error });
+          return;
+        }
+
+        // Check if already locked
+        if (isSeatLocked(roomId, seatIndex)) {
+          if (callback)
+            callback({ success: false, error: "Seat is already locked" });
+          return;
+        }
+
+        const seats = getOrCreateRoomSeats(roomId);
+        const existingSeat = seats.get(seatIndex);
+
+        // If someone is on this seat, kick them
+        if (existingSeat) {
+          seats.delete(seatIndex);
+          socket.to(roomId).emit("seat:cleared", { seatIndex });
+          // Also emit to self
+          socket.emit("seat:cleared", { seatIndex });
+
+          logger.info(
+            { roomId, userId: existingSeat.userId, seatIndex, lockedBy: userId },
+            "User kicked from seat due to lock",
+          );
+        }
+
+        // Add to locked seats
+        let lockedSet = roomLockedSeats.get(roomId);
+        if (!lockedSet) {
+          lockedSet = new Set();
+          roomLockedSeats.set(roomId, lockedSet);
+        }
+        lockedSet.add(seatIndex);
+
+        logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
+
+        // Broadcast to all including sender
+        const lockEvent = { seatIndex, isLocked: true };
+        socket.to(roomId).emit("seat:locked", lockEvent);
+        socket.emit("seat:locked", lockEvent);
+
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:529',message:'seat:lock success before callback',data:{userId,roomId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+        // #endregion
+        if (callback) callback({ success: true });
+      } catch (error) {
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:532',message:'seat:lock exception',data:{userId,error:String(error),stack:error instanceof Error?error.stack:undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})+'\n'); } catch {}
+        // #endregion
+        logger.error({ error, userId }, "seat:lock handler exception");
+        if (callback) callback({ success: false, error: "Internal server error" });
       }
-
-      const { roomId, seatIndex } = result.data;
-
-      const ownership = await verifyRoomOwner(roomId, userId, context);
-      if (!ownership.allowed) {
-        if (callback) callback({ success: false, error: ownership.error });
-        return;
-      }
-
-      // Check if already locked
-      if (isSeatLocked(roomId, seatIndex)) {
-        if (callback)
-          callback({ success: false, error: "Seat is already locked" });
-        return;
-      }
-
-      const seats = getOrCreateRoomSeats(roomId);
-      const existingSeat = seats.get(seatIndex);
-
-      // If someone is on this seat, kick them
-      if (existingSeat) {
-        seats.delete(seatIndex);
-        socket.to(roomId).emit("seat:cleared", { seatIndex });
-        // Also emit to self
-        socket.emit("seat:cleared", { seatIndex });
-
-        logger.info(
-          { roomId, userId: existingSeat.userId, seatIndex, lockedBy: userId },
-          "User kicked from seat due to lock",
-        );
-      }
-
-      // Add to locked seats
-      let lockedSet = roomLockedSeats.get(roomId);
-      if (!lockedSet) {
-        lockedSet = new Set();
-        roomLockedSeats.set(roomId, lockedSet);
-      }
-      lockedSet.add(seatIndex);
-
-      logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
-
-      // Broadcast to all including sender
-      const lockEvent = { seatIndex, isLocked: true };
-      socket.to(roomId).emit("seat:locked", lockEvent);
-      socket.emit("seat:locked", lockEvent);
-
-      if (callback) callback({ success: true });
     },
   );
 
@@ -581,89 +605,112 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
-      const result = seatInviteSchema.safeParse(rawPayload);
-      if (!result.success) {
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
+      // #region agent log
+      try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:577',message:'seat:invite called',data:{userId,payload:rawPayload},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+      // #endregion
+      try {
+        const result = seatInviteSchema.safeParse(rawPayload);
+        if (!result.success) {
+          // #region agent log
+          try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:584',message:'seat:invite invalid payload',data:{userId,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+          // #endregion
+          if (callback) callback({ success: false, error: "Invalid payload" });
+          return;
+        }
+
+        const { roomId, userId: targetUserId, seatIndex } = result.data;
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:592',message:'seat:invite before verifyRoomOwner',data:{userId,roomId,targetUserId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
+        // #endregion
+
+        const ownership = await verifyRoomOwner(roomId, userId, context);
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:595',message:'seat:invite after verifyRoomOwner',data:{userId,roomId,targetUserId,seatIndex,allowed:ownership.allowed,error:ownership.allowed?undefined:ownership.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n'); } catch {}
+        // #endregion
+        if (!ownership.allowed) {
+          if (callback) callback({ success: false, error: ownership.error });
+          return;
+        }
+
+        const seats = getOrCreateRoomSeats(roomId);
+
+        // Check if seat is occupied
+        if (seats.has(seatIndex)) {
+          if (callback)
+            callback({ success: false, error: "Seat is already occupied" });
+          return;
+        }
+
+        // Check if seat is locked
+        if (isSeatLocked(roomId, seatIndex)) {
+          if (callback) callback({ success: false, error: "Seat is locked" });
+          return;
+        }
+
+        // Check if there's already a pending invite for this seat
+        let roomInvites = pendingInvites.get(roomId);
+        if (!roomInvites) {
+          roomInvites = new Map();
+          pendingInvites.set(roomId, roomInvites);
+        }
+
+        if (roomInvites.has(seatIndex)) {
+          if (callback)
+            callback({
+              success: false,
+              error: "Invite already pending for this seat",
+            });
+          return;
+        }
+
+        const targetUserIdStr = String(targetUserId);
+        const expiresAt = Date.now() + INVITE_EXPIRY_MS;
+
+        // Set up auto-expiry
+        const timeoutId = setTimeout(() => {
+          roomInvites?.delete(seatIndex);
+          // Notify target user that invite expired
+          socket.to(roomId).emit("seat:invite:expired", { seatIndex });
+          logger.info({ roomId, seatIndex, targetUserId }, "Seat invite expired");
+        }, INVITE_EXPIRY_MS);
+
+        const inviterUser = socket.data.user;
+        roomInvites.set(seatIndex, {
+          userId: targetUserIdStr,
+          seatIndex,
+          invitedBy: userId,
+          inviterName: inviterUser.name,
+          expiresAt,
+          timeoutId,
+        });
+
+        logger.info(
+          { roomId, targetUserId, seatIndex, invitedBy: userId },
+          "User invited to seat",
+        );
+
+        // Send invite to target user (they need to be in the room)
+        socket.to(roomId).emit("seat:invite:received", {
+          seatIndex,
+          invitedBy: {
+            id: inviterUser.id,
+            name: inviterUser.name,
+          },
+          expiresAt,
+          targetUserId,
+        });
+
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:666',message:'seat:invite success before callback',data:{userId,roomId,targetUserId,seatIndex},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n'); } catch {}
+        // #endregion
+        if (callback) callback({ success: true });
+      } catch (error) {
+        // #region agent log
+        try { appendFileSync('/home/stfox/completed-fl/.cursor/debug.log', JSON.stringify({location:'seatHandler.ts:669',message:'seat:invite exception',data:{userId,error:String(error),stack:error instanceof Error?error.stack:undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})+'\n'); } catch {}
+        // #endregion
+        logger.error({ error, userId }, "seat:invite handler exception");
+        if (callback) callback({ success: false, error: "Internal server error" });
       }
-
-      const { roomId, userId: targetUserId, seatIndex } = result.data;
-
-      const ownership = await verifyRoomOwner(roomId, userId, context);
-      if (!ownership.allowed) {
-        if (callback) callback({ success: false, error: ownership.error });
-        return;
-      }
-
-      const seats = getOrCreateRoomSeats(roomId);
-
-      // Check if seat is occupied
-      if (seats.has(seatIndex)) {
-        if (callback)
-          callback({ success: false, error: "Seat is already occupied" });
-        return;
-      }
-
-      // Check if seat is locked
-      if (isSeatLocked(roomId, seatIndex)) {
-        if (callback) callback({ success: false, error: "Seat is locked" });
-        return;
-      }
-
-      // Check if there's already a pending invite for this seat
-      let roomInvites = pendingInvites.get(roomId);
-      if (!roomInvites) {
-        roomInvites = new Map();
-        pendingInvites.set(roomId, roomInvites);
-      }
-
-      if (roomInvites.has(seatIndex)) {
-        if (callback)
-          callback({
-            success: false,
-            error: "Invite already pending for this seat",
-          });
-        return;
-      }
-
-      const targetUserIdStr = String(targetUserId);
-      const expiresAt = Date.now() + INVITE_EXPIRY_MS;
-
-      // Set up auto-expiry
-      const timeoutId = setTimeout(() => {
-        roomInvites?.delete(seatIndex);
-        // Notify target user that invite expired
-        socket.to(roomId).emit("seat:invite:expired", { seatIndex });
-        logger.info({ roomId, seatIndex, targetUserId }, "Seat invite expired");
-      }, INVITE_EXPIRY_MS);
-
-      const inviterUser = socket.data.user;
-      roomInvites.set(seatIndex, {
-        userId: targetUserIdStr,
-        seatIndex,
-        invitedBy: userId,
-        inviterName: inviterUser.name,
-        expiresAt,
-        timeoutId,
-      });
-
-      logger.info(
-        { roomId, targetUserId, seatIndex, invitedBy: userId },
-        "User invited to seat",
-      );
-
-      // Send invite to target user (they need to be in the room)
-      socket.to(roomId).emit("seat:invite:received", {
-        seatIndex,
-        invitedBy: {
-          id: inviterUser.id,
-          name: inviterUser.name,
-        },
-        expiresAt,
-        targetUserId,
-      });
-
-      if (callback) callback({ success: true });
     },
   );
 
