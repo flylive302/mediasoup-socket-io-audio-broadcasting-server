@@ -175,6 +175,7 @@ async function verifyRoomOwner(
 
 export const seatHandler = (socket: Socket, context: AppContext): void => {
   const userId = String(socket.data.user.id);
+  logger.info({ socketId: socket.id, userId }, "seatHandler registered");
 
   // seat:take - User takes an available seat
   socket.on(
