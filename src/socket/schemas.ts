@@ -97,4 +97,6 @@ export const seatInviteSchema = z.object({
 
 export const seatInviteResponseSchema = z.object({
   roomId: roomIdSchema,
+  seatIndex: z.number().int().min(0).max(14),
+  accept: z.boolean(),
 });

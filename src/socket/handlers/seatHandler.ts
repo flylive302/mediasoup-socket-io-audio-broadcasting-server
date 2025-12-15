@@ -720,6 +720,12 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
           "seat:invite verifying ownership",
         );
 
+        if (String(targetUserId) === userId) {
+          if (callback)
+            callback({ success: false, error: "Cannot invite yourself" });
+          return;
+        }
+
         const ownership = await verifyRoomOwner(roomId, userId, context);
         const verifyTime = Date.now() - startTime;
         logger.info(
@@ -772,14 +778,19 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         const targetUserIdStr = String(targetUserId);
         const expiresAt = Date.now() + INVITE_EXPIRY_MS;
 
-        // Set up auto-expiry
+        // Set up auto-expiry (Implicit Rejection)
         const timeoutId = setTimeout(() => {
           roomInvites?.delete(seatIndex);
           // Notify target user that invite expired
           socket.to(roomId).emit("seat:invite:expired", { seatIndex });
+          // Notify room (owner) to clear pending status
+          const expireEvent = { seatIndex, isPending: false };
+          socket.to(roomId).emit("seat:invite:pending", expireEvent);
+          socket.emit("seat:invite:pending", expireEvent);
+
           logger.info(
             { roomId, seatIndex, targetUserId },
-            "Seat invite expired",
+            "Seat invite expired (implied rejection)",
           );
         }, INVITE_EXPIRY_MS);
 
@@ -797,6 +808,11 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
           { roomId, targetUserId, seatIndex, invitedBy: userId },
           "User invited to seat",
         );
+
+        // Broadcast pending status to room (so UI can show "Invited...")
+        const pendingEvent = { seatIndex, isPending: true, invitedUserId: targetUserId };
+        socket.to(roomId).emit("seat:invite:pending", pendingEvent);
+        socket.emit("seat:invite:pending", pendingEvent);
 
         // Send invite to target user (they need to be in the room)
         socket.to(roomId).emit("seat:invite:received", {
@@ -845,10 +861,10 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
     },
   );
 
-  // seat:invite:accept - User accepts invite
+  // seat:invite:response - User accepts or rejects an invite
   socket.on(
-    "seat:invite:accept",
-    (
+    "seat:invite:response",
+    async (
       rawPayload: unknown,
       callback?: (response: { success: boolean; error?: string }) => void,
     ) => {
@@ -858,62 +874,64 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         return;
       }
 
-      const { roomId } = result.data;
+      const { roomId, seatIndex, accept } = result.data;
       const roomInvites = pendingInvites.get(roomId);
+      const invite = roomInvites?.get(seatIndex);
 
-      // Find invite for this user
-      let foundInvite: PendingInvite | undefined;
-      let foundSeatIndex: number | undefined;
-
-      if (roomInvites) {
-        for (const [seatIndex, invite] of roomInvites) {
-          if (invite.userId === userId) {
-            foundInvite = invite;
-            foundSeatIndex = seatIndex;
-            break;
-          }
-        }
-      }
-
-      if (!foundInvite || foundSeatIndex === undefined) {
+      // Verify invite exists and matches user
+      if (!invite || invite.userId !== userId) {
         if (callback)
           callback({ success: false, error: "No pending invite found" });
         return;
       }
 
-      // Clear the timeout
-      clearTimeout(foundInvite.timeoutId);
-      roomInvites?.delete(foundSeatIndex);
+      // Clear the pending invite since user responded
+      if (invite.timeoutId) clearTimeout(invite.timeoutId);
+      roomInvites?.delete(seatIndex);
 
+      // Notify room that pending status is cleared
+      const clearEvent = { seatIndex, isPending: false };
+      socket.to(roomId).emit("seat:invite:pending", clearEvent);
+      socket.emit("seat:invite:pending", clearEvent);
+
+      if (!accept) {
+        logger.info(
+          { roomId, userId, seatIndex },
+          "User rejected seat invite",
+        );
+        if (callback) callback({ success: true });
+        return;
+      }
+
+      // User Accepted: Proceed to take seat
       const seats = getOrCreateRoomSeats(roomId);
 
-      // Check if seat is still available
-      if (seats.has(foundSeatIndex)) {
+      // Double check availability
+      if (seats.has(seatIndex) || isSeatLocked(roomId, seatIndex)) {
         if (callback)
           callback({ success: false, error: "Seat is no longer available" });
         return;
       }
 
-      // Remove from existing seat if any
+      // Check if user is already seated elsewhere and remove them
       const existingSeat = findUserSeat(roomId, userId);
       if (existingSeat !== null) {
         seats.delete(existingSeat);
         socket.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
-        socket.emit("seat:cleared", { seatIndex: existingSeat });
       }
 
-      // Assign user to seat
-      seats.set(foundSeatIndex, { userId, muted: false });
+      // Assign seat
+      seats.set(seatIndex, { userId, muted: false });
 
       logger.info(
-        { roomId, userId, seatIndex: foundSeatIndex },
-        "User accepted seat invite",
+        { roomId, userId, seatIndex },
+        "User accepted invite and took seat",
       );
 
-      // Broadcast seat update
+      // Broadcast update
       const user = socket.data.user;
       const seatUpdate = {
-        seatIndex: foundSeatIndex,
+        seatIndex,
         user: {
           id: user.id,
           name: user.name,
@@ -924,61 +942,6 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
 
       socket.to(roomId).emit("seat:updated", seatUpdate);
       socket.emit("seat:updated", seatUpdate);
-
-      if (callback) callback({ success: true });
-    },
-  );
-
-  // seat:invite:decline - User declines invite
-  socket.on(
-    "seat:invite:decline",
-    (
-      rawPayload: unknown,
-      callback?: (response: { success: boolean; error?: string }) => void,
-    ) => {
-      const result = seatInviteResponseSchema.safeParse(rawPayload);
-      if (!result.success) {
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
-      }
-
-      const { roomId } = result.data;
-      const roomInvites = pendingInvites.get(roomId);
-
-      // Find invite for this user
-      let foundInvite: PendingInvite | undefined;
-      let foundSeatIndex: number | undefined;
-
-      if (roomInvites) {
-        for (const [seatIndex, invite] of roomInvites) {
-          if (invite.userId === userId) {
-            foundInvite = invite;
-            foundSeatIndex = seatIndex;
-            break;
-          }
-        }
-      }
-
-      if (!foundInvite || foundSeatIndex === undefined) {
-        if (callback)
-          callback({ success: false, error: "No pending invite found" });
-        return;
-      }
-
-      // Clear the timeout
-      clearTimeout(foundInvite.timeoutId);
-      roomInvites?.delete(foundSeatIndex);
-
-      logger.info(
-        { roomId, userId, seatIndex: foundSeatIndex },
-        "User declined seat invite",
-      );
-
-      // Notify owner
-      socket.to(roomId).emit("seat:invite:declined", {
-        seatIndex: foundSeatIndex,
-        userId: parseInt(userId),
-      });
 
       if (callback) callback({ success: true });
     },
