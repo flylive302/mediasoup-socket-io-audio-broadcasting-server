@@ -421,6 +421,26 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         "User muted",
       );
 
+      // Enforce silence on the server side
+      const targetClient = context.clientManager
+        .getClientsInRoom(roomId)
+        .find((c) => String(c.userId) === targetUserIdStr);
+
+      if (targetClient) {
+        const audioProducerId = targetClient.producers.get("audio");
+        if (audioProducerId) {
+          const room = await context.roomManager.getRoom(roomId);
+          const producer = room?.getProducer(audioProducerId);
+          if (producer) {
+            await producer.pause();
+            logger.info(
+              { roomId, targetUserId, producerId: audioProducerId },
+              "Producer paused (server-side mute)",
+            );
+          }
+        }
+      }
+
       socket.to(roomId).emit("seat:userMuted", {
         userId: targetUserId,
         isMuted: true,
@@ -473,6 +493,26 @@ export const seatHandler = (socket: Socket, context: AppContext): void => {
         { roomId, targetUserId, seatIndex, unmutedBy: userId },
         "User unmuted",
       );
+
+      // Resume audio on the server side
+      const targetClient = context.clientManager
+        .getClientsInRoom(roomId)
+        .find((c) => String(c.userId) === targetUserIdStr);
+
+      if (targetClient) {
+        const audioProducerId = targetClient.producers.get("audio");
+        if (audioProducerId) {
+          const room = await context.roomManager.getRoom(roomId);
+          const producer = room?.getProducer(audioProducerId);
+          if (producer) {
+            await producer.resume();
+            logger.info(
+              { roomId, targetUserId, producerId: audioProducerId },
+              "Producer resumed (server-side unmute)",
+            );
+          }
+        }
+      }
 
       socket.to(roomId).emit("seat:userMuted", {
         userId: targetUserId,

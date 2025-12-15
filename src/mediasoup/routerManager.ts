@@ -14,6 +14,8 @@ export class RouterManager {
   >();
   // Track consumers for resume/close
   private readonly consumers = new Map<string, mediasoup.types.Consumer>();
+  // Track producers for mute/close
+  private readonly producers = new Map<string, mediasoup.types.Producer>();
 
   constructor(
     worker: mediasoup.types.Worker,
@@ -40,6 +42,7 @@ export class RouterManager {
     this.transports.forEach((t) => t.close());
     this.transports.clear();
     this.consumers.clear();
+    this.producers.clear();
 
     if (this.audioObserver) {
       this.audioObserver.close();
@@ -88,5 +91,17 @@ export class RouterManager {
     this.consumers.set(consumer.id, consumer);
     consumer.on("transportclose", () => this.consumers.delete(consumer.id));
     consumer.on("producerclose", () => this.consumers.delete(consumer.id));
+  }
+
+  /**
+   * Find a producer by ID.
+   */
+  getProducer(producerId: string): mediasoup.types.Producer | undefined {
+    return this.producers.get(producerId);
+  }
+
+  registerProducer(producer: mediasoup.types.Producer) {
+    this.producers.set(producer.id, producer);
+    producer.on("transportclose", () => this.producers.delete(producer.id));
   }
 }

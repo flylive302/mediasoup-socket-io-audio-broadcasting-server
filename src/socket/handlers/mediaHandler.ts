@@ -133,6 +133,11 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
         kind: "audio",
       });
 
+      // Register producer in router manager for lookups (e.g. for mute)
+      if (routerMgr) {
+        routerMgr.registerProducer(producer);
+      }
+
       producer.on("transportclose", () => {
         // Clean up client tracking
         if (client) {
