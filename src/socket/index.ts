@@ -10,11 +10,13 @@ import { ClientManager } from "../client/clientManager.js";
 import { roomHandler } from "./handlers/roomHandler.js";
 import { mediaHandler } from "./handlers/mediaHandler.js";
 import { chatHandler } from "./handlers/chatHandler.js";
-import { seatHandler, clearUserSeat } from "./handlers/seatHandler.js";
 import { GiftHandler } from "../gifts/giftHandler.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
 import { RateLimiter } from "../utils/rateLimiter.js";
 import type { AppContext } from "../context.js";
+
+// Domain modules
+import { registerSeatHandlers, clearUserSeat } from "../seat/index.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "../room/auto-close/index.js";
@@ -86,7 +88,7 @@ export async function initializeSocket(
     roomHandler(socket, appContext);
     mediaHandler(socket, appContext);
     chatHandler(socket, appContext);
-    seatHandler(socket, appContext);
+    registerSeatHandlers(socket, appContext);
     giftHandler.handle(socket);
 
     // Disconnect

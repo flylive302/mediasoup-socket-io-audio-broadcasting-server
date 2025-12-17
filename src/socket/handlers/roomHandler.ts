@@ -7,7 +7,7 @@ import {
   clearUserSeat,
   setRoomOwner,
   getLockedSeats,
-} from "./seatHandler.js";
+} from "../../seat/index.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const { roomManager, clientManager, laravelClient, autoCloseService } = context;
