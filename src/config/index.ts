@@ -45,6 +45,20 @@ const configSchema = z.object({
   MAX_CLIENTS_PER_ROOM: z.coerce.number().default(50),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
 
+  // Mediasoup Workers
+  MEDIASOUP_NUM_WORKERS: z.coerce.number().optional(), // If not set, uses os.cpus().length
+
+  // Room Auto-Close (inactivity timer)
+  ROOM_INACTIVITY_TIMEOUT_MS: z.coerce.number().default(30_000), // 30 seconds
+  ROOM_AUTO_CLOSE_POLL_INTERVAL_MS: z.coerce.number().default(30_000), // 30 seconds
+
+  // Gift Buffer
+  GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),
+  GIFT_MAX_RETRIES: z.coerce.number().default(3),
+
+  // Seats
+  DEFAULT_SEAT_COUNT: z.coerce.number().default(15),
+
   // Security
   CORS_ORIGINS: z
     .string()

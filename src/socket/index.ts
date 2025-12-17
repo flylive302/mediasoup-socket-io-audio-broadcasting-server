@@ -2,7 +2,7 @@ import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "../core/logger.js";
 import { authMiddleware } from "../auth/middleware.js";
-import { WorkerManager } from "../mediasoup/workerManager.js";
+import { WorkerManager } from "../core/worker.manager.js";
 import { RoomManager } from "../room/roomManager.js";
 import { ClientManager } from "../client/clientManager.js";
 
@@ -15,6 +15,9 @@ import { GiftHandler } from "../gifts/giftHandler.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
 import { RateLimiter } from "../utils/rateLimiter.js";
 import type { AppContext } from "../context.js";
+
+// Auto-close system
+import { AutoCloseService, AutoCloseJob } from "../room/auto-close/index.js";
 
 export async function initializeSocket(
   io: Server,
@@ -34,6 +37,16 @@ export async function initializeSocket(
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
 
+  // Initialize auto-close system
+  const autoCloseService = new AutoCloseService(redis);
+  const autoCloseJob = new AutoCloseJob(
+    autoCloseService,
+    async (roomId: string, reason: string) => {
+      await roomManager.closeRoom(roomId, reason);
+    }
+  );
+  autoCloseJob.start();
+
   // Authentication Middleware
   io.use(authMiddleware);
 
@@ -46,6 +59,8 @@ export async function initializeSocket(
     rateLimiter,
     giftHandler,
     laravelClient,
+    autoCloseService,
+    autoCloseJob,
   };
 
   io.on("connection", (socket) => {

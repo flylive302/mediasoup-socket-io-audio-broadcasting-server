@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from "fastify";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
+import type { Redis } from "ioredis";
 import { config } from "../config/index.js";
 
 import { getRedisClient } from "./redis.js";
@@ -12,7 +13,22 @@ import { logger } from "./logger.js";
 import { createMetricsRoutes } from "./metrics.js";
 import fs from "fs";
 
-export async function bootstrapServer() {
+import type { RoomManager } from "../room/roomManager.js";
+import type { WorkerManager } from "./worker.manager.js";
+import type { GiftHandler } from "../gifts/giftHandler.js";
+import type { AutoCloseJob } from "../room/auto-close/index.js";
+
+export interface BootstrapResult {
+  server: FastifyInstance;
+  io: Server;
+  subClient: Redis;
+  roomManager: RoomManager;
+  workerManager: WorkerManager;
+  giftHandler: GiftHandler;
+  autoCloseJob: AutoCloseJob;
+}
+
+export async function bootstrapServer(): Promise<BootstrapResult> {
   // Configure HTTPS if certificates are provided
   const httpsOptions =
     config.SSL_KEY_PATH && config.SSL_CERT_PATH
@@ -31,7 +47,7 @@ export async function bootstrapServer() {
         loggerInstance: logger,
       })) as unknown as FastifyInstance;
 
-  // Setup Socket.IO
+  // Setup Socket.IO with Redis adapter for horizontal scaling
   const pubClient = getRedisClient();
   const subClient = pubClient.duplicate();
 
@@ -44,23 +60,18 @@ export async function bootstrapServer() {
     adapter: createAdapter(pubClient, subClient),
   });
 
-  const socketManagers = await initializeSocket(io, pubClient);
+  const { roomManager, workerManager, giftHandler, autoCloseJob } = await initializeSocket(io, pubClient);
 
   // Register health check
   await fastify.register(
-    createHealthRoutes(
-      socketManagers.roomManager,
-      socketManagers.workerManager,
-    ),
+    createHealthRoutes(roomManager, workerManager),
   );
 
   // Register metrics
   await fastify.register(
-    createMetricsRoutes(
-      socketManagers.roomManager,
-      socketManagers.workerManager,
-    ),
+    createMetricsRoutes(roomManager, workerManager),
   );
 
-  return { server: fastify, ...socketManagers };
+  // Return subClient for proper cleanup during graceful shutdown
+  return { server: fastify, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob };
 }

@@ -1,19 +1,31 @@
 import type { Socket } from "socket.io";
 import { logger } from "../core/logger.js";
 import { getRedisClient } from "../core/redis.js";
+import { config } from "../config/index.js";
 import { SanctumValidator } from "./sanctumValidator.js";
+import { metrics } from "../core/metrics.js";
 import type { AuthSocketData } from "./types.js";
+import { Errors } from "../shared/errors.js";
 
 export async function authMiddleware(
   socket: Socket,
   next: (err?: Error) => void,
 ) {
+  // Validate WebSocket origin against CORS origins
+  const origin = socket.handshake.headers.origin;
+  if (origin && !config.CORS_ORIGINS.includes(origin)) {
+    logger.warn({ socketId: socket.id, origin }, "Origin not allowed");
+    metrics.authAttempts.inc({ result: "origin_blocked" });
+    return next(new Error(Errors.ORIGIN_NOT_ALLOWED));
+  }
+
   const token =
     socket.handshake.auth.token || socket.handshake.headers["authorization"];
 
   if (!token) {
     logger.warn({ socketId: socket.id }, "Connection attempt without token");
-    return next(new Error("Authentication required"));
+    metrics.authAttempts.inc({ result: "no_token" });
+    return next(new Error(Errors.AUTH_REQUIRED));
   }
 
   // Handle "Bearer " prefix if present in header
@@ -31,7 +43,8 @@ export async function authMiddleware(
 
     if (!user) {
       logger.warn({ socketId: socket.id }, "Invalid token provided");
-      return next(new Error("Invalid credentials"));
+      metrics.authAttempts.inc({ result: "invalid_token" });
+      return next(new Error(Errors.INVALID_CREDENTIALS));
     }
 
     // Attach user to socket
@@ -40,13 +53,16 @@ export async function authMiddleware(
       token: cleanToken,
     } as AuthSocketData;
 
+    // Log only safe user properties (NOT the full user object which may contain token)
     logger.info(
-      { socketId: socket.id, userId: user.id, user },
+      { socketId: socket.id, userId: user.id, userName: user.name },
       "Client authenticated",
     );
+    metrics.authAttempts.inc({ result: "success" });
     next();
   } catch (err) {
     logger.error({ err, socketId: socket.id }, "Authentication error");
-    next(new Error("Authentication failed"));
+    metrics.authAttempts.inc({ result: "error" });
+    next(new Error(Errors.AUTH_FAILED));
   }
 }

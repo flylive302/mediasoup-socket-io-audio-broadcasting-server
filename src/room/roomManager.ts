@@ -1,7 +1,7 @@
 import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "../core/logger.js";
-import type { WorkerManager } from "../mediasoup/workerManager.js";
+import type { WorkerManager } from "../core/worker.manager.js";
 import { RouterManager } from "../mediasoup/routerManager.js";
 import { RoomStateRepository } from "./roomState.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
@@ -10,6 +10,9 @@ import { ActiveSpeakerDetector } from "../mediasoup/activeSpeaker.js";
 export class RoomManager {
   private readonly rooms = new Map<string, RouterManager>();
   private readonly stateRepo: RoomStateRepository;
+  
+  // Track rooms being created to prevent race conditions
+  private readonly creatingRooms = new Map<string, Promise<RouterManager>>();
 
   constructor(
     private readonly workerManager: WorkerManager,
@@ -32,19 +35,40 @@ export class RoomManager {
   /**
    * Get or create a room.
    * If creating, initializes mediasoup router and Redis state.
+   * Race condition safe: concurrent calls for same roomId coalesce.
    */
   async getOrCreateRoom(roomId: string): Promise<RouterManager> {
+    // Check if room already exists
     let routerManager = this.rooms.get(roomId);
-
     if (routerManager) return routerManager;
 
+    // Check if room creation is already in progress
+    let pending = this.creatingRooms.get(roomId);
+    if (pending) return pending;
+
+    // Start room creation and track the promise
+    pending = this.doCreateRoom(roomId);
+    this.creatingRooms.set(roomId, pending);
+
+    try {
+      routerManager = await pending;
+      return routerManager;
+    } finally {
+      this.creatingRooms.delete(roomId);
+    }
+  }
+
+  /**
+   * Internal room creation logic (called only once per roomId)
+   */
+  private async doCreateRoom(roomId: string): Promise<RouterManager> {
     logger.info({ roomId }, "Creating new room");
 
     // 1. Get worker
     const worker = await this.workerManager.getLeastLoadedWorker();
 
     // 2. Create Router
-    routerManager = new RouterManager(worker, logger);
+    const routerManager = new RouterManager(worker, logger);
     await routerManager.initialize();
 
     // 3. Setup Active Speaker Detector

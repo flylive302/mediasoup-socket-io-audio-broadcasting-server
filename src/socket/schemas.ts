@@ -100,3 +100,10 @@ export const seatInviteResponseSchema = z.object({
   seatIndex: z.number().int().min(0).max(14),
   accept: z.boolean(),
 });
+
+// Schema for seat:invite:accept and seat:invite:decline
+// seatIndex is optional - if not provided, server looks up the pending invite by userId
+export const seatInviteActionSchema = z.object({
+  roomId: roomIdSchema,
+  seatIndex: z.number().int().min(0).max(14).optional(),
+});

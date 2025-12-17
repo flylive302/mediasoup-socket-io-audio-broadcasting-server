@@ -8,7 +8,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, workerManager, giftHandler } = await bootstrapServer();
+    const { server, io, subClient, workerManager, giftHandler, autoCloseJob } = await bootstrapServer();
 
     const address = await server.listen({
       port: config.PORT,
@@ -45,18 +45,24 @@ const start = async () => {
         // 1. Close Socket.IO (disconnect clients)
         io.close();
 
-        // 2. Stop gift buffer processing
+        // 2. Stop auto-close job
+        autoCloseJob.stop();
+
+        // 3. Stop gift buffer processing
         if (giftHandler) {
           await giftHandler.stop();
         }
 
-        // 3. Shutdown mediasoup workers
+        // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
 
-        // 4. Close Redis
-        const redis = getRedisClient();
-        if (redis.status === "ready") {
-          await redis.quit();
+        // 4. Close Redis connections (both pub and sub clients)
+        const pubClient = getRedisClient();
+        if (pubClient.status === "ready") {
+          await pubClient.quit();
+        }
+        if (subClient.status === "ready") {
+          await subClient.quit();
         }
 
         // 5. Close Fastify

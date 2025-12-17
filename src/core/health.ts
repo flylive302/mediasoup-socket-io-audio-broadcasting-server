@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getRedisClient } from "./redis.js";
 import type { RoomManager } from "../room/roomManager.js";
-import type { WorkerManager } from "../mediasoup/workerManager.js";
+import type { WorkerManager } from "./worker.manager.js";
 
 export const createHealthRoutes = (
   roomManager: RoomManager,

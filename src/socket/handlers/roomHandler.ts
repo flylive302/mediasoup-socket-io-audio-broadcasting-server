@@ -10,7 +10,7 @@ import {
 } from "./seatHandler.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
-  const { roomManager, clientManager, laravelClient } = context;
+  const { roomManager, clientManager, laravelClient, autoCloseService } = context;
 
   // JOIN
   socket.on("room:join", async (rawPayload: unknown, ack) => {
@@ -79,20 +79,42 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const existingProducers = await getProducers(roomId);
       const lockedSeats = getLockedSeats(roomId);
 
-      // Transform seats map to array
-      const seats: { seatIndex: number; userId: string; isMuted: boolean }[] =
+      // Transform seats map to array with full user data
+      // Frontend expects same format as seat:updated events: { seatIndex, user: {id, name, avatar}, isMuted }
+      const seats: { seatIndex: number; user: { id: string | number; name?: string; avatar?: string } | null; isMuted: boolean }[] =
         [];
       if (roomSeats) {
         for (const [seatIndex, seatData] of roomSeats) {
-          seats.push({
-            seatIndex,
-            userId: seatData.userId,
-            isMuted: seatData.muted,
-          });
+          // Find the user in the room to get their full data
+          const seatedClient = clientManager
+            .getClientsInRoom(roomId)
+            .find((c) => String(c.userId) === seatData.userId);
+          
+          if (seatedClient) {
+            seats.push({
+              seatIndex,
+              user: {
+                id: seatedClient.userId,
+                name: seatedClient.user.name,
+                avatar: seatedClient.user.avatar,
+              },
+              isMuted: seatData.muted,
+            });
+          } else {
+            // User might have disconnected but seat not cleared yet
+            seats.push({
+              seatIndex,
+              user: { id: seatData.userId },
+              isMuted: seatData.muted,
+            });
+          }
         }
       }
 
       socket.join(roomId);
+
+      // Record activity to prevent auto-close
+      await autoCloseService.recordActivity(roomId);
 
       // Update participant count in Redis and notify Laravel
       const newCount = await roomManager.state.adjustParticipantCount(

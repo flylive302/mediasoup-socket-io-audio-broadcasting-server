@@ -1,11 +1,12 @@
 import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
-import type { WorkerManager } from "./mediasoup/workerManager.js";
+import type { WorkerManager } from "./core/worker.manager.js";
 import type { RoomManager } from "./room/roomManager.js";
 import type { ClientManager } from "./client/clientManager.js";
 import type { RateLimiter } from "./utils/rateLimiter.js";
 import type { GiftHandler } from "./gifts/giftHandler.js";
 import type { LaravelClient } from "./integrations/laravelClient.js";
+import type { AutoCloseService, AutoCloseJob } from "./room/auto-close/index.js";
 
 export interface AppContext {
   io: Server;
@@ -16,4 +17,6 @@ export interface AppContext {
   rateLimiter: RateLimiter;
   giftHandler: GiftHandler;
   laravelClient: LaravelClient;
+  autoCloseService: AutoCloseService;
+  autoCloseJob: AutoCloseJob;
 }
