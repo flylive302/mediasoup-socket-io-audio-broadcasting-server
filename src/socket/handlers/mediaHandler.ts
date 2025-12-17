@@ -177,7 +177,7 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
 
     // Ensure we can consume
-    if (!routerMgr.router.canConsume({ producerId, rtpCapabilities })) {
+    if (!routerMgr.router.canConsume({ producerId, rtpCapabilities: rtpCapabilities as mediasoup.types.RtpCapabilities })) {
       if (callback) callback({ error: "Cannot consume" });
       return;
     }
@@ -185,7 +185,7 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     try {
       const consumer = await transport.consume({
         producerId,
-        rtpCapabilities,
+        rtpCapabilities: rtpCapabilities as mediasoup.types.RtpCapabilities,
         paused: true, // Start paused recommended
       });
 

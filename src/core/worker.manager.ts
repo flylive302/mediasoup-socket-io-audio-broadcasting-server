@@ -121,11 +121,39 @@ export class WorkerManager {
 
   private async handleWorkerDeath(pid: number): Promise<void> {
     const idx = this.workers.findIndex((w) => w.worker.pid === pid);
-    if (idx !== -1) {
-      this.workers.splice(idx, 1);
-      // Recreate replacement
-      await this.createWorker(idx);
+    if (idx === -1) return;
+
+    this.workers.splice(idx, 1);
+
+    // Retry with exponential backoff: 1s, 2s, 4s
+    const MAX_RETRIES = 3;
+    const BASE_DELAY_MS = 1000;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await this.createWorker(idx);
+        this.logger.info(
+          { idx, attempt },
+          "Successfully recreated worker after death",
+        );
+        return;
+      } catch (error) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        this.logger.error(
+          { error, idx, attempt, nextDelayMs: delay },
+          "Failed to recreate worker, retrying...",
+        );
+
+        if (attempt < MAX_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
     }
+
+    this.logger.fatal(
+      { idx, pid, maxRetries: MAX_RETRIES },
+      "Worker recreation failed after all retries",
+    );
   }
 
   private async updateAllCpuUsage(): Promise<void> {

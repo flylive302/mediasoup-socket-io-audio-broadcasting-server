@@ -514,11 +514,26 @@ export class SeatRepository {
 
   /**
    * Clear all seat data for a room
+   * Uses SCAN instead of KEYS to avoid blocking Redis in production
    */
   async clearRoom(roomId: string): Promise<void> {
     try {
-      // Get all invite keys for this room (we need to pattern match)
-      const inviteKeys = await this.redis.keys(`room:${roomId}:invite:*`);
+      // Use SCAN to find all invite keys for this room (non-blocking)
+      const pattern = `room:${roomId}:invite:*`;
+      const inviteKeys: string[] = [];
+      let cursor = "0";
+
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          "MATCH",
+          pattern,
+          "COUNT",
+          100,
+        );
+        cursor = nextCursor;
+        inviteKeys.push(...keys);
+      } while (cursor !== "0");
 
       const pipeline = this.redis.pipeline();
       pipeline.del(SEATS_KEY(roomId));
