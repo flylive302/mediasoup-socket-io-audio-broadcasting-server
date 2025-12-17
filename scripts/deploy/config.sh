@@ -520,16 +520,63 @@ check_health() {
     
     log_info "Checking health of ${ip}..."
     
+    # #region agent log
+    local log_file="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}/.cursor/debug.log"
+    local timestamp=$(date +%s)000
+    echo "{\"id\":\"log_${timestamp}_health_start\",\"timestamp\":${timestamp},\"location\":\"config.sh:check_health\",\"message\":\"Starting health check\",\"data\":{\"ip\":\"${ip}\",\"port\":\"${SERVER_PORT}\",\"retries\":${retries},\"interval\":${interval}},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A\"}" >> "${log_file}" 2>/dev/null || true
+    # #endregion
+    
     for ((i=1; i<=retries; i++)); do
-        if curl -sf "http://${ip}:${SERVER_PORT}/health" > /dev/null 2>&1; then
+        local health_response=""
+        local health_status=""
+        local curl_exit=0
+        
+        # #region agent log
+        local log_file="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}/.cursor/debug.log"
+        local check_timestamp=$(date +%s)000
+        echo "{\"id\":\"log_${check_timestamp}_health_attempt\",\"timestamp\":${check_timestamp},\"location\":\"config.sh:check_health\",\"message\":\"Health check attempt\",\"data\":{\"ip\":\"${ip}\",\"attempt\":${i},\"total\":${retries}},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A\"}" >> "${log_file}" 2>/dev/null || true
+        # #endregion
+        
+        # Capture full response and status code
+        # Use --max-time and --connect-timeout to fail faster if connection can't be established
+        health_response=$(curl -sf --max-time 10 --connect-timeout 5 -w "\nHTTP_CODE:%{http_code}" "http://${ip}:${SERVER_PORT}/health" 2>&1) || curl_exit=$?
+        health_status=$(echo "$health_response" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2 || echo "none")
+        health_body=$(echo "$health_response" | sed '/HTTP_CODE:/d' || echo "")
+        
+        # #region agent log
+        local log_file="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}/.cursor/debug.log"
+        local response_timestamp=$(date +%s)000
+        local health_body_safe=$(echo "${health_body}" | sed 's/"/\\"/g' | head -c 500)
+        echo "{\"id\":\"log_${response_timestamp}_health_response\",\"timestamp\":${response_timestamp},\"location\":\"config.sh:check_health\",\"message\":\"Health check response\",\"data\":{\"ip\":\"${ip}\",\"attempt\":${i},\"http_status\":\"${health_status}\",\"curl_exit\":${curl_exit},\"response_body\":\"${health_body_safe}\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A\"}" >> "${log_file}" 2>/dev/null || true
+        # #endregion
+        
+        if [[ "$health_status" == "200" ]]; then
             log_success "Health check passed"
+            # #region agent log
+            local log_file="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}/.cursor/debug.log"
+            local success_timestamp=$(date +%s)000
+            echo "{\"id\":\"log_${success_timestamp}_health_success\",\"timestamp\":${success_timestamp},\"location\":\"config.sh:check_health\",\"message\":\"Health check succeeded\",\"data\":{\"ip\":\"${ip}\",\"attempt\":${i}},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A\"}" >> "${log_file}" 2>/dev/null || true
+            # #endregion
             return 0
+        elif [[ "$health_status" == "503" ]]; then
+            log_warn "Health check returned 503 (degraded): ${health_body:0:200}"
+        elif [[ "$curl_exit" == "28" ]]; then
+            log_warn "Health check timed out (connection failed). Check firewall rules for port ${SERVER_PORT}."
+        elif [[ -n "$health_status" ]]; then
+            log_warn "Health check returned HTTP ${health_status}"
+        elif [[ "$curl_exit" != "0" ]]; then
+            log_warn "Health check failed with curl exit code ${curl_exit}"
         fi
         echo "  Attempt $i/$retries - waiting ${interval}s..."
         sleep "$interval"
     done
     
     log_error "Health check failed after $retries attempts"
+    # #region agent log
+    local log_file="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}/.cursor/debug.log"
+    local fail_timestamp=$(date +%s)000
+    echo "{\"id\":\"log_${fail_timestamp}_health_failed\",\"timestamp\":${fail_timestamp},\"location\":\"config.sh:check_health\",\"message\":\"Health check failed\",\"data\":{\"ip\":\"${ip}\",\"retries\":${retries}},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A\"}" >> "${log_file}" 2>/dev/null || true
+    # #endregion
     return 1
 }
 

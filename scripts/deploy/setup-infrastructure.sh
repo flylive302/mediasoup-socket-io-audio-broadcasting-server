@@ -320,12 +320,46 @@ docker stop ${CONTAINER_NAME} 2>/dev/null || true
 docker rm ${CONTAINER_NAME} 2>/dev/null || true
 
 echo "Starting container..."
-docker run -d \\
+CONTAINER_ID=$(docker run -d \\
     --name ${CONTAINER_NAME} \\
     --restart unless-stopped \\
     --network host \\
     --env-file .env \\
-    ${DOCKER_IMAGE}
+    ${DOCKER_IMAGE})
+
+# #region agent log
+echo "DEBUG: Container ID: ${CONTAINER_ID}"
+# #endregion
+
+# Wait a moment for container to initialize
+sleep 5
+
+# Check container status
+CONTAINER_STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "not_found")
+# #region agent log
+echo "DEBUG: Container status after start: ${CONTAINER_STATUS}"
+# #endregion
+
+# Check if container is running
+if [[ "${CONTAINER_STATUS}" != "running" ]]; then
+    echo "ERROR: Container is not running (status: ${CONTAINER_STATUS})"
+    echo "Container logs:"
+    docker logs --tail 50 "${CONTAINER_NAME}" 2>&1 || echo "Could not retrieve logs"
+    exit 1
+fi
+
+# Check container logs for errors
+echo "Checking container logs for startup errors..."
+CONTAINER_LOGS=$(docker logs --tail 100 "${CONTAINER_NAME}" 2>&1 || echo "")
+# #region agent log
+echo "DEBUG: Container logs (last 100 lines):"
+echo "${CONTAINER_LOGS}"
+# #endregion
+
+# Check for common error patterns
+if echo "${CONTAINER_LOGS}" | grep -qiE "(error|failed|exception|crash|exit code [^0])"; then
+    echo "WARNING: Found error patterns in container logs"
+fi
 
 echo "Deployment complete!"
 REMOTE_SCRIPT
