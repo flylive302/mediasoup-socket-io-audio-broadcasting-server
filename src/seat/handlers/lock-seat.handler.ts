@@ -5,12 +5,7 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatLockSchema } from "../seat.requests.js";
-import {
-  getOrCreateRoomSeats,
-  isSeatLocked,
-  lockSeat,
-  verifyRoomOwner,
-} from "../seat.state.js";
+import { verifyRoomOwner } from "../seat.owner.js";
 
 export function lockSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -23,15 +18,21 @@ export function lockSeatHandler(socket: Socket, context: AppContext) {
     logger.info({ userId, payload: rawPayload }, "seat:lock received");
 
     try {
-      const result = seatLockSchema.safeParse(rawPayload);
-      if (!result.success) {
-        logger.warn({ userId, error: result.error }, "seat:lock invalid payload");
+      const parseResult = seatLockSchema.safeParse(rawPayload);
+      if (!parseResult.success) {
+        logger.warn(
+          { userId, error: parseResult.error },
+          "seat:lock invalid payload",
+        );
         if (callback) callback({ success: false, error: "Invalid payload" });
         return;
       }
 
-      const { roomId, seatIndex } = result.data;
-      logger.info({ userId, roomId, seatIndex }, "seat:lock verifying ownership");
+      const { roomId, seatIndex } = parseResult.data;
+      logger.info(
+        { userId, roomId, seatIndex },
+        "seat:lock verifying ownership",
+      );
 
       const ownership = await verifyRoomOwner(roomId, userId, context);
       const verifyTime = Date.now() - startTime;
@@ -51,34 +52,38 @@ export function lockSeatHandler(socket: Socket, context: AppContext) {
         return;
       }
 
-      // Check if already locked
-      if (isSeatLocked(roomId, seatIndex)) {
-        if (callback) callback({ success: false, error: "Seat is already locked" });
+      // Check if already locked (using Redis)
+      const alreadyLocked = await context.seatRepository.isSeatLocked(
+        roomId,
+        seatIndex,
+      );
+      if (alreadyLocked) {
+        if (callback)
+          callback({ success: false, error: "Seat is already locked" });
         return;
       }
 
-      const seats = getOrCreateRoomSeats(roomId);
-      const existingSeat = seats.get(seatIndex);
+      // Lock the seat (kicks occupant if any)
+      const { kicked } = await context.seatRepository.lockSeat(
+        roomId,
+        seatIndex,
+      );
 
-      // If someone is on this seat, kick them
-      if (existingSeat) {
-        seats.delete(seatIndex);
+      // If someone was kicked, notify room
+      if (kicked) {
         socket.to(roomId).emit("seat:cleared", { seatIndex });
         socket.emit("seat:cleared", { seatIndex });
 
         logger.info(
           {
             roomId,
-            userId: existingSeat.userId,
+            userId: kicked,
             seatIndex,
             lockedBy: userId,
           },
           "User kicked from seat due to lock",
         );
       }
-
-      // Lock the seat
-      lockSeat(roomId, seatIndex);
 
       logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
 
@@ -105,7 +110,8 @@ export function lockSeatHandler(socket: Socket, context: AppContext) {
         },
         "seat:lock handler exception",
       );
-      if (callback) callback({ success: false, error: "Internal server error" });
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
   };
 }

@@ -5,67 +5,58 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatTakeSchema } from "../seat.requests.js";
-import {
-  getOrCreateRoomSeats,
-  findUserSeat,
-  isSeatLocked,
-} from "../seat.state.js";
+import { config } from "../../config/index.js";
 
-export function takeSeatHandler(socket: Socket, _context: AppContext) {
+export function takeSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
 
-  return (
+  return async (
     rawPayload: unknown,
     callback?: (response: { success: boolean; error?: string }) => void,
   ) => {
-    const result = seatTakeSchema.safeParse(rawPayload);
-    if (!result.success) {
+    const parseResult = seatTakeSchema.safeParse(rawPayload);
+    if (!parseResult.success) {
       if (callback) callback({ success: false, error: "Invalid payload" });
       return;
     }
 
-    const { roomId, seatIndex } = result.data;
-    const seats = getOrCreateRoomSeats(roomId);
+    const { roomId, seatIndex } = parseResult.data;
 
-    // Check if seat is locked
-    if (isSeatLocked(roomId, seatIndex)) {
-      if (callback) callback({ success: false, error: "Seat is locked" });
-      return;
+    try {
+      // Use atomic Redis operation for horizontal scaling safety
+      const result = await context.seatRepository.takeSeat(
+        roomId,
+        userId,
+        seatIndex,
+        config.DEFAULT_SEAT_COUNT,
+      );
+
+      if (!result.success) {
+        if (callback) callback({ success: false, error: result.error });
+        return;
+      }
+
+      logger.info({ roomId, userId, seatIndex }, "User took seat");
+
+      // Broadcast to room
+      const user = socket.data.user;
+      const seatUpdate = {
+        seatIndex,
+        user: {
+          id: user.id,
+          name: user.name,
+          avatar: user.avatar,
+        },
+        isMuted: false,
+      };
+
+      socket.to(roomId).emit("seat:updated", seatUpdate);
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error, roomId, userId, seatIndex }, "Failed to take seat");
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
-
-    // Check if seat is already taken
-    if (seats.has(seatIndex)) {
-      if (callback) callback({ success: false, error: "Seat is already taken" });
-      return;
-    }
-
-    // Check if user is already in another seat
-    const existingSeat = findUserSeat(roomId, userId);
-    if (existingSeat !== null) {
-      // Remove from existing seat first
-      seats.delete(existingSeat);
-      socket.to(roomId).emit("seat:cleared", { seatIndex: existingSeat });
-    }
-
-    // Assign user to seat
-    seats.set(seatIndex, { userId, muted: false });
-
-    logger.info({ roomId, userId, seatIndex }, "User took seat");
-
-    // Broadcast to room
-    const user = socket.data.user;
-    const seatUpdate = {
-      seatIndex,
-      user: {
-        id: user.id,
-        name: user.name,
-        avatar: user.avatar,
-      },
-      isMuted: false,
-    };
-
-    socket.to(roomId).emit("seat:updated", seatUpdate);
-
-    if (callback) callback({ success: true });
   };
 }

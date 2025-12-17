@@ -5,37 +5,43 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatLeaveSchema } from "../seat.requests.js";
-import { getOrCreateRoomSeats, findUserSeat } from "../seat.state.js";
 
-export function leaveSeatHandler(socket: Socket, _context: AppContext) {
+export function leaveSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
 
-  return (
+  return async (
     rawPayload: unknown,
     callback?: (response: { success: boolean; error?: string }) => void,
   ) => {
-    const result = seatLeaveSchema.safeParse(rawPayload);
-    if (!result.success) {
+    const parseResult = seatLeaveSchema.safeParse(rawPayload);
+    if (!parseResult.success) {
       if (callback) callback({ success: false, error: "Invalid payload" });
       return;
     }
 
-    const { roomId } = result.data;
-    const seatIndex = findUserSeat(roomId, userId);
+    const { roomId } = parseResult.data;
 
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: "You are not seated" });
-      return;
+    try {
+      const result = await context.seatRepository.leaveSeat(roomId, userId);
+
+      if (!result.success) {
+        if (callback) callback({ success: false, error: result.error });
+        return;
+      }
+
+      logger.info(
+        { roomId, userId, seatIndex: result.seatIndex },
+        "User left seat",
+      );
+
+      // Broadcast to room
+      socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error, roomId, userId }, "Failed to leave seat");
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
-
-    const seats = getOrCreateRoomSeats(roomId);
-    seats.delete(seatIndex);
-
-    logger.info({ roomId, userId, seatIndex }, "User left seat");
-
-    // Broadcast to room
-    socket.to(roomId).emit("seat:cleared", { seatIndex });
-
-    if (callback) callback({ success: true });
   };
 }

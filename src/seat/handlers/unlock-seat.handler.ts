@@ -5,11 +5,7 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatLockSchema } from "../seat.requests.js";
-import {
-  isSeatLocked,
-  unlockSeat,
-  verifyRoomOwner,
-} from "../seat.state.js";
+import { verifyRoomOwner } from "../seat.owner.js";
 
 export function unlockSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -18,36 +14,46 @@ export function unlockSeatHandler(socket: Socket, context: AppContext) {
     rawPayload: unknown,
     callback?: (response: { success: boolean; error?: string }) => void,
   ) => {
-    const result = seatLockSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: "Invalid payload" });
-      return;
+    try {
+      const parseResult = seatLockSchema.safeParse(rawPayload);
+      if (!parseResult.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId, seatIndex } = parseResult.data;
+
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
+        return;
+      }
+
+      // Check if not locked (using Redis)
+      const isLocked = await context.seatRepository.isSeatLocked(
+        roomId,
+        seatIndex,
+      );
+      if (!isLocked) {
+        if (callback) callback({ success: false, error: "Seat is not locked" });
+        return;
+      }
+
+      // Unlock the seat (using Redis)
+      await context.seatRepository.unlockSeat(roomId, seatIndex);
+
+      logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
+
+      // Broadcast to all including sender
+      const unlockEvent = { seatIndex, isLocked: false };
+      socket.to(roomId).emit("seat:locked", unlockEvent);
+      socket.emit("seat:locked", unlockEvent);
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error, userId }, "seat:unlock handler exception");
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
-
-    const { roomId, seatIndex } = result.data;
-
-    const ownership = await verifyRoomOwner(roomId, userId, context);
-    if (!ownership.allowed) {
-      if (callback) callback({ success: false, error: ownership.error });
-      return;
-    }
-
-    // Check if not locked
-    if (!isSeatLocked(roomId, seatIndex)) {
-      if (callback) callback({ success: false, error: "Seat is not locked" });
-      return;
-    }
-
-    // Unlock the seat
-    unlockSeat(roomId, seatIndex);
-
-    logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
-
-    // Broadcast to all including sender
-    const unlockEvent = { seatIndex, isLocked: false };
-    socket.to(roomId).emit("seat:locked", unlockEvent);
-    socket.emit("seat:locked", unlockEvent);
-
-    if (callback) callback({ success: true });
   };
 }

@@ -7,6 +7,7 @@ import { config } from "../../config/index.js";
 import { logger } from "../../core/logger.js";
 
 const ACTIVITY_KEY = (roomId: string) => `room:${roomId}:activity`;
+const STATE_KEY = (roomId: string) => `room:state:${roomId}`;
 
 export class AutoCloseService {
   constructor(private readonly redis: Redis) {}
@@ -22,7 +23,7 @@ export class AutoCloseService {
         ACTIVITY_KEY(roomId),
         Date.now().toString(),
         "PX",
-        config.ROOM_INACTIVITY_TIMEOUT_MS
+        config.ROOM_INACTIVITY_TIMEOUT_MS,
       );
     } catch (err) {
       logger.error({ err, roomId }, "Failed to record room activity");
@@ -54,8 +55,23 @@ export class AutoCloseService {
   }
 
   /**
-   * Get all rooms that have no recent activity
-   * (Their activity keys have expired, but room state still exists)
+   * Get participant count from room state
+   */
+  async getParticipantCount(roomId: string): Promise<number> {
+    try {
+      const data = await this.redis.get(STATE_KEY(roomId));
+      if (!data) return 0;
+      const state = JSON.parse(data);
+      return state.participantCount ?? 0;
+    } catch (err) {
+      logger.error({ err, roomId }, "Failed to get participant count");
+      return 1; // Fail safe: assume there are participants on error
+    }
+  }
+
+  /**
+   * Get all rooms that should be closed
+   * (Their activity keys have expired AND they have 0 participants)
    */
   async getInactiveRoomIds(): Promise<string[]> {
     try {
@@ -66,8 +82,10 @@ export class AutoCloseService {
       for (const key of roomStateKeys) {
         const roomId = key.replace("room:state:", "");
         const hasActivity = await this.hasActivity(roomId);
-        
-        if (!hasActivity) {
+        const participantCount = await this.getParticipantCount(roomId);
+
+        // Only close if no activity AND no participants
+        if (!hasActivity && participantCount === 0) {
           inactiveRooms.push(roomId);
         }
       }
@@ -79,3 +97,4 @@ export class AutoCloseService {
     }
   }
 }
+

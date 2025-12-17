@@ -6,7 +6,10 @@ import { logger } from "../../core/logger.js";
 import { config } from "../../config/index.js";
 import type { AutoCloseService } from "./auto-close.service.js";
 
-export type RoomCloseCallback = (roomId: string, reason: string) => Promise<void>;
+export type RoomCloseCallback = (
+  roomId: string,
+  reason: string,
+) => Promise<void>;
 
 export class AutoCloseJob {
   private timer: NodeJS.Timeout | null = null;
@@ -14,7 +17,7 @@ export class AutoCloseJob {
 
   constructor(
     private readonly autoCloseService: AutoCloseService,
-    private readonly onRoomClose: RoomCloseCallback
+    private readonly onRoomClose: RoomCloseCallback,
   ) {}
 
   /**
@@ -28,12 +31,12 @@ export class AutoCloseJob {
 
     this.timer = setInterval(
       () => void this.checkInactiveRooms(),
-      config.ROOM_AUTO_CLOSE_POLL_INTERVAL_MS
+      config.ROOM_AUTO_CLOSE_POLL_INTERVAL_MS,
     );
 
     logger.info(
       { pollIntervalMs: config.ROOM_AUTO_CLOSE_POLL_INTERVAL_MS },
-      "Room auto-close job started"
+      "Room auto-close job started",
     );
   }
 
@@ -65,7 +68,7 @@ export class AutoCloseJob {
       if (inactiveRoomIds.length > 0) {
         logger.info(
           { count: inactiveRoomIds.length, roomIds: inactiveRoomIds },
-          "Found inactive rooms to close"
+          "Found inactive rooms to close",
         );
       }
 

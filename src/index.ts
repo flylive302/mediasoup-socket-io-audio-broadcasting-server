@@ -8,7 +8,8 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, workerManager, giftHandler, autoCloseJob } = await bootstrapServer();
+    const { server, io, subClient, workerManager, giftHandler, autoCloseJob } =
+      await bootstrapServer();
 
     const address = await server.listen({
       port: config.PORT,

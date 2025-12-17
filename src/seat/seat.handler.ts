@@ -16,21 +16,18 @@ import { unmuteSeatHandler } from "./handlers/unmute-seat.handler.js";
 import { lockSeatHandler } from "./handlers/lock-seat.handler.js";
 import { unlockSeatHandler } from "./handlers/unlock-seat.handler.js";
 import { inviteSeatHandler } from "./handlers/invite-seat.handler.js";
-import {inviteAcceptHandler,inviteDeclineHandler} from "./handlers/invite-response.handler.js";
-
-// Re-export state functions for use by other modules
-export {
-  getRoomSeats,
-  clearUserSeat,
-  setRoomOwner,
-  getLockedSeats,
-  clearRoomState,
-} from "./seat.state.js";
+import {
+  inviteAcceptHandler,
+  inviteDeclineHandler,
+} from "./handlers/invite-response.handler.js";
 
 /**
  * Register all seat-related socket event handlers
  */
-export function registerSeatHandlers(socket: Socket, context: AppContext): void {
+export function registerSeatHandlers(
+  socket: Socket,
+  context: AppContext,
+): void {
   const userId = String(socket.data.user.id);
   logger.info({ socketId: socket.id, userId }, "Seat handlers registered");
 

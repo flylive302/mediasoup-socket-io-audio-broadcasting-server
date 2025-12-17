@@ -16,7 +16,8 @@ import { RateLimiter } from "../utils/rateLimiter.js";
 import type { AppContext } from "../context.js";
 
 // Domain modules
-import { registerSeatHandlers, clearUserSeat } from "../seat/index.js";
+import { registerSeatHandlers } from "../seat/index.js";
+import { SeatRepository } from "../seat/seat.repository.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "../room/auto-close/index.js";
@@ -39,13 +40,16 @@ export async function initializeSocket(
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
 
+  // Initialize seat repository (Redis-backed for horizontal scaling)
+  const seatRepository = new SeatRepository(redis);
+
   // Initialize auto-close system
   const autoCloseService = new AutoCloseService(redis);
   const autoCloseJob = new AutoCloseJob(
     autoCloseService,
     async (roomId: string, reason: string) => {
       await roomManager.closeRoom(roomId, reason);
-    }
+    },
   );
   autoCloseJob.start();
 
@@ -63,6 +67,7 @@ export async function initializeSocket(
     laravelClient,
     autoCloseService,
     autoCloseJob,
+    seatRepository,
   };
 
   io.on("connection", (socket) => {
@@ -99,14 +104,14 @@ export async function initializeSocket(
       if (client?.roomId) {
         const userId = String(client.userId);
 
-        // Clear user's seat if seated
-        const clearedSeatIndex = clearUserSeat(client.roomId, userId);
-        if (clearedSeatIndex !== null) {
+        // Clear user's seat if seated (using Redis-backed repository)
+        const result = await seatRepository.leaveSeat(client.roomId, userId);
+        if (result.success && result.seatIndex !== undefined) {
           socket
             .to(client.roomId)
-            .emit("seat:cleared", { seatIndex: clearedSeatIndex });
+            .emit("seat:cleared", { seatIndex: result.seatIndex });
           logger.debug(
-            { roomId: client.roomId, userId, seatIndex: clearedSeatIndex },
+            { roomId: client.roomId, userId, seatIndex: result.seatIndex },
             "User seat cleared on disconnect",
           );
         }

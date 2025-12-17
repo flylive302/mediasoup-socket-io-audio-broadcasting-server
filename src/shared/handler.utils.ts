@@ -2,11 +2,11 @@
  * Socket handler utilities
  * Provides a createHandler wrapper for consistent validation, error handling, and metrics
  */
-import { z } from 'zod';
-import type { Socket } from 'socket.io';
-import { logger } from '../core/logger.js';
-import { generateCorrelationId } from './correlation.js';
-import type { AppContext } from '../context.js';
+import { z } from "zod";
+import type { Socket } from "socket.io";
+import { logger } from "../core/logger.js";
+import { generateCorrelationId } from "./correlation.js";
+import type { AppContext } from "../context.js";
 
 /**
  * Standard handler result shape
@@ -23,7 +23,7 @@ export interface HandlerResult {
 type HandlerFn<TPayload> = (
   payload: TPayload,
   socket: Socket,
-  context: AppContext
+  context: AppContext,
 ) => Promise<HandlerResult>;
 
 /**
@@ -61,7 +61,7 @@ type SocketCallback = (result: HandlerResult) => void;
 export function createHandler<TPayload>(
   eventName: string,
   schema: z.ZodSchema<TPayload>,
-  handler: HandlerFn<TPayload>
+  handler: HandlerFn<TPayload>,
 ) {
   return (socket: Socket, context: AppContext) => {
     return async (rawPayload: unknown, callback?: SocketCallback) => {
@@ -79,9 +79,9 @@ export function createHandler<TPayload>(
             userId,
             errors: parseResult.error.format(),
           },
-          'Validation failed'
+          "Validation failed",
         );
-        callback?.({ success: false, error: 'Invalid payload' });
+        callback?.({ success: false, error: "Invalid payload" });
         return;
       }
 
@@ -98,7 +98,7 @@ export function createHandler<TPayload>(
             success: result.success,
             durationMs,
           },
-          'Handler completed'
+          "Handler completed",
         );
 
         callback?.(result);
@@ -112,10 +112,10 @@ export function createHandler<TPayload>(
             userId,
             durationMs,
           },
-          'Handler exception'
+          "Handler exception",
         );
 
-        callback?.({ success: false, error: 'Internal server error' });
+        callback?.({ success: false, error: "Internal server error" });
       }
     };
   };
@@ -126,7 +126,7 @@ export function createHandler<TPayload>(
  */
 export function createSimpleHandler(
   eventName: string,
-  handler: (socket: Socket, context: AppContext) => Promise<HandlerResult>
+  handler: (socket: Socket, context: AppContext) => Promise<HandlerResult>,
 ) {
   return (socket: Socket, context: AppContext) => {
     return async (callback?: SocketCallback) => {
@@ -146,7 +146,7 @@ export function createSimpleHandler(
             success: result.success,
             durationMs,
           },
-          'Handler completed'
+          "Handler completed",
         );
 
         callback?.(result);
@@ -160,10 +160,10 @@ export function createSimpleHandler(
             userId,
             durationMs,
           },
-          'Handler exception'
+          "Handler exception",
         );
 
-        callback?.({ success: false, error: 'Internal server error' });
+        callback?.({ success: false, error: "Internal server error" });
       }
     };
   };

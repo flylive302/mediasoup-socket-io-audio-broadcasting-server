@@ -1,5 +1,5 @@
 /**
- * Seat Domain Zod Schemas 
+ * Seat Domain Zod Schemas
  * Validation schemas for seat-related socket events
  */
 import { z } from "zod";

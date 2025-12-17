@@ -3,14 +3,20 @@
  * Handles all seat state in Redis for horizontal scaling support
  */
 import type { Redis } from "ioredis";
-import type { SeatData, SeatAssignment, PendingInvite, SeatActionResult } from "./seat.types.js";
+import type {
+  SeatData,
+  SeatAssignment,
+  PendingInvite,
+  SeatActionResult,
+} from "./seat.types.js";
 import { Errors } from "../shared/errors.js";
 import { logger } from "../core/logger.js";
 
 // Redis key patterns
 const SEATS_KEY = (roomId: string) => `room:${roomId}:seats`;
 const LOCKED_KEY = (roomId: string) => `room:${roomId}:locked_seats`;
-const INVITE_KEY = (roomId: string, seatIndex: number) => `room:${roomId}:invite:${seatIndex}`;
+const INVITE_KEY = (roomId: string, seatIndex: number) =>
+  `room:${roomId}:invite:${seatIndex}`;
 
 // Lua script for atomic seat taking
 const TAKE_SEAT_LUA = `
@@ -120,26 +126,26 @@ export class SeatRepository {
     roomId: string,
     userId: string,
     seatIndex: number,
-    seatCount: number
+    seatCount: number,
   ): Promise<SeatActionResult> {
     try {
-      const result = await this.redis.eval(
+      const result = (await this.redis.eval(
         TAKE_SEAT_LUA,
         2,
         SEATS_KEY(roomId),
         LOCKED_KEY(roomId),
         seatIndex.toString(),
         userId,
-        seatCount.toString()
-      ) as string;
+        seatCount.toString(),
+      )) as string;
 
       const parsed = JSON.parse(result) as SeatActionResult;
-      
+
       // Map internal error codes to user-facing messages
       if (!parsed.success) {
         parsed.error = this.mapError(parsed.error);
       }
-      
+
       return parsed;
     } catch (err) {
       logger.error({ err, roomId, userId, seatIndex }, "Failed to take seat");
@@ -152,19 +158,19 @@ export class SeatRepository {
    */
   async leaveSeat(roomId: string, userId: string): Promise<SeatActionResult> {
     try {
-      const result = await this.redis.eval(
+      const result = (await this.redis.eval(
         LEAVE_SEAT_LUA,
         1,
         SEATS_KEY(roomId),
-        userId
-      ) as string;
+        userId,
+      )) as string;
 
       const parsed = JSON.parse(result) as SeatActionResult;
-      
+
       if (!parsed.success) {
         parsed.error = this.mapError(parsed.error);
       }
-      
+
       return parsed;
     } catch (err) {
       logger.error({ err, roomId, userId }, "Failed to leave seat");
@@ -179,25 +185,25 @@ export class SeatRepository {
     roomId: string,
     userId: string,
     seatIndex: number,
-    seatCount: number
+    seatCount: number,
   ): Promise<SeatActionResult> {
     try {
-      const result = await this.redis.eval(
+      const result = (await this.redis.eval(
         ASSIGN_SEAT_LUA,
         2,
         SEATS_KEY(roomId),
         LOCKED_KEY(roomId),
         seatIndex.toString(),
         userId,
-        seatCount.toString()
-      ) as string;
+        seatCount.toString(),
+      )) as string;
 
       const parsed = JSON.parse(result) as SeatActionResult;
-      
+
       if (!parsed.success) {
         parsed.error = this.mapError(parsed.error);
       }
-      
+
       return parsed;
     } catch (err) {
       logger.error({ err, roomId, userId, seatIndex }, "Failed to assign seat");
@@ -215,18 +221,22 @@ export class SeatRepository {
   /**
    * Set mute status for a seated user
    */
-  async setMute(roomId: string, seatIndex: number, muted: boolean): Promise<boolean> {
+  async setMute(
+    roomId: string,
+    seatIndex: number,
+    muted: boolean,
+  ): Promise<boolean> {
     try {
       const key = SEATS_KEY(roomId);
       const existing = await this.redis.hget(key, seatIndex.toString());
-      
+
       if (!existing) {
         return false;
       }
 
       const data = JSON.parse(existing) as SeatAssignment;
       data.muted = muted;
-      
+
       await this.redis.hset(key, seatIndex.toString(), JSON.stringify(data));
       return true;
     } catch (err) {
@@ -238,20 +248,26 @@ export class SeatRepository {
   /**
    * Lock a seat (kicks any occupant)
    */
-  async lockSeat(roomId: string, seatIndex: number): Promise<{ kicked: string | null }> {
+  async lockSeat(
+    roomId: string,
+    seatIndex: number,
+  ): Promise<{ kicked: string | null }> {
     try {
       // Check current occupant
-      const existing = await this.redis.hget(SEATS_KEY(roomId), seatIndex.toString());
+      const existing = await this.redis.hget(
+        SEATS_KEY(roomId),
+        seatIndex.toString(),
+      );
       let kicked: string | null = null;
-      
+
       if (existing) {
         const data = JSON.parse(existing) as SeatAssignment;
         kicked = data.userId;
         await this.redis.hdel(SEATS_KEY(roomId), seatIndex.toString());
       }
-      
+
       await this.redis.sadd(LOCKED_KEY(roomId), seatIndex.toString());
-      
+
       return { kicked };
     } catch (err) {
       logger.error({ err, roomId, seatIndex }, "Failed to lock seat");
@@ -276,7 +292,10 @@ export class SeatRepository {
    * Check if a seat is locked
    */
   async isSeatLocked(roomId: string, seatIndex: number): Promise<boolean> {
-    const result = await this.redis.sismember(LOCKED_KEY(roomId), seatIndex.toString());
+    const result = await this.redis.sismember(
+      LOCKED_KEY(roomId),
+      seatIndex.toString(),
+    );
     return result === 1;
   }
 
@@ -285,7 +304,7 @@ export class SeatRepository {
    */
   async getLockedSeats(roomId: string): Promise<number[]> {
     const locked = await this.redis.smembers(LOCKED_KEY(roomId));
-    return locked.map(s => parseInt(s, 10));
+    return locked.map((s) => parseInt(s, 10));
   }
 
   /**
@@ -366,14 +385,14 @@ export class SeatRepository {
   async getUserSeat(roomId: string, userId: string): Promise<number | null> {
     try {
       const seatsData = await this.redis.hgetall(SEATS_KEY(roomId));
-      
+
       for (const [index, seatStr] of Object.entries(seatsData)) {
         const data = JSON.parse(seatStr) as SeatAssignment;
         if (data.userId === userId) {
           return parseInt(index, 10);
         }
       }
-      
+
       return null;
     } catch (err) {
       logger.error({ err, roomId, userId }, "Failed to get user seat");
@@ -393,7 +412,7 @@ export class SeatRepository {
     seatIndex: number,
     targetUserId: string,
     invitedBy: string,
-    ttlSeconds: number
+    ttlSeconds: number,
   ): Promise<boolean> {
     try {
       const invite: PendingInvite = {
@@ -402,16 +421,19 @@ export class SeatRepository {
         seatIndex,
         createdAt: Date.now(),
       };
-      
+
       await this.redis.setex(
         INVITE_KEY(roomId, seatIndex),
         ttlSeconds,
-        JSON.stringify(invite)
+        JSON.stringify(invite),
       );
-      
+
       return true;
     } catch (err) {
-      logger.error({ err, roomId, seatIndex, targetUserId }, "Failed to create invite");
+      logger.error(
+        { err, roomId, seatIndex, targetUserId },
+        "Failed to create invite",
+      );
       return false;
     }
   }
@@ -419,10 +441,13 @@ export class SeatRepository {
   /**
    * Get pending invite for a seat
    */
-  async getInvite(roomId: string, seatIndex: number): Promise<PendingInvite | null> {
+  async getInvite(
+    roomId: string,
+    seatIndex: number,
+  ): Promise<PendingInvite | null> {
     try {
       const data = await this.redis.get(INVITE_KEY(roomId, seatIndex));
-      return data ? JSON.parse(data) as PendingInvite : null;
+      return data ? (JSON.parse(data) as PendingInvite) : null;
     } catch (err) {
       logger.error({ err, roomId, seatIndex }, "Failed to get invite");
       return null;
@@ -442,6 +467,47 @@ export class SeatRepository {
     }
   }
 
+  /**
+   * Find invite by target user ID (for backwards compatibility)
+   * Searches all invites for a room to find one matching the user
+   */
+  async findInviteByUser(
+    roomId: string,
+    targetUserId: string,
+  ): Promise<{ invite: PendingInvite; seatIndex: number } | null> {
+    try {
+      // Use SCAN to find all invite keys for this room
+      const pattern = `room:${roomId}:invite:*`;
+      let cursor = "0";
+      
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          "MATCH",
+          pattern,
+          "COUNT",
+          100,
+        );
+        cursor = nextCursor;
+
+        for (const key of keys) {
+          const data = await this.redis.get(key);
+          if (data) {
+            const invite = JSON.parse(data) as PendingInvite;
+            if (invite.targetUserId === targetUserId) {
+              return { invite, seatIndex: invite.seatIndex };
+            }
+          }
+        }
+      } while (cursor !== "0");
+
+      return null;
+    } catch (err) {
+      logger.error({ err, roomId, targetUserId }, "Failed to find invite by user");
+      return null;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Room Cleanup
   // ─────────────────────────────────────────────────────────────────
@@ -453,15 +519,15 @@ export class SeatRepository {
     try {
       // Get all invite keys for this room (we need to pattern match)
       const inviteKeys = await this.redis.keys(`room:${roomId}:invite:*`);
-      
+
       const pipeline = this.redis.pipeline();
       pipeline.del(SEATS_KEY(roomId));
       pipeline.del(LOCKED_KEY(roomId));
-      
+
       for (const key of inviteKeys) {
         pipeline.del(key);
       }
-      
+
       await pipeline.exec();
     } catch (err) {
       logger.error({ err, roomId }, "Failed to clear room seats");

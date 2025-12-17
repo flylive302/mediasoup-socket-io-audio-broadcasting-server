@@ -25,10 +25,13 @@ export class GiftBuffer {
   /** Start the batch processor */
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => this.flush(), config.GIFT_BUFFER_FLUSH_INTERVAL_MS);
+    this.timer = setInterval(
+      () => this.flush(),
+      config.GIFT_BUFFER_FLUSH_INTERVAL_MS,
+    );
     this.logger.info(
       { intervalMs: config.GIFT_BUFFER_FLUSH_INTERVAL_MS },
-      "Gift buffer started"
+      "Gift buffer started",
     );
   }
 
@@ -100,7 +103,10 @@ export class GiftBuffer {
       // Success! Delete the temporary key
       await this.redis.del(processingKey);
     } catch (error) {
-      this.logger.error({ error }, "Gift batch failed, re-queuing items with retry count");
+      this.logger.error(
+        { error },
+        "Gift batch failed, re-queuing items with retry count",
+      );
 
       // Re-queue items with incremented retry count
       for (const gift of transactions) {
@@ -110,7 +116,7 @@ export class GiftBuffer {
           // Move to dead letter queue after max retries
           this.logger.warn(
             { transactionId: gift.transaction_id, retryCount },
-            "Gift exceeded max retries, moving to dead letter queue"
+            "Gift exceeded max retries, moving to dead letter queue",
           );
           await this.redis.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
           metrics.giftsProcessed.inc({ status: "dead_letter" });

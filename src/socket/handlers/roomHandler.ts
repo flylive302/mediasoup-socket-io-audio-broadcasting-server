@@ -2,15 +2,17 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { joinRoomSchema, leaveRoomSchema } from "../schemas.js";
-import {
-  getRoomSeats,
-  clearUserSeat,
-  setRoomOwner,
-  getLockedSeats,
-} from "../../seat/index.js";
+import { setRoomOwner } from "../../seat/index.js";
+import { config } from "../../config/index.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
-  const { roomManager, clientManager, laravelClient, autoCloseService } = context;
+  const {
+    roomManager,
+    clientManager,
+    laravelClient,
+    autoCloseService,
+    seatRepository,
+  } = context;
 
   // JOIN
   socket.on("room:join", async (rawPayload: unknown, ack) => {
@@ -73,26 +75,31 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         return producers;
       };
 
-      // Get initial state using imported handlers
+      // Get initial state using Redis-backed seatRepository
       const participants = await getParticipants(roomId);
-      const roomSeats = getRoomSeats(roomId);
+      const [roomSeatsData, lockedSeats] = await Promise.all([
+        seatRepository.getSeats(roomId, config.DEFAULT_SEAT_COUNT),
+        seatRepository.getLockedSeats(roomId),
+      ]);
       const existingProducers = await getProducers(roomId);
-      const lockedSeats = getLockedSeats(roomId);
 
-      // Transform seats map to array with full user data
+      // Transform seats to array with full user data
       // Frontend expects same format as seat:updated events: { seatIndex, user: {id, name, avatar}, isMuted }
-      const seats: { seatIndex: number; user: { id: string | number; name?: string; avatar?: string } | null; isMuted: boolean }[] =
-        [];
-      if (roomSeats) {
-        for (const [seatIndex, seatData] of roomSeats) {
+      const seats: {
+        seatIndex: number;
+        user: { id: string | number; name?: string; avatar?: string } | null;
+        isMuted: boolean;
+      }[] = [];
+      for (const seatData of roomSeatsData) {
+        if (seatData.userId) {
           // Find the user in the room to get their full data
           const seatedClient = clientManager
             .getClientsInRoom(roomId)
             .find((c) => String(c.userId) === seatData.userId);
-          
+
           if (seatedClient) {
             seats.push({
-              seatIndex,
+              seatIndex: seatData.index,
               user: {
                 id: seatedClient.userId,
                 name: seatedClient.user.name,
@@ -103,7 +110,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
           } else {
             // User might have disconnected but seat not cleared yet
             seats.push({
-              seatIndex,
+              seatIndex: seatData.index,
               user: { id: seatData.userId },
               isMuted: seatData.muted,
             });
@@ -169,12 +176,12 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     const { roomId } = payloadResult.data;
     const userId = String(socket.data.user.id);
 
-    // Clear user's seat if seated
-    const clearedSeatIndex = clearUserSeat(roomId, userId);
-    if (clearedSeatIndex !== null) {
-      socket.to(roomId).emit("seat:cleared", { seatIndex: clearedSeatIndex });
+    // Clear user's seat if seated (using Redis)
+    const result = await seatRepository.leaveSeat(roomId, userId);
+    if (result.success && result.seatIndex !== undefined) {
+      socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
       logger.debug(
-        { roomId, userId, seatIndex: clearedSeatIndex },
+        { roomId, userId, seatIndex: result.seatIndex },
         "User seat cleared on leave",
       );
     }

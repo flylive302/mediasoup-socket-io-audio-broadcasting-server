@@ -60,18 +60,23 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     adapter: createAdapter(pubClient, subClient),
   });
 
-  const { roomManager, workerManager, giftHandler, autoCloseJob } = await initializeSocket(io, pubClient);
+  const { roomManager, workerManager, giftHandler, autoCloseJob } =
+    await initializeSocket(io, pubClient);
 
   // Register health check
-  await fastify.register(
-    createHealthRoutes(roomManager, workerManager),
-  );
+  await fastify.register(createHealthRoutes(roomManager, workerManager));
 
   // Register metrics
-  await fastify.register(
-    createMetricsRoutes(roomManager, workerManager),
-  );
+  await fastify.register(createMetricsRoutes(roomManager, workerManager));
 
   // Return subClient for proper cleanup during graceful shutdown
-  return { server: fastify, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob };
+  return {
+    server: fastify,
+    io,
+    subClient,
+    roomManager,
+    workerManager,
+    giftHandler,
+    autoCloseJob,
+  };
 }

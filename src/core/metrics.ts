@@ -4,7 +4,13 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import os from "os";
-import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from "prom-client";
+import {
+  Counter,
+  Gauge,
+  Histogram,
+  Registry,
+  collectDefaultMetrics,
+} from "prom-client";
 import type { RoomManager } from "../room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 

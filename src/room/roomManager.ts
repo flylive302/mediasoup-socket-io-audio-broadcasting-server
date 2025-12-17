@@ -10,7 +10,7 @@ import { ActiveSpeakerDetector } from "../mediasoup/activeSpeaker.js";
 export class RoomManager {
   private readonly rooms = new Map<string, RouterManager>();
   private readonly stateRepo: RoomStateRepository;
-  
+
   // Track rooms being created to prevent race conditions
   private readonly creatingRooms = new Map<string, Promise<RouterManager>>();
 

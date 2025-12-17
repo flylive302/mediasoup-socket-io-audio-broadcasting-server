@@ -6,7 +6,11 @@ import type { ClientManager } from "./client/clientManager.js";
 import type { RateLimiter } from "./utils/rateLimiter.js";
 import type { GiftHandler } from "./gifts/giftHandler.js";
 import type { LaravelClient } from "./integrations/laravelClient.js";
-import type { AutoCloseService, AutoCloseJob } from "./room/auto-close/index.js";
+import type {
+  AutoCloseService,
+  AutoCloseJob,
+} from "./room/auto-close/index.js";
+import type { SeatRepository } from "./seat/seat.repository.js";
 
 export interface AppContext {
   io: Server;
@@ -19,4 +23,5 @@ export interface AppContext {
   laravelClient: LaravelClient;
   autoCloseService: AutoCloseService;
   autoCloseJob: AutoCloseJob;
+  seatRepository: SeatRepository;
 }

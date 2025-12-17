@@ -5,11 +5,7 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatRemoveSchema } from "../seat.requests.js";
-import {
-  getOrCreateRoomSeats,
-  findUserSeat,
-  verifyRoomOwner,
-} from "../seat.state.js";
+import { verifyRoomOwner } from "../seat.owner.js";
 
 export function removeSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -18,38 +14,51 @@ export function removeSeatHandler(socket: Socket, context: AppContext) {
     rawPayload: unknown,
     callback?: (response: { success: boolean; error?: string }) => void,
   ) => {
-    const result = seatRemoveSchema.safeParse(rawPayload);
-    if (!result.success) {
-      if (callback) callback({ success: false, error: "Invalid payload" });
-      return;
+    try {
+      const parseResult = seatRemoveSchema.safeParse(rawPayload);
+      if (!parseResult.success) {
+        if (callback) callback({ success: false, error: "Invalid payload" });
+        return;
+      }
+
+      const { roomId, userId: targetUserId } = parseResult.data;
+
+      const ownership = await verifyRoomOwner(roomId, userId, context);
+      if (!ownership.allowed) {
+        if (callback) callback({ success: false, error: ownership.error });
+        return;
+      }
+
+      const targetUserIdStr = String(targetUserId);
+
+      // Use Redis operation
+      const result = await context.seatRepository.removeSeat(
+        roomId,
+        targetUserIdStr,
+      );
+
+      if (!result.success) {
+        if (callback) callback({ success: false, error: result.error });
+        return;
+      }
+
+      logger.info(
+        {
+          roomId,
+          targetUserId,
+          seatIndex: result.seatIndex,
+          removedBy: userId,
+        },
+        "User removed from seat",
+      );
+
+      socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error, userId }, "seat:remove handler exception");
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
-
-    const { roomId, userId: targetUserId } = result.data;
-
-    const ownership = await verifyRoomOwner(roomId, userId, context);
-    if (!ownership.allowed) {
-      if (callback) callback({ success: false, error: ownership.error });
-      return;
-    }
-
-    const targetUserIdStr = String(targetUserId);
-    const seatIndex = findUserSeat(roomId, targetUserIdStr);
-
-    if (seatIndex === null) {
-      if (callback) callback({ success: false, error: "User is not seated" });
-      return;
-    }
-
-    const seats = getOrCreateRoomSeats(roomId);
-    seats.delete(seatIndex);
-
-    logger.info(
-      { roomId, targetUserId, seatIndex, removedBy: userId },
-      "User removed from seat",
-    );
-
-    socket.to(roomId).emit("seat:cleared", { seatIndex });
-
-    if (callback) callback({ success: true });
   };
 }

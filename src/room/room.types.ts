@@ -2,7 +2,7 @@
  * Room domain types
  */
 
-export type RoomStatus = 'active' | 'closed';
+export type RoomStatus = "active" | "closed";
 
 export interface RoomMetadata {
   id: string;

@@ -5,13 +5,10 @@ import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatInviteSchema } from "../seat.requests.js";
-import {
-  getOrCreateRoomSeats,
-  isSeatLocked,
-  pendingInvites,
-  INVITE_EXPIRY_MS,
-  verifyRoomOwner,
-} from "../seat.state.js";
+import { verifyRoomOwner } from "../seat.owner.js";
+
+// Invite expiry in seconds (30 seconds TTL in Redis)
+const INVITE_EXPIRY_SECONDS = 30;
 
 export function inviteSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -24,21 +21,25 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
     logger.info({ userId, payload: rawPayload }, "seat:invite received");
 
     try {
-      const result = seatInviteSchema.safeParse(rawPayload);
-      if (!result.success) {
-        logger.warn({ userId, error: result.error }, "seat:invite invalid payload");
+      const parseResult = seatInviteSchema.safeParse(rawPayload);
+      if (!parseResult.success) {
+        logger.warn(
+          { userId, error: parseResult.error },
+          "seat:invite invalid payload",
+        );
         if (callback) callback({ success: false, error: "Invalid payload" });
         return;
       }
 
-      const { roomId, userId: targetUserId, seatIndex } = result.data;
+      const { roomId, userId: targetUserId, seatIndex } = parseResult.data;
       logger.info(
         { userId, roomId, targetUserId, seatIndex },
         "seat:invite verifying ownership",
       );
 
       if (String(targetUserId) === userId) {
-        if (callback) callback({ success: false, error: "Cannot invite yourself" });
+        if (callback)
+          callback({ success: false, error: "Cannot invite yourself" });
         return;
       }
 
@@ -61,60 +62,56 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
         return;
       }
 
-      const seats = getOrCreateRoomSeats(roomId);
-
-      // Check if seat is occupied
-      if (seats.has(seatIndex)) {
-        if (callback) callback({ success: false, error: "Seat is already occupied" });
-        return;
-      }
-
-      // Check if seat is locked
-      if (isSeatLocked(roomId, seatIndex)) {
+      // Check if seat is locked (using Redis)
+      const isLocked = await context.seatRepository.isSeatLocked(
+        roomId,
+        seatIndex,
+      );
+      if (isLocked) {
         if (callback) callback({ success: false, error: "Seat is locked" });
         return;
       }
 
-      // Check if there's already a pending invite for this seat
-      let roomInvites = pendingInvites.get(roomId);
-      if (!roomInvites) {
-        roomInvites = new Map();
-        pendingInvites.set(roomId, roomInvites);
+      // Check if seat is occupied (using Redis)
+      const seat = await context.seatRepository.getSeat(roomId, seatIndex);
+      if (seat?.userId) {
+        if (callback)
+          callback({ success: false, error: "Seat is already occupied" });
+        return;
       }
 
-      if (roomInvites.has(seatIndex)) {
-        if (callback) callback({ success: false, error: "Invite already pending for this seat" });
+      // Check if there's already a pending invite for this seat (using Redis)
+      const existingInvite = await context.seatRepository.getInvite(
+        roomId,
+        seatIndex,
+      );
+      if (existingInvite) {
+        if (callback)
+          callback({
+            success: false,
+            error: "Invite already pending for this seat",
+          });
         return;
       }
 
       const targetUserIdStr = String(targetUserId);
-      const expiresAt = Date.now() + INVITE_EXPIRY_MS;
 
-      // Set up auto-expiry (Implicit Rejection)
-      const timeoutId = setTimeout(() => {
-        roomInvites?.delete(seatIndex);
-        // Notify target user that invite expired
-        socket.to(roomId).emit("seat:invite:expired", { seatIndex });
-        // Notify room (owner) to clear pending status
-        const expireEvent = { seatIndex, isPending: false };
-        socket.to(roomId).emit("seat:invite:pending", expireEvent);
-        socket.emit("seat:invite:pending", expireEvent);
-
-        logger.info(
-          { roomId, seatIndex, targetUserId },
-          "Seat invite expired (implied rejection)",
-        );
-      }, INVITE_EXPIRY_MS);
-
-      const inviterUser = socket.data.user;
-      roomInvites.set(seatIndex, {
-        userId: targetUserIdStr,
+      // Create invite with TTL in Redis (no setTimeout needed - Redis handles expiry)
+      const success = await context.seatRepository.createInvite(
+        roomId,
         seatIndex,
-        invitedBy: userId,
-        inviterName: inviterUser.name,
-        expiresAt,
-        timeoutId,
-      });
+        targetUserIdStr,
+        userId,
+        INVITE_EXPIRY_SECONDS,
+      );
+
+      if (!success) {
+        if (callback)
+          callback({ success: false, error: "Failed to create invite" });
+        return;
+      }
+
+      const expiresAt = Date.now() + INVITE_EXPIRY_SECONDS * 1000;
 
       logger.info(
         { roomId, targetUserId, seatIndex, invitedBy: userId },
@@ -122,11 +119,16 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
       );
 
       // Broadcast pending status to room (so UI can show "Invited...")
-      const pendingEvent = { seatIndex, isPending: true, invitedUserId: targetUserId };
+      const pendingEvent = {
+        seatIndex,
+        isPending: true,
+        invitedUserId: targetUserId,
+      };
       socket.to(roomId).emit("seat:invite:pending", pendingEvent);
       socket.emit("seat:invite:pending", pendingEvent);
 
       // Send invite to target user (they need to be in the room)
+      const inviterUser = socket.data.user;
       socket.to(roomId).emit("seat:invite:received", {
         seatIndex,
         invitedBy: {
@@ -155,7 +157,8 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
         },
         "seat:invite handler exception",
       );
-      if (callback) callback({ success: false, error: "Internal server error" });
+      if (callback)
+        callback({ success: false, error: "Internal server error" });
     }
   };
 }
