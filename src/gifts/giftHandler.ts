@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import { GiftBuffer } from "./giftBuffer.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
 import { logger } from "../core/logger.js";
-import { sendGiftSchema } from "../socket/schemas.js";
+import { sendGiftSchema, prepareGiftSchema } from "../socket/schemas.js";
 import { RateLimiter } from "../utils/rateLimiter.js";
 
 const GIFT_RATE_LIMIT = 30; // 30 gifts per minute
@@ -70,6 +70,27 @@ export class GiftHandler {
 
       // 3. Queue for persistence
       await this.buffer.enqueue(transaction);
+    });
+
+    // ─────────────────────────────────────────────────────────────────
+    // Gift Prepare (Preload Signaling)
+    // Sender signals recipient to preload asset before sending
+    // ─────────────────────────────────────────────────────────────────
+    socket.on("gift:prepare", (rawPayload: unknown) => {
+      // Validate payload
+      const payloadResult = prepareGiftSchema.safeParse(rawPayload);
+      if (!payloadResult.success) {
+        // Silent fail - preload is best-effort
+        return;
+      }
+      const payload = payloadResult.data;
+
+      // Broadcast to room - all members will receive but only recipient should act
+      // This is simpler than finding specific socket and still performant
+      socket.to(payload.roomId).emit("gift:prepare", {
+        giftId: payload.giftId,
+        recipientId: payload.recipientId,
+      });
     });
   }
 }
