@@ -99,6 +99,14 @@ export const metrics = {
     labelNames: ["result"] as const, // success, invalid_token, no_token, cache_hit
     registers: [metricsRegistry],
   }),
+
+  // Laravel Events (Redis pub/sub)
+  laravelEventsReceived: new Counter({
+    name: "flylive_laravel_events_received_total",
+    help: "Total Laravel events received via Redis pub/sub",
+    labelNames: ["event_type", "delivered"] as const,
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

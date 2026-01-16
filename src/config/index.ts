@@ -59,6 +59,13 @@ const configSchema = z.object({
   // Seats
   DEFAULT_SEAT_COUNT: z.coerce.number().default(15),
 
+  // Laravel Events (Redis pub/sub)
+  MSAB_EVENTS_CHANNEL: z.string().default("flylive:msab:events"),
+  MSAB_EVENTS_ENABLED: z
+    .enum(["true", "false", "1", "0", ""])
+    .default("true")
+    .transform((v) => v === "true" || v === "1"),
+
   // Security
   CORS_ORIGINS: z
     .string()

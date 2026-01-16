@@ -17,6 +17,7 @@ import type { RoomManager } from "../room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "../gifts/giftHandler.js";
 import type { AutoCloseJob } from "../room/auto-close/index.js";
+import type { LaravelEventSubscriber } from "../events/eventSubscriber.js";
 
 export interface BootstrapResult {
   server: FastifyInstance;
@@ -26,6 +27,7 @@ export interface BootstrapResult {
   workerManager: WorkerManager;
   giftHandler: GiftHandler;
   autoCloseJob: AutoCloseJob;
+  eventSubscriber: LaravelEventSubscriber;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -60,7 +62,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     adapter: createAdapter(pubClient, subClient),
   });
 
-  const { roomManager, workerManager, giftHandler, autoCloseJob } =
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
     await initializeSocket(io, pubClient);
 
   // Register health check
@@ -78,5 +80,6 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     workerManager,
     giftHandler,
     autoCloseJob,
+    eventSubscriber,
   };
 }

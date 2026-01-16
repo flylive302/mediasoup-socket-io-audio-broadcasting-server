@@ -5,6 +5,7 @@ import { authMiddleware } from "../auth/middleware.js";
 import { WorkerManager } from "../core/worker.manager.js";
 import { RoomManager } from "../room/roomManager.js";
 import { ClientManager } from "../client/clientManager.js";
+import { config } from "../config/index.js";
 
 // Handlers
 import { roomHandler } from "./handlers/roomHandler.js";
@@ -21,6 +22,13 @@ import { SeatRepository } from "../seat/seat.repository.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "../room/auto-close/index.js";
+
+// Events module (Laravel pub/sub integration)
+import {
+  UserSocketRepository,
+  LaravelEventSubscriber,
+  EventRouter,
+} from "../events/index.js";
 
 export async function initializeSocket(
   io: Server,
@@ -53,6 +61,30 @@ export async function initializeSocket(
   );
   autoCloseJob.start();
 
+  // Initialize events system (Laravel pub/sub)
+  const userSocketRepository = new UserSocketRepository(redis);
+  const eventRouter = new EventRouter(io, userSocketRepository, logger);
+
+  // Create event subscriber with router callback
+  const eventSubscriber = new LaravelEventSubscriber(
+    redis,
+    config.MSAB_EVENTS_CHANNEL,
+    (event) => {
+      // Route event asynchronously (fire-and-forget with error handling)
+      eventRouter.route(event).catch((err) => {
+        logger.error({ err, event: event.event }, "Failed to route event");
+      });
+    },
+    logger,
+  );
+
+  // Start event subscriber if enabled
+  if (config.MSAB_EVENTS_ENABLED) {
+    await eventSubscriber.start();
+  } else {
+    logger.info("Laravel events disabled via MSAB_EVENTS_ENABLED=false");
+  }
+
   // Authentication Middleware
   io.use(authMiddleware);
 
@@ -68,16 +100,24 @@ export async function initializeSocket(
     autoCloseService,
     autoCloseJob,
     seatRepository,
+    userSocketRepository,
+    eventSubscriber,
   };
 
   io.on("connection", (socket) => {
-    logger.info(
-      { socketId: socket.id, userId: socket.data.user?.id },
-      "Socket connected",
-    );
+    const userId = socket.data.user?.id;
 
-    // Register Client
+    logger.info({ socketId: socket.id, userId }, "Socket connected");
+
+    // Register Client in ClientManager (local instance tracking)
     clientManager.addClient(socket);
+
+    // Register socket in UserSocketRepository (Redis-backed for cross-instance)
+    if (userId) {
+      userSocketRepository.registerSocket(userId, socket.id).catch((err) => {
+        logger.error({ err, userId, socketId: socket.id }, "Failed to register socket");
+      });
+    }
 
     // Debug: Log all incoming socket events (temporary for debugging)
     socket.onAny((eventName, ...args) => {
@@ -101,17 +141,23 @@ export async function initializeSocket(
       logger.info({ socketId: socket.id, reason }, "Socket disconnected");
 
       const client = clientManager.getClient(socket.id);
+
+      // Unregister from UserSocketRepository (Redis)
+      if (client?.userId) {
+        await userSocketRepository.unregisterSocket(client.userId, socket.id);
+      }
+
       if (client?.roomId) {
-        const userId = String(client.userId);
+        const roomUserId = String(client.userId);
 
         // Clear user's seat if seated (using Redis-backed repository)
-        const result = await seatRepository.leaveSeat(client.roomId, userId);
+        const result = await seatRepository.leaveSeat(client.roomId, roomUserId);
         if (result.success && result.seatIndex !== undefined) {
           socket
             .to(client.roomId)
             .emit("seat:cleared", { seatIndex: result.seatIndex });
           logger.debug(
-            { roomId: client.roomId, userId, seatIndex: result.seatIndex },
+            { roomId: client.roomId, userId: roomUserId, seatIndex: result.seatIndex },
             "User seat cleared on disconnect",
           );
         }
@@ -147,3 +193,4 @@ export async function initializeSocket(
 
   return appContext;
 }
+

@@ -8,7 +8,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, workerManager, giftHandler, autoCloseJob } =
+    const { server, io, subClient, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -49,12 +49,15 @@ const start = async () => {
         // 2. Stop auto-close job
         autoCloseJob.stop();
 
-        // 3. Stop gift buffer processing
+        // 3. Stop event subscriber (Laravel pub/sub)
+        await eventSubscriber.stop();
+
+        // 4. Stop gift buffer processing
         if (giftHandler) {
           await giftHandler.stop();
         }
 
-        // 4. Shutdown mediasoup workers
+        // 5. Shutdown mediasoup workers
         await workerManager.shutdown();
 
         // 4. Close Redis connections (both pub and sub clients)

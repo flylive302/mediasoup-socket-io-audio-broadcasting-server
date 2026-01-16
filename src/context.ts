@@ -11,6 +11,8 @@ import type {
   AutoCloseJob,
 } from "./room/auto-close/index.js";
 import type { SeatRepository } from "./seat/seat.repository.js";
+import type { UserSocketRepository } from "./events/userSocket.repository.js";
+import type { LaravelEventSubscriber } from "./events/eventSubscriber.js";
 
 export interface AppContext {
   io: Server;
@@ -24,4 +26,7 @@ export interface AppContext {
   autoCloseService: AutoCloseService;
   autoCloseJob: AutoCloseJob;
   seatRepository: SeatRepository;
+  userSocketRepository: UserSocketRepository;
+  eventSubscriber: LaravelEventSubscriber;
 }
+
