@@ -45,12 +45,21 @@ export interface EventRoutingResult {
  * Used for type-safe event handling
  */
 export const KNOWN_EVENTS = {
-  // HIGH Priority
+  // HIGH Priority - Economy
   BALANCE_UPDATED: "balance.updated",
-  BADGE_EARNED: "badge.earned",
   REWARD_EARNED: "reward.earned",
-  INCOME_TARGET_COMPLETED: "income_target.completed",
+  
+  // HIGH Priority - Achievement
+  BADGE_EARNED: "badge.earned",
+  LEVEL_UP: "level.up",
+  
+  // HIGH Priority - Room
   ROOM_LEVEL_UP: "room.level_up",
+  ROOM_PARTICIPANT_COUNT: "room.participant_count",
+
+  // HIGH Priority - Income
+  INCOME_TARGET_COMPLETED: "income_target.completed",
+  INCOME_TARGET_MEMBER_COMPLETED: "income_target.member_completed",
 
   // MEDIUM Priority (Agency)
   AGENCY_INVITATION: "agency.invitation",
@@ -58,10 +67,13 @@ export const KNOWN_EVENTS = {
   AGENCY_JOIN_REQUEST_APPROVED: "agency.join_request_approved",
   AGENCY_JOIN_REQUEST_REJECTED: "agency.join_request_rejected",
   AGENCY_MEMBER_KICKED: "agency.member_kicked",
+  AGENCY_MEMBER_JOINED: "agency.member_joined",
+  AGENCY_MEMBER_LEFT: "agency.member_left",
   AGENCY_DISSOLVED: "agency.dissolved",
 
-  // LOW Priority
+  // LOW Priority - System
   CONFIG_INVALIDATE: "config:invalidate",
+  ASSET_INVALIDATE: "asset:invalidate",
 } as const;
 
 export type KnownEventType = (typeof KNOWN_EVENTS)[keyof typeof KNOWN_EVENTS];

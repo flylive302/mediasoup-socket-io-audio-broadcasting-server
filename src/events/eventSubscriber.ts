@@ -41,13 +41,21 @@ export class LaravelEventSubscriber {
       this.logger.warn("Event subscriber reconnecting to Redis");
     });
 
-    // Handle incoming messages
+    // Log when subscriber is ready
+    this.subscriber.on("ready", () => {
+      this.logger.info("Event subscriber Redis connection ready");
+    });
+
+    // Handle incoming messages (standard event)
     this.subscriber.on("message", (channel, message) => {
+      this.logger.debug({ channel, messageLength: message.length }, "Redis message received");
+      
       if (channel !== this.channel) return;
 
       try {
         const event = this.parseEvent(message);
         if (event) {
+          this.logger.debug({ event: event.event, user_id: event.user_id }, "Event parsed, routing...");
           this.onEvent(event);
         }
       } catch (err) {
@@ -56,6 +64,11 @@ export class LaravelEventSubscriber {
           "Failed to process event message",
         );
       }
+    });
+
+    // Some ioredis versions use messageBuffer instead
+    this.subscriber.on("messageBuffer", (_channel, _message) => {
+      this.logger.debug("Redis messageBuffer received (buffer mode)");
     });
 
     // Subscribe to the channel

@@ -18,6 +18,8 @@ export interface AuthenticatedUser {
   name: string;
   signature: string;
   avatar: string; // Renamed from avatar_url per protocol
+  gender: string | null;
+  date_of_birth: string | null; // ISO date string (YYYY-MM-DD)
   economy: UserEconomy; // Nested economy object per protocol
   is_blocked: boolean; // New field per protocol
   [key: string]: unknown; // Allow additional fields for extensibility

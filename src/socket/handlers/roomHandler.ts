@@ -51,9 +51,16 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         return existingClients
           .filter((c) => c.socketId !== socket.id) // Exclude self
           .map((c) => ({
+            // MinimalUser fields
             id: c.userId,
             name: c.user.name,
+            signature: c.user.signature,
             avatar: c.user.avatar,
+            gender: c.user.gender,
+            date_of_birth: c.user.date_of_birth,
+            wealth_xp: c.user.economy.wealth_xp,
+            charm_xp: c.user.economy.charm_xp,
+            // Room-specific fields
             isSpeaker: c.isSpeaker,
           }));
       };
