@@ -17,25 +17,15 @@ export interface AuthenticatedUser {
   id: number;
   name: string;
   signature: string;
+  email: string | null;
   avatar: string; // Renamed from avatar_url per protocol
-  gender: string | null;
-  date_of_birth: string | null; // ISO date string (YYYY-MM-DD)
+  gender: string;
+  date_of_birth: string; // ISO date string (YYYY-MM-DD)
+  phone: string;
+  country: string;
   economy: UserEconomy; // Nested economy object per protocol
   is_blocked: boolean; // New field per protocol
   [key: string]: unknown; // Allow additional fields for extensibility
-}
-
-export interface GenderOption {
-  label: string;
-  value: number;
-  icon: string;
-}
-
-export interface Avatar {
-  large: string;
-  medium: string;
-  original: string;
-  thumbnail: string;
 }
 
 export interface AuthSocketData {

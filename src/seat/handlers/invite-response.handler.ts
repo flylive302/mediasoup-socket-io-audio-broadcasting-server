@@ -107,6 +107,9 @@ export function inviteAcceptHandler(socket: Socket, context: AppContext) {
           id: user.id,
           name: user.name,
           avatar: user.avatar,
+          signature: user.signature,
+          gender: user.gender,
+          country: user.country,
         },
         isMuted: false,
       };

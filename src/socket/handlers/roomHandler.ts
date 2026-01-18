@@ -4,6 +4,7 @@ import { logger } from "../../core/logger.js";
 import { joinRoomSchema, leaveRoomSchema } from "../schemas.js";
 import { setRoomOwner } from "../../seat/index.js";
 import { config } from "../../config/index.js";
+import { AuthenticatedUser, SeatUser } from "../../types.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const {
@@ -57,6 +58,9 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
             signature: c.user.signature,
             avatar: c.user.avatar,
             gender: c.user.gender,
+            country: c.user.country,
+            phone: c.user.phone,
+            email: c.user.email,
             date_of_birth: c.user.date_of_birth,
             wealth_xp: c.user.economy.wealth_xp,
             charm_xp: c.user.economy.charm_xp,
@@ -91,10 +95,10 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const existingProducers = await getProducers(roomId);
 
       // Transform seats to array with full user data
-      // Frontend expects same format as seat:updated events: { seatIndex, user: {id, name, avatar}, isMuted }
+      // Frontend expects same format as seat:updated events: { seatIndex, user: SeatUser, isMuted }
       const seats: {
         seatIndex: number;
-        user: { id: string | number; name?: string; avatar?: string } | null;
+        user: SeatUser | null;
         isMuted: boolean;
       }[] = [];
       for (const seatData of roomSeatsData) {
@@ -111,6 +115,14 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
                 id: seatedClient.userId,
                 name: seatedClient.user.name,
                 avatar: seatedClient.user.avatar,
+                signature: seatedClient.user.signature,
+                gender: seatedClient.user.gender,
+                country: seatedClient.user.country,
+                phone: seatedClient.user.phone,
+                email: seatedClient.user.email,
+                date_of_birth: seatedClient.user.date_of_birth,
+                wealth_xp: seatedClient.user.economy.wealth_xp,
+                charm_xp: seatedClient.user.economy.charm_xp,
               },
               isMuted: seatData.muted,
             });
