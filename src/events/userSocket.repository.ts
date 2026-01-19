@@ -7,8 +7,9 @@
 import type { Redis } from "ioredis";
 import { logger } from "../core/logger.js";
 
-// Redis key pattern
+// Redis key patterns
 const USER_SOCKETS_KEY = (userId: number) => `user:${userId}:sockets`;
+const USER_ROOM_KEY = (userId: number) => `user:${userId}:room`;
 
 // TTL for socket entries (24 hours - cleanup for stale entries)
 const SOCKET_TTL_SECONDS = 86400;
@@ -115,6 +116,59 @@ export class UserSocketRepository {
     } catch (err) {
       logger.error({ err, userId }, "Failed to get socket count");
       return 0;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Room Tracking (for user:getRoom feature)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Set user's current room
+   * Called when user joins a room
+   * Uses TTL to auto-expire in case disconnect doesn't fire (abnormal disconnect)
+   */
+  async setUserRoom(userId: number, roomId: string): Promise<boolean> {
+    try {
+      const key = USER_ROOM_KEY(userId);
+      // Use TTL (same as socket TTL) to auto-expire stale entries
+      // If user remains in room, this gets refreshed on rejoin/reconnect
+      await this.redis.setex(key, SOCKET_TTL_SECONDS, roomId);
+      logger.debug({ userId, roomId }, "User room set");
+      return true;
+    } catch (err) {
+      logger.error({ err, userId, roomId }, "Failed to set user room");
+      return false;
+    }
+  }
+
+  /**
+   * Clear user's current room
+   * Called when user leaves a room or disconnects
+   */
+  async clearUserRoom(userId: number): Promise<boolean> {
+    try {
+      const key = USER_ROOM_KEY(userId);
+      await this.redis.del(key);
+      logger.debug({ userId }, "User room cleared");
+      return true;
+    } catch (err) {
+      logger.error({ err, userId }, "Failed to clear user room");
+      return false;
+    }
+  }
+
+  /**
+   * Get user's current room
+   * Returns null if user is not in any room
+   */
+  async getUserRoom(userId: number): Promise<string | null> {
+    try {
+      const key = USER_ROOM_KEY(userId);
+      return await this.redis.get(key);
+    } catch (err) {
+      logger.error({ err, userId }, "Failed to get user room");
+      return null;
     }
   }
 }

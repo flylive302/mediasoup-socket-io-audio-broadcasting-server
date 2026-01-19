@@ -8,11 +8,13 @@ import { AuthenticatedUser, SeatUser } from "../../types.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const {
+    io,
     roomManager,
     clientManager,
     laravelClient,
     autoCloseService,
     seatRepository,
+    userSocketRepository,
   } = context;
 
   // JOIN
@@ -41,17 +43,32 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const client = clientManager.getClient(socket.id);
       if (client) client.roomId = roomId;
 
+      // Track user's current room in Redis (for user:getRoom feature)
+      const userId = socket.data.user.id;
+      await userSocketRepository.setUserRoom(userId, roomId);
+
       // Gather current room state BEFORE joining (so we don't include self for notifications,
       // but we DO include everything in the initial state payload for the joiner)
 
-      const userId = socket.data.user.id;
-
       // Helper to get participants (excluding self for initial state)
+      // Also verifies each socket is still connected to filter stale entries
       const getParticipants = async (roomId: string) => {
         const existingClients = clientManager.getClientsInRoom(roomId);
-        return existingClients
-          .filter((c) => c.socketId !== socket.id) // Exclude self
-          .map((c) => ({
+        const verifiedParticipants = [];
+        
+        for (const c of existingClients) {
+          if (c.socketId === socket.id) continue; // Exclude self
+          
+          // Verify socket is still connected
+          const clientSocket = io.sockets.sockets.get(c.socketId);
+          if (!clientSocket?.connected) {
+            // Stale client - remove from clientManager
+            logger.warn({ socketId: c.socketId, userId: c.userId, roomId }, "Removing stale client");
+            clientManager.removeClient(c.socketId);
+            continue;
+          }
+          
+          verifiedParticipants.push({
             // MinimalUser fields
             id: c.userId,
             name: c.user.name,
@@ -66,7 +83,10 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
             charm_xp: c.user.economy.charm_xp,
             // Room-specific fields
             isSpeaker: c.isSpeaker,
-          }));
+          });
+        }
+        
+        return verifiedParticipants;
       };
 
       // Helper to get producers (excluding self for initial state)
@@ -206,6 +226,9 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     }
 
     socket.leave(roomId);
+
+    // Clear user's room tracking in Redis
+    await userSocketRepository.clearUserRoom(socket.data.user.id);
 
     // Update participant count in Redis and notify Laravel
     const newCount = await roomManager.state.adjustParticipantCount(roomId, -1);

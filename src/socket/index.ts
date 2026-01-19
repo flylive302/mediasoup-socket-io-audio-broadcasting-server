@@ -11,6 +11,7 @@ import { config } from "../config/index.js";
 import { roomHandler } from "./handlers/roomHandler.js";
 import { mediaHandler } from "./handlers/mediaHandler.js";
 import { chatHandler } from "./handlers/chatHandler.js";
+import { userHandler } from "./handlers/userHandler.js";
 import { GiftHandler } from "../gifts/giftHandler.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
 import { RateLimiter } from "../utils/rateLimiter.js";
@@ -133,6 +134,7 @@ export async function initializeSocket(
     roomHandler(socket, appContext);
     mediaHandler(socket, appContext);
     chatHandler(socket, appContext);
+    userHandler(socket, appContext);
     registerSeatHandlers(socket, appContext);
     giftHandler.handle(socket);
 
@@ -145,6 +147,8 @@ export async function initializeSocket(
       // Unregister from UserSocketRepository (Redis)
       if (client?.userId) {
         await userSocketRepository.unregisterSocket(client.userId, socket.id);
+        // Clear user's room tracking (for user:getRoom feature)
+        await userSocketRepository.clearUserRoom(client.userId);
       }
 
       if (client?.roomId) {
