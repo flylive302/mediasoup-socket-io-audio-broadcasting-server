@@ -1,11 +1,11 @@
 /**
- * seat:mute - Owner mutes user
+ * seat:mute - Owner/Admin mutes user
  */
 import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatMuteSchema } from "../seat.requests.js";
-import { verifyRoomOwner } from "../seat.owner.js";
+import { verifyRoomManager } from "../seat.owner.js";
 
 export function muteSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -23,9 +23,9 @@ export function muteSeatHandler(socket: Socket, context: AppContext) {
 
       const { roomId, userId: targetUserId } = parseResult.data;
 
-      const ownership = await verifyRoomOwner(roomId, userId, context);
-      if (!ownership.allowed) {
-        if (callback) callback({ success: false, error: ownership.error });
+      const authorization = await verifyRoomManager(roomId, userId, context);
+      if (!authorization.allowed) {
+        if (callback) callback({ success: false, error: authorization.error });
         return;
       }
 

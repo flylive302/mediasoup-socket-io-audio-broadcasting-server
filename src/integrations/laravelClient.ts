@@ -170,6 +170,59 @@ export class LaravelClient {
   }
 
   /**
+   * Check if a user is a room admin/owner
+   * Returns the user's role in the room or null if not a member
+   */
+  async getMemberRole(roomId: string, userId: string): Promise<'owner' | 'admin' | 'member' | null> {
+    try {
+      const response = await this.get(`/api/v1/internal/rooms/${roomId}/members/${userId}/role`);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          // User not found in room
+          return null;
+        }
+        this.logger.warn(
+          { status: response.status, roomId, userId },
+          "Failed to fetch member role",
+        );
+        return null;
+      }
+
+      const data = await response.json() as { role?: string };
+      const role = data.role;
+      
+      if (role === 'owner' || role === 'admin' || role === 'member') {
+        return role;
+      }
+      
+      return null;
+    } catch (error) {
+      this.logger.error({ error, roomId, userId }, "Error fetching member role");
+      return null;
+    }
+  }
+
+  /**
+   * Check if user can manage room (is owner or admin)
+   */
+  async canManageRoom(roomId: string, userId: string): Promise<boolean> {
+    // First check if owner (fast path)
+    try {
+      const roomData = await this.getRoomData(roomId);
+      if (String(roomData.owner_id) === userId) {
+        return true;
+      }
+    } catch {
+      // Continue to check member role
+    }
+
+    // Check if admin
+    const role = await this.getMemberRole(roomId, userId);
+    return role === 'admin';
+  }
+
+  /**
    * Return a whitespace-collapsed, truncated version of a response body to avoid
    * leaking large or sensitive payloads into error messages or logs.
    */

@@ -1,11 +1,11 @@
 /**
- * seat:lock - Owner locks a seat (kicks user if occupied)
+ * seat:lock - Owner/Admin locks a seat (kicks user if occupied)
  */
 import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatLockSchema } from "../seat.requests.js";
-import { verifyRoomOwner } from "../seat.owner.js";
+import { verifyRoomManager } from "../seat.owner.js";
 
 export function lockSeatHandler(socket: Socket, context: AppContext) {
   const userId = String(socket.data.user.id);
@@ -31,24 +31,24 @@ export function lockSeatHandler(socket: Socket, context: AppContext) {
       const { roomId, seatIndex } = parseResult.data;
       logger.info(
         { userId, roomId, seatIndex },
-        "seat:lock verifying ownership",
+        "seat:lock verifying manager permissions",
       );
 
-      const ownership = await verifyRoomOwner(roomId, userId, context);
+      const authorization = await verifyRoomManager(roomId, userId, context);
       const verifyTime = Date.now() - startTime;
       logger.info(
         {
           userId,
           roomId,
           seatIndex,
-          allowed: ownership.allowed,
+          allowed: authorization.allowed,
           verifyTimeMs: verifyTime,
         },
-        "seat:lock ownership verified",
+        "seat:lock authorization verified",
       );
 
-      if (!ownership.allowed) {
-        if (callback) callback({ success: false, error: ownership.error });
+      if (!authorization.allowed) {
+        if (callback) callback({ success: false, error: authorization.error });
         return;
       }
 

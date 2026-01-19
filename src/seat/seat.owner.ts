@@ -120,3 +120,51 @@ export async function verifyRoomOwner(
     return { allowed: false, error: "Authorization check failed" };
   }
 }
+
+/**
+ * Verify that a user can manage the room (owner OR admin)
+ * This is more permissive than verifyRoomOwner and allows admins to perform actions.
+ */
+export async function verifyRoomManager(
+  roomId: string,
+  requesterId: string,
+  context: AppContext,
+): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  const startTime = Date.now();
+  try {
+    logger.info({ roomId, requesterId }, "verifyRoomManager: starting");
+    
+    // Check if user can manage room (owner or admin)
+    const canManage = await context.laravelClient.canManageRoom(roomId, requesterId);
+    
+    const fetchTime = Date.now() - startTime;
+    logger.info(
+      { roomId, requesterId, canManage, fetchTimeMs: fetchTime },
+      "verifyRoomManager: result",
+    );
+
+    if (!canManage) {
+      logger.warn(
+        { roomId, requesterId },
+        "Unauthorized attempt to perform manager action",
+      );
+      return { allowed: false, error: "Not authorized" };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    const totalTime = Date.now() - startTime;
+    logger.error(
+      {
+        err,
+        roomId,
+        requesterId,
+        totalTimeMs: totalTime,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        errorStack: err instanceof Error ? err.stack : undefined,
+      },
+      "Failed to verify room manager",
+    );
+    return { allowed: false, error: "Authorization check failed" };
+  }
+}

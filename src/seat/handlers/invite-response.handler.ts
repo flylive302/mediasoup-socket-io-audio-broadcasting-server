@@ -81,6 +81,17 @@ export function inviteAcceptHandler(socket: Socket, context: AppContext) {
       socket.to(roomId).emit("seat:invite:pending", clearEvent);
       socket.emit("seat:invite:pending", clearEvent);
 
+      // Auto-unlock seat if locked (invited users bypass seat lock)
+      const isLocked = await context.seatRepository.isSeatLocked(roomId, seatIndex);
+      if (isLocked) {
+        await context.seatRepository.unlockSeat(roomId, seatIndex);
+        // Broadcast unlock event
+        const unlockEvent = { seatIndex, isLocked: false };
+        socket.to(roomId).emit("seat:locked", unlockEvent);
+        socket.emit("seat:locked", unlockEvent);
+        logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
+      }
+
       // User Accepted: Use atomic Redis operation to take seat
       const result = await context.seatRepository.takeSeat(
         roomId,
@@ -110,6 +121,11 @@ export function inviteAcceptHandler(socket: Socket, context: AppContext) {
           signature: user.signature,
           gender: user.gender,
           country: user.country,
+          phone: user.phone,
+          email: user.email,
+          date_of_birth: user.date_of_birth,
+          wealth_xp: user.economy.wealth_xp,
+          charm_xp: user.economy.charm_xp,
         },
         isMuted: false,
       };

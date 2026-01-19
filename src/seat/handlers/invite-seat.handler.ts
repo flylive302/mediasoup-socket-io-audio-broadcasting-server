@@ -1,11 +1,11 @@
 /**
- * seat:invite - Owner invites user to a seat
+ * seat:invite - Owner/Admin invites user to a seat
  */
 import type { Socket } from "socket.io";
 import type { AppContext } from "../../context.js";
 import { logger } from "../../core/logger.js";
 import { seatInviteSchema } from "../seat.requests.js";
-import { verifyRoomOwner } from "../seat.owner.js";
+import { verifyRoomManager } from "../seat.owner.js";
 
 // Invite expiry in seconds (30 seconds TTL in Redis)
 const INVITE_EXPIRY_SECONDS = 30;
@@ -43,7 +43,7 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
         return;
       }
 
-      const ownership = await verifyRoomOwner(roomId, userId, context);
+      const authorization = await verifyRoomManager(roomId, userId, context);
       const verifyTime = Date.now() - startTime;
       logger.info(
         {
@@ -51,26 +51,18 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
           roomId,
           targetUserId,
           seatIndex,
-          allowed: ownership.allowed,
+          allowed: authorization.allowed,
           verifyTimeMs: verifyTime,
         },
-        "seat:invite ownership verified",
+        "seat:invite authorization verified",
       );
 
-      if (!ownership.allowed) {
-        if (callback) callback({ success: false, error: ownership.error });
+      if (!authorization.allowed) {
+        if (callback) callback({ success: false, error: authorization.error });
         return;
       }
 
-      // Check if seat is locked (using Redis)
-      const isLocked = await context.seatRepository.isSeatLocked(
-        roomId,
-        seatIndex,
-      );
-      if (isLocked) {
-        if (callback) callback({ success: false, error: "Seat is locked" });
-        return;
-      }
+      // Note: Locked seats can now be invited to - will auto-unlock when user accepts
 
       // Check if seat is occupied (using Redis)
       const seat = await context.seatRepository.getSeat(roomId, seatIndex);
@@ -127,9 +119,10 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
       socket.to(roomId).emit("seat:invite:pending", pendingEvent);
       socket.emit("seat:invite:pending", pendingEvent);
 
-      // Send invite to target user (they need to be in the room)
+      // Send invite ONLY to target user using proper MSAB pattern
+      // Uses Redis-backed userSocketRepository for horizontal scalability
       const inviterUser = socket.data.user;
-      socket.to(roomId).emit("seat:invite:received", {
+      const inviteEvent = {
         seatIndex,
         invitedBy: {
           id: inviterUser.id,
@@ -137,7 +130,26 @@ export function inviteSeatHandler(socket: Socket, context: AppContext) {
         },
         expiresAt,
         targetUserId,
-      });
+      };
+
+      const targetSocketIds = await context.userSocketRepository.getSocketIds(
+        Number(targetUserId),
+      );
+
+      if (targetSocketIds.length > 0) {
+        for (const socketId of targetSocketIds) {
+          context.io.to(socketId).emit("seat:invite:received", inviteEvent);
+        }
+        logger.info(
+          { roomId, targetUserId, seatIndex, socketCount: targetSocketIds.length },
+          "Sent seat invite to target user sockets",
+        );
+      } else {
+        logger.warn(
+          { roomId, targetUserId, seatIndex },
+          "Target user has no active sockets - invite may not be received",
+        );
+      }
 
       const totalTime = Date.now() - startTime;
       logger.info(

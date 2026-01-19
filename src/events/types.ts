@@ -71,6 +71,16 @@ export const KNOWN_EVENTS = {
   AGENCY_MEMBER_LEFT: "agency.member_left",
   AGENCY_DISSOLVED: "agency.dissolved",
 
+  // MEDIUM Priority (Room Membership)
+  ROOM_MEMBER_JOINED: "room.member_joined",
+  ROOM_MEMBER_LEFT: "room.member_left",
+  ROOM_MEMBER_KICKED: "room.member_kicked",
+  ROOM_MEMBER_BLOCKED: "room.member_blocked",
+  ROOM_MEMBER_ROLE_CHANGED: "room.member_role_changed",
+  ROOM_JOIN_REQUEST_CREATED: "room.join_request_created",
+  ROOM_JOIN_REQUEST_APPROVED: "room.join_request_approved",
+  ROOM_JOIN_REQUEST_REJECTED: "room.join_request_rejected",
+
   // LOW Priority - System
   CONFIG_INVALIDATE: "config:invalidate",
   ASSET_INVALIDATE: "asset:invalidate",
