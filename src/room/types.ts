@@ -14,17 +14,3 @@ export interface Seat {
   userId: string | null;
   muted: boolean;
 }
-
-export interface SeatUser {
-  id: string | number;
-  name?: string;
-  avatar?: string;
-  signature?: string;
-  gender?: string;
-  country?: string;
-  phone?: string;
-  email?: string | null;
-  date_of_birth?: string;
-  wealth_xp?: string;
-  charm_xp?: string;
-}

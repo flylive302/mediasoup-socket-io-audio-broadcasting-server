@@ -1,7 +1,7 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "../core/logger.js";
 import { config } from "../config/index.js";
-import type { AuthenticatedUser } from "./types.js";
+import type { User } from "./types.js";
 import { hashToken } from "../utils/crypto.js";
 
 const CACHE_TTL = 300; // 5 minutes
@@ -17,7 +17,7 @@ export class SanctumValidator {
    * Validates a Sanctum token and returns the authenticated user
    * Uses Redis cache to minimize Laravel API calls
    */
-  async validate(token: string): Promise<AuthenticatedUser | null> {
+  async validate(token: string): Promise<User | null> {
     const cacheKey = `${CACHE_PREFIX}${hashToken(token)}`;
     const revokedKey = `auth:revoked:${hashToken(token)}`;
 
@@ -43,7 +43,7 @@ export class SanctumValidator {
       const cached = await this.redis.get(cacheKey);
       if (cached) {
         this.logger.debug("Token validated from cache");
-        return JSON.parse(cached) as AuthenticatedUser;
+        return JSON.parse(cached) as User;
       }
     } catch (err) {
       this.logger.error({ err }, "Redis error during token cache check");
@@ -82,7 +82,7 @@ export class SanctumValidator {
         return null;
       }
 
-      const user = (await response.json()) as AuthenticatedUser;
+      const user = (await response.json()) as User;
 
       // 3. Cache the validated token
       try {

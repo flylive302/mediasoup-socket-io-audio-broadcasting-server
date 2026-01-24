@@ -1,10 +1,10 @@
 import type { Socket } from "socket.io";
-import type { AuthenticatedUser } from "../auth/types.js";
+import type { User } from "../auth/types.js";
 
 export interface ClientData {
   socketId: string;
   userId: number;
-  user: AuthenticatedUser;
+  user: User;
   roomId?: string;
   isSpeaker: boolean;
   joinedAt: number;
@@ -19,7 +19,7 @@ export class ClientManager {
   private readonly clients = new Map<string, ClientData>();
 
   addClient(socket: Socket): void {
-    const user = socket.data.user as AuthenticatedUser;
+    const user = socket.data.user as User;
 
     this.clients.set(socket.id, {
       socketId: socket.id,

@@ -1,34 +1,27 @@
 /**
- * User economy data structure (decimal strings for precision)
- * Per MSAB_PROTOCOL_REFERENCE.md Section 1
+ * User data structure
+ * Unified type for all user representations in the system
  */
-export interface UserEconomy {
-  coins: string;
-  diamonds: string;
-  wealth_xp: string;
-  charm_xp: string;
-}
-
-/**
- * Authenticated user data returned from Laravel backend
- * Per MSAB_PROTOCOL_REFERENCE.md Section 1
- */
-export interface AuthenticatedUser {
+export interface User {
   id: number;
   name: string;
   signature: string;
-  email: string | null;
-  avatar: string; // Renamed from avatar_url per protocol
+  email: string;
+  avatar: string;
+  frame: string;
   gender: string;
   date_of_birth: string; // ISO date string (YYYY-MM-DD)
   phone: string;
   country: string;
-  economy: UserEconomy; // Nested economy object per protocol
-  is_blocked: boolean; // New field per protocol
-  [key: string]: unknown; // Allow additional fields for extensibility
+  coins: string;
+  diamonds: string;
+  wealth_xp: string;
+  charm_xp: string;
+  is_blocked: boolean;
+  isSpeaker: boolean;
 }
 
 export interface AuthSocketData {
-  user: AuthenticatedUser;
+  user: User;
   token: string;
 }
