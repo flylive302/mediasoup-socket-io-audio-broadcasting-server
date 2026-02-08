@@ -4,7 +4,7 @@
  */
 import { z } from "zod";
 import type { Socket } from "socket.io";
-import { logger } from "../core/logger.js";
+import { logger } from "../infrastructure/logger.js";
 import { generateCorrelationId } from "./correlation.js";
 import type { AppContext } from "../context.js";
 

@@ -1,9 +1,9 @@
 import type { Socket } from "socket.io";
-import { logger } from "../core/logger.js";
-import { getRedisClient } from "../core/redis.js";
+import { logger } from "../infrastructure/logger.js";
+import { getRedisClient } from "../infrastructure/redis.js";
 import { config } from "../config/index.js";
 import { SanctumValidator } from "./sanctumValidator.js";
-import { metrics } from "../core/metrics.js";
+import { metrics } from "../infrastructure/metrics.js";
 import type { AuthSocketData } from "./types.js";
 import { Errors } from "../shared/errors.js";
 

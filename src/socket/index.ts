@@ -1,35 +1,33 @@
 import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
-import { logger } from "../core/logger.js";
+import { logger } from "../infrastructure/logger.js";
 import { authMiddleware } from "../auth/middleware.js";
-import { WorkerManager } from "../core/worker.manager.js";
-import { RoomManager } from "../room/roomManager.js";
+import { WorkerManager } from "../infrastructure/worker.manager.js";
+import { RoomManager } from "../domains/room/roomManager.js";
 import { ClientManager } from "../client/clientManager.js";
 import { config } from "../config/index.js";
 
 // Handlers
-import { roomHandler } from "./handlers/roomHandler.js";
-import { mediaHandler } from "./handlers/mediaHandler.js";
-import { chatHandler } from "./handlers/chatHandler.js";
-import { userHandler } from "./handlers/userHandler.js";
-import { GiftHandler } from "../gifts/giftHandler.js";
+import { GiftHandler } from "../domains/gift/giftHandler.js";
 import { LaravelClient } from "../integrations/laravelClient.js";
 import { RateLimiter } from "../utils/rateLimiter.js";
 import type { AppContext } from "../context.js";
 
+// Domain Registry - registers all domain handlers
+import { registerAllDomains } from "../domains/index.js";
+
 // Domain modules
-import { registerSeatHandlers } from "../seat/index.js";
-import { SeatRepository } from "../seat/seat.repository.js";
+import { SeatRepository } from "../domains/seat/seat.repository.js";
 
 // Auto-close system
-import { AutoCloseService, AutoCloseJob } from "../room/auto-close/index.js";
+import { AutoCloseService, AutoCloseJob } from "../domains/room/auto-close/index.js";
 
 // Events module (Laravel pub/sub integration)
 import {
   UserSocketRepository,
   LaravelEventSubscriber,
   EventRouter,
-} from "../events/index.js";
+} from "../integrations/laravel/index.js";
 
 export async function initializeSocket(
   io: Server,
@@ -130,12 +128,11 @@ export async function initializeSocket(
       }
     });
 
-    // Register Handlers with Context
-    roomHandler(socket, appContext);
-    mediaHandler(socket, appContext);
-    chatHandler(socket, appContext);
-    userHandler(socket, appContext);
-    registerSeatHandlers(socket, appContext);
+    // Register all domain handlers via domain registry
+    registerAllDomains(socket, appContext);
+
+    // GiftHandler is a stateful class with lifecycle management (start/stop)
+    // so it's registered separately from the domain array
     giftHandler.handle(socket);
 
     // Disconnect

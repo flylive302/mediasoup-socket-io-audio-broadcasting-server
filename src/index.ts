@@ -1,7 +1,7 @@
-import { logger } from "./core/logger.js";
+import { logger } from "./infrastructure/logger.js";
 import { config } from "./config/index.js";
-import { bootstrapServer } from "./core/server.js";
-import { getRedisClient } from "./core/redis.js";
+import { bootstrapServer } from "./infrastructure/server.js";
+import { getRedisClient } from "./infrastructure/redis.js";
 
 const start = async () => {
   try {

@@ -1,5 +1,5 @@
 import { config } from "../config/index.js";
-import type { Logger } from "../core/logger.js";
+import type { Logger } from "../infrastructure/logger.js";
 import type {
   BatchProcessingResult,
   GiftTransaction,

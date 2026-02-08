@@ -1,5 +1,5 @@
 import type { Redis } from "ioredis";
-import type { Logger } from "../core/logger.js";
+import type { Logger } from "../infrastructure/logger.js";
 import { config } from "../config/index.js";
 import type { User } from "./types.js";
 import { hashToken } from "../utils/crypto.js";
