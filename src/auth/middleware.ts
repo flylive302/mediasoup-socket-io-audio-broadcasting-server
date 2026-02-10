@@ -2,7 +2,7 @@ import type { Socket } from "socket.io";
 import { logger } from "../infrastructure/logger.js";
 import { getRedisClient } from "../infrastructure/redis.js";
 import { config } from "../config/index.js";
-import { SanctumValidator } from "./sanctumValidator.js";
+import { verifyJwt } from "./jwtValidator.js";
 import { metrics } from "../infrastructure/metrics.js";
 import type { AuthSocketData } from "./types.js";
 import { Errors } from "../shared/errors.js";
@@ -11,9 +11,11 @@ export async function authMiddleware(
   socket: Socket,
   next: (err?: Error) => void,
 ) {
-  // Validate WebSocket origin against CORS origins
+  // Validate WebSocket origin against CORS origins.
+  // Connections without an Origin header are allowed intentionally —
+  // native mobile apps and server-to-server clients do not send Origin.
   const origin = socket.handshake.headers.origin;
-  if (origin && !config.CORS_ORIGINS.includes(origin)) {
+  if (origin && !config.CORS_ORIGINS.has(origin)) {
     logger.warn({ socketId: socket.id, origin }, "Origin not allowed");
     metrics.authAttempts.inc({ result: "origin_blocked" });
     return next(new Error(Errors.ORIGIN_NOT_ALLOWED));
@@ -33,13 +35,8 @@ export async function authMiddleware(
 
   const redis = getRedisClient();
 
-  // Note: Revocation check is handled inside SanctumValidator.validate()
-  // No need to check here - avoids duplicate Redis round-trip
-
-  const validator = new SanctumValidator(redis, logger);
-
   try {
-    const user = await validator.validate(cleanToken);
+    const user = await verifyJwt(cleanToken, redis, logger);
 
     if (!user) {
       logger.warn({ socketId: socket.id }, "Invalid token provided");
@@ -47,13 +44,10 @@ export async function authMiddleware(
       return next(new Error(Errors.INVALID_CREDENTIALS));
     }
 
-    // Attach user to socket
-    socket.data = {
-      user,
-      token: cleanToken,
-    } as AuthSocketData;
+    // Attach user to socket (no token stored — AUTH-004)
+    socket.data = { user } as AuthSocketData;
 
-    // Log only safe user properties (NOT the full user object which may contain token)
+    // Log only safe user properties
     logger.info(
       { socketId: socket.id, userId: user.id, userName: user.name },
       "Client authenticated",

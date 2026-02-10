@@ -36,12 +36,11 @@ LARAVEL_INTERNAL_KEY=your-secret-key
 
 All requests include:
 
-- `Authorization: Bearer {LARAVEL_INTERNAL_KEY}`
 - `X-Internal-Key: {LARAVEL_INTERNAL_KEY}`
 
 ### 2.4 Timeout
 
-All HTTP requests timeout after **10 seconds**.
+All HTTP requests timeout after `LARAVEL_API_TIMEOUT_MS` (default: **10 seconds**).
 
 ---
 

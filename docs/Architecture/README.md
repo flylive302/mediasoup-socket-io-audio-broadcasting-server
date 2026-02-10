@@ -1,7 +1,7 @@
 # MSAB Architecture Overview
 
-> **Version**: 1.0  
-> **Last Updated**: 2026-02-09  
+> **Version**: 1.1  
+> **Last Updated**: 2026-02-10  
 > **Service**: FlyLive Audio Server (MSAB)
 
 ---
@@ -74,7 +74,6 @@
 │   • POST /api/v1/internal/gifts/batch         → Gift processing            │
 │   • POST /api/v1/internal/rooms/{id}/status   → Room status updates        │
 │   • GET  /api/v1/internal/rooms/{id}          → Room data                  │
-│   • POST /api/v1/internal/auth/validate       → Token validation           │
 │                                                                             │
 │   Redis Pub/Sub (Laravel → MSAB):                                           │
 │   • Channel: flylive:msab:events              → Real-time event delivery   │
@@ -160,18 +159,24 @@ export const domains: DomainRegistration[] = [
 ## Data Flow: Authentication
 
 ```
-CLIENT                    MSAB                      LARAVEL
+CLIENT                    MSAB                      REDIS
    │  WebSocket Connect     │                          │
-   │  (Bearer token)        │                          │
+   │  (JWT in auth.token)   │                          │
    │───────────────────────▶│                          │
-   │                        │ 1. Check Redis revocation│
-   │                        │ 2. Check cache (5min TTL)│
-   │                        │ 3. POST /auth/validate   │
+   │                        │ 1. Verify HMAC-SHA256    │
+   │                        │    signature (CPU-only)  │
+   │                        │ 2. Check exp claim       │
+   │                        │ 3. Validate payload (Zod)│
+   │                        │ 4. Check Redis revocation│
    │                        │──────────────────────────▶│
-   │                        │◀──────────────────────── { user }
-   │  Connection OK         │ 4. Attach to socket.data │
+   │                        │◀──────────────────────────│
+   │  Connection OK         │ 5. Attach user to socket │
    │◀───────────────────────│                          │
 ```
+
+> **Note**: Auth uses local JWT verification (HMAC-SHA256) with a shared secret.
+> No HTTP round-trip to Laravel is required. User data is embedded in the JWT payload.
+> See [JWT Migration Guide — Backend](../guides/jwt-migration-backend.md) for details.
 
 ---
 
@@ -207,7 +212,7 @@ SPEAKER                   MSAB                      LISTENER
 src/
 ├── index.ts              # Entry point
 ├── context.ts            # AppContext interface
-├── auth/                 # Sanctum authentication
+├── auth/                 # JWT authentication (HMAC-SHA256)
 ├── client/               # Client tracking
 ├── config/               # Zod-validated config
 ├── domains/              # Domain handlers
@@ -230,13 +235,24 @@ src/
 
 Key environment variables:
 
-| Variable                 | Required | Purpose              |
-| ------------------------ | -------- | -------------------- |
-| `LARAVEL_API_URL`        | ✅       | Laravel base URL     |
-| `LARAVEL_INTERNAL_KEY`   | ✅       | 32+ char secret      |
-| `MEDIASOUP_ANNOUNCED_IP` | ✅ Prod  | Public IP for WebRTC |
-| `REDIS_HOST`             | ❌       | Default: 127.0.0.1   |
-| `PORT`                   | ❌       | Default: 3030        |
+| Variable                 | Required | Purpose                            |
+| ------------------------ | -------- | ---------------------------------- |
+| `JWT_SECRET`             | ✅       | Shared HMAC secret (32+ chars)     |
+| `LARAVEL_API_URL`        | ✅       | Laravel base URL                   |
+| `LARAVEL_INTERNAL_KEY`   | ✅       | 32+ char secret                    |
+| `MEDIASOUP_ANNOUNCED_IP` | ✅ Prod  | Public IP for WebRTC               |
+| `REDIS_HOST`             | ✅ Prod  | Valkey/Redis host (dev: 127.0.0.1) |
+| `REDIS_PORT`             | ✅ Prod  | Valkey/Redis port (dev: 6379)      |
+| `REDIS_PASSWORD`         | ✅ Prod  | Valkey/Redis password              |
+| `REDIS_TLS`              | ✅ Prod  | Enable TLS (`true` in production)  |
+| `PORT`                   | ❌       | Default: 3030                      |
+| `JWT_MAX_AGE_SECONDS`    | ❌       | Default: 86400 (24h)               |
+| `LARAVEL_API_TIMEOUT_MS` | ❌       | Default: 10000 (10s)               |
+
+> **Production Redis**: MSAB uses **DigitalOcean Managed Valkey** (Redis-compatible) in production
+> with TLS, authentication, and DB index 3 (separate from Laravel). The deploy script
+> (`scripts/deploy/deploy-droplet.sh`) auto-provisions these values from the Valkey cluster.
+> Defaults (127.0.0.1:6379, no auth) are for local development only.
 
 See `src/config/index.ts` for complete schema.
 

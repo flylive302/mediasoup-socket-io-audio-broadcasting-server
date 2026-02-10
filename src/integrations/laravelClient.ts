@@ -76,9 +76,8 @@ export class LaravelClient {
   private async post(endpoint: string, body: unknown): Promise<Response> {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
 
-    // Timeout after 10 seconds to prevent hanging
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10_000);
+    const timeoutId = setTimeout(() => controller.abort(), config.LARAVEL_API_TIMEOUT_MS);
 
     try {
       return await fetch(url, {
@@ -86,7 +85,6 @@ export class LaravelClient {
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
-          Authorization: `Bearer ${config.LARAVEL_INTERNAL_KEY}`,
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
         },
         body: JSON.stringify(body),
@@ -101,7 +99,7 @@ export class LaravelClient {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10_000);
+    const timeoutId = setTimeout(() => controller.abort(), config.LARAVEL_API_TIMEOUT_MS);
 
     try {
       return await fetch(url, {
@@ -109,7 +107,6 @@ export class LaravelClient {
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
-          Authorization: `Bearer ${config.LARAVEL_INTERNAL_KEY}`,
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
         },
         signal: controller.signal,

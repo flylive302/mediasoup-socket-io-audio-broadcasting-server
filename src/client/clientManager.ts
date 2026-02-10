@@ -19,6 +19,9 @@ export class ClientManager {
   private readonly clients = new Map<string, ClientData>();
 
   addClient(socket: Socket): void {
+    if (!socket.data?.user) {
+      throw new Error("Cannot add client: socket.data.user is missing (auth middleware may have been bypassed)");
+    }
     const user = socket.data.user as User;
 
     this.clients.set(socket.id, {

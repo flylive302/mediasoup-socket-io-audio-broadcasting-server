@@ -30,9 +30,14 @@ const configSchema = z.object({
     .default("")
     .transform((v) => v === "true" || v === "1"),
 
+  // JWT Authentication (shared secret with Laravel)
+  JWT_SECRET: z.string().min(32),
+  JWT_MAX_AGE_SECONDS: z.coerce.number().default(86_400), // 24 hours fallback
+
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
   LARAVEL_INTERNAL_KEY: z.string().min(32), // For server-to-server auth
+  LARAVEL_API_TIMEOUT_MS: z.coerce.number().default(10_000), // 10 seconds
 
   // MediaSoup
   MEDIASOUP_LISTEN_IP: z.string().default("0.0.0.0"),
@@ -70,7 +75,7 @@ const configSchema = z.object({
   CORS_ORIGINS: z
     .string()
     .default("https://flyliveapp.com,https://www.flyliveapp.com")
-    .transform((s) => s.split(",").map((o) => o.trim())),
+    .transform((s) => new Set(s.split(",").map((o) => o.trim()))),
 });
 
 export type Config = z.infer<typeof configSchema>;

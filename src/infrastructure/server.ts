@@ -55,7 +55,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
 
   const io = new Server(fastify.server, {
     cors: {
-      origin: config.CORS_ORIGINS,
+      origin: [...config.CORS_ORIGINS],
       methods: ["GET", "POST"],
       credentials: true,
     },
