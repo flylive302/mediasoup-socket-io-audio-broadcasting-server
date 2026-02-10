@@ -29,8 +29,8 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     try {
       logger.debug({ socketId: socket.id, roomId }, "Join request");
 
-      const routerManager = await roomManager.getOrCreateRoom(roomId);
-      const rtpCapabilities = routerManager.router?.rtpCapabilities;
+      const cluster = await roomManager.getOrCreateRoom(roomId);
+      const rtpCapabilities = cluster.router?.rtpCapabilities;
 
       // Cache room owner if provided by frontend
       const { ownerId } = payloadResult.data;

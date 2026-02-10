@@ -202,6 +202,11 @@ export const consumerResumeSchema = z.object({
   consumerId: z.string().uuid(),
 });
 
+export const selfMuteSchema = z.object({
+  roomId: roomIdSchema,
+  producerId: z.string().uuid(),
+});
+
 // ─────────────────────────────────────────────────────────────────
 // Seat Management Schemas
 // ─────────────────────────────────────────────────────────────────

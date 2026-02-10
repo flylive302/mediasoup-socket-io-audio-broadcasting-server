@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "timestamp": "2026-02-10T19:44:00+05:00",
+    "auditRef": "worker_management_audit_v2",
+    "commit": "cc39ded"
+  },
+  "remediations": [
+    {
+      "issueId": "F4-MAX_ROOMS_PER_WORKER",
+      "severity": "HIGH",
+      "filesTouched": ["src/infrastructure/worker.manager.ts"],
+      "patchSketch": "getLeastLoadedWorker() now skips workers where routerCount >= MAX_ROOMS_PER_WORKER, throws when all at capacity",
+      "downstreamCallsites": ["src/domains/room/roomManager.ts:68 — doCreateRoom()"],
+      "runtimeRisk": "If all workers are at capacity, new room creation will throw. Callers should handle this error.",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "backend",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": ["src/infrastructure/worker.manager.test.ts — getLeastLoadedWorker capacity enforcement"]
+    },
+    {
+      "issueId": "F6-WORKER_DEATH_ORPHANS",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/infrastructure/worker.manager.ts",
+        "src/domains/room/roomManager.ts"
+      ],
+      "patchSketch": "WorkerManager.setOnWorkerDied() callback invoked in handleWorkerDeath() before replacement. RoomManager.handleWorkerDeath(pid) closes all rooms on dead worker.",
+      "downstreamCallsites": [
+        "src/domains/room/roomManager.ts:28 — constructor wires callback",
+        "src/infrastructure/worker.manager.ts:189 — handleWorkerDeath invokes callback"
+      ],
+      "runtimeRisk": "Room closure during worker death is fire-and-forget. If closeRoom fails, room is still removed from local map.",
+      "rollback": "git revert <commit>",
+      "hours": 2,
+      "owner": "backend",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": ["src/infrastructure/worker.manager.test.ts — onWorkerDied callback invocation"]
+    },
+    {
+      "issueId": "F5-NO_WEBRTC_SERVER",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/infrastructure/worker.manager.ts",
+        "src/domains/media/routerManager.ts",
+        "src/domains/room/roomManager.ts"
+      ],
+      "patchSketch": "WebRtcServer created per worker on RTC_MIN_PORT+index. RouterManager accepts webRtcServer in constructor, uses it in createWebRtcTransport(). Fallback to per-transport ports if creation fails.",
+      "downstreamCallsites": [
+        "src/domains/room/roomManager.ts:75 — doCreateRoom passes WebRtcServer",
+        "src/domains/media/routerManager.ts:83 — createWebRtcTransport uses it"
+      ],
+      "runtimeRisk": "If MEDIASOUP_ANNOUNCED_IP is wrong in production, media will fail. WebRtcServer binds on worker creation — port conflict will log warning and fall back.",
+      "rollback": "git revert <commit>",
+      "hours": 3,
+      "owner": "backend",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": ["Manual: verify audio works end-to-end after deployment"]
+    },
+    {
+      "issueId": "F8-NO_PER_WORKER_METRICS",
+      "severity": "LOW",
+      "filesTouched": [
+        "src/infrastructure/metrics.ts",
+        "src/infrastructure/worker.manager.ts"
+      ],
+      "patchSketch": "Added flylive_mediasoup_routers_per_worker gauge with worker_pid label. getWorkerStats() returns [{pid, routerCount}]. JSON /metrics includes per-worker breakdown.",
+      "downstreamCallsites": ["src/infrastructure/metrics.ts:139 — updateWorkerMetrics()"],
+      "runtimeRisk": "None — additive metrics only",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "F9-HEALTH_THRESHOLD",
+      "severity": "LOW",
+      "filesTouched": ["src/infrastructure/health.ts", "src/infrastructure/worker.manager.ts"],
+      "patchSketch": "Health returns degraded if workerCount < expectedCount/2. Response includes workers:{active,expected}.",
+      "downstreamCallsites": ["src/infrastructure/server.ts:69 — createHealthRoutes()"],
+      "runtimeRisk": "LB may route traffic away sooner with stricter threshold. This is desired behavior.",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "AUTO_SCALER",
+      "severity": "ENHANCEMENT",
+      "filesTouched": ["scripts/deploy/auto-scale.sh"],
+      "patchSketch": "New cron-driven auto-scaler queries /metrics, scales up/down based on room count thresholds. Lock file + 10min cooldown prevent flapping.",
+      "downstreamCallsites": [
+        "scripts/deploy/scale-up.sh — called for scale-up",
+        "scripts/deploy/scale-down.sh — called for scale-down"
+      ],
+      "runtimeRisk": "Misconfigured thresholds could cause premature scaling. Budget protected by MAX_DROPLETS.",
+      "rollback": "Remove crontab entry",
+      "hours": 3,
+      "owner": "devops",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["Manual: simulate high load and verify scale-up triggers"]
+    }
+  ],
+  "prPlan": [
+    { "prNumber": 1, "title": "fix(worker): enforce MAX_ROOMS_PER_WORKER capacity", "files": ["src/infrastructure/worker.manager.ts"], "dependsOn": [] },
+    { "prNumber": 2, "title": "fix(worker): close orphaned rooms on worker death", "files": ["src/infrastructure/worker.manager.ts", "src/domains/room/roomManager.ts"], "dependsOn": [1] },
+    { "prNumber": 3, "title": "perf(media): WebRtcServer per worker for port optimization", "files": ["src/infrastructure/worker.manager.ts", "src/domains/media/routerManager.ts", "src/domains/room/roomManager.ts"], "dependsOn": [1] },
+    { "prNumber": 4, "title": "feat(metrics): per-worker router gauges and smarter health", "files": ["src/infrastructure/metrics.ts", "src/infrastructure/health.ts", "src/infrastructure/worker.manager.ts"], "dependsOn": [1] },
+    { "prNumber": 5, "title": "feat(deploy): auto-scaler script with cooldown", "files": ["scripts/deploy/auto-scale.sh"], "dependsOn": [] }
+  ],
+  "sprintPlan": [
+    { "sprint": 1, "focus": "Critical worker fixes + port optimization", "prs": [1, 2, 3], "hours": 6 },
+    { "sprint": 2, "focus": "Observability + auto-scaling", "prs": [4, 5], "hours": 4.5 }
+  ]
+}

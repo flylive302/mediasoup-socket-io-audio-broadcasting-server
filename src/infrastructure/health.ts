@@ -18,8 +18,15 @@ export const createHealthRoutes = (
         // Redis unreachable
       }
 
-      const workersOk = workerManager.getWorkerCount() > 0;
-      const status = redisOk && workersOk ? "ok" : "degraded";
+      const workerCount = workerManager.getWorkerCount();
+      const expectedCount = workerManager.getExpectedWorkerCount();
+      const workersOk = workerCount > 0;
+
+      // Degraded if less than half of expected workers are alive
+      const workersHealthy =
+        expectedCount > 0 ? workerCount >= expectedCount / 2 : workersOk;
+
+      const status = redisOk && workersHealthy ? "ok" : "degraded";
 
       if (status !== "ok") {
         reply.code(503);
@@ -27,6 +34,10 @@ export const createHealthRoutes = (
 
       return {
         status,
+        workers: {
+          active: workerCount,
+          expected: expectedCount,
+        },
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
       };

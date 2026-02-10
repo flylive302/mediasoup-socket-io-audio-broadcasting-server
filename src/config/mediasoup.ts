@@ -51,10 +51,12 @@ export const mediasoupConfig = {
     ] as mediasoup.types.TransportListenInfo[],
 
     // Bandwidth settings (Audio-only optimization)
-    // 128kbps max incoming per stream is plenty for high quality Opus
-    maxIncomingBitrate: 128000,
     initialAvailableOutgoingBitrate: 64000,
   } as mediasoup.types.WebRtcTransportOptions,
+
+  // Max incoming bitrate per transport (applied via setMaxIncomingBitrate after creation)
+  // 128kbps max incoming per stream is plenty for high quality Opus
+  maxIncomingBitrate: 128000,
 
   // Active Speaker settings
   activeSpeakerObserver: {

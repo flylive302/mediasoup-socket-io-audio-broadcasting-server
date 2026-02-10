@@ -69,10 +69,32 @@ export function lockSeatHandler(socket: Socket, context: AppContext) {
         seatIndex,
       );
 
-      // If someone was kicked, notify room
+      // If someone was kicked, notify room and close their producer
       if (kicked) {
         socket.to(roomId).emit("seat:cleared", { seatIndex });
         socket.emit("seat:cleared", { seatIndex });
+
+        // Server-side producer close — don't rely on frontend
+        const kickedClient = context.clientManager
+          .getClientsInRoom(roomId)
+          .find((c) => String(c.userId) === String(kicked));
+
+        if (kickedClient) {
+          const audioProducerId = kickedClient.producers.get("audio");
+          if (audioProducerId) {
+            const room = await context.roomManager.getRoom(roomId);
+            const producer = room?.getProducer(audioProducerId);
+            if (producer && !producer.closed) {
+              producer.close();
+              logger.info(
+                { roomId, producerId: audioProducerId, kickedUserId: kicked },
+                "Producer closed (seat locked)",
+              );
+            }
+            kickedClient.producers.delete("audio");
+            kickedClient.isSpeaker = kickedClient.producers.size > 0;
+          }
+        }
 
         logger.info(
           {

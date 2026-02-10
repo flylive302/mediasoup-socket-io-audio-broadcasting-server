@@ -191,9 +191,9 @@ async function handleDisconnect(
     // Cleanup transports
     for (const [transportId] of client.transports) {
       try {
-        const routerMgr = await roomManager.getRoom(client.roomId);
-        if (routerMgr) {
-          const transport = routerMgr.getTransport(transportId);
+        const cluster = await roomManager.getRoom(client.roomId);
+        if (cluster) {
+          const transport = cluster.getTransport(transportId);
           if (transport && !transport.closed) {
             await transport.close();
           }

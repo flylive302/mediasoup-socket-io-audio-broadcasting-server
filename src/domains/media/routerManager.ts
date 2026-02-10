@@ -6,6 +6,7 @@ export class RouterManager {
   public router: mediasoup.types.Router | null = null;
   public audioObserver: mediasoup.types.ActiveSpeakerObserver | null = null;
   public readonly worker: mediasoup.types.Worker;
+  private readonly webRtcServer: mediasoup.types.WebRtcServer | null;
 
   // Store transports for lookups during connect/produce/consume
   private readonly transports = new Map<
@@ -17,11 +18,16 @@ export class RouterManager {
   // Track producers for mute/close
   private readonly producers = new Map<string, mediasoup.types.Producer>();
 
+  // Store ActiveSpeakerDetector reference for cleanup
+  private activeSpeakerDetector: { stop(): void } | null = null;
+
   constructor(
     worker: mediasoup.types.Worker,
     private readonly logger: Logger,
+    webRtcServer: mediasoup.types.WebRtcServer | null = null,
   ) {
     this.worker = worker;
+    this.webRtcServer = webRtcServer;
   }
 
   async initialize(): Promise<void> {
@@ -38,7 +44,18 @@ export class RouterManager {
     );
   }
 
+  /** Store detector reference for cleanup on close */
+  setActiveSpeakerDetector(detector: { stop(): void }): void {
+    this.activeSpeakerDetector = detector;
+  }
+
   async close(): Promise<void> {
+    // Stop active speaker detector first
+    if (this.activeSpeakerDetector) {
+      this.activeSpeakerDetector.stop();
+      this.activeSpeakerDetector = null;
+    }
+
     this.transports.forEach((t) => t.close());
     this.transports.clear();
     this.consumers.clear();
@@ -60,10 +77,33 @@ export class RouterManager {
   ): Promise<mediasoup.types.WebRtcTransport> {
     if (!this.router) throw new Error("Router not initialized");
 
-    const transport = await this.router.createWebRtcTransport({
-      ...mediasoupConfig.webRtcTransport,
-      appData: { isProducer },
-    });
+    // Prefer WebRtcServer (shared port) over per-transport port allocation
+    const outgoingBitrate =
+      mediasoupConfig.webRtcTransport.initialAvailableOutgoingBitrate;
+
+    const transportOptions: mediasoup.types.WebRtcTransportOptions = this
+      .webRtcServer
+      ? {
+          webRtcServer: this.webRtcServer,
+          ...(outgoingBitrate
+            ? { initialAvailableOutgoingBitrate: outgoingBitrate }
+            : {}),
+          appData: { isProducer },
+        }
+      : {
+          ...mediasoupConfig.webRtcTransport,
+          appData: { isProducer },
+        };
+
+    const transport =
+      await this.router.createWebRtcTransport(transportOptions);
+
+    // Apply max incoming bitrate limit (set via API, not constructor option)
+    if (mediasoupConfig.maxIncomingBitrate) {
+      await transport.setMaxIncomingBitrate(
+        mediasoupConfig.maxIncomingBitrate,
+      );
+    }
 
     transport.on("dtlsstatechange", (dtlsState) => {
       if (dtlsState === "closed") transport.close();

@@ -61,6 +61,14 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // Per-worker router count (labeled by worker PID)
+  routersPerWorker: new Gauge({
+    name: "flylive_mediasoup_routers_per_worker",
+    help: "Number of routers per mediasoup worker",
+    labelNames: ["worker_pid"] as const,
+    registers: [metricsRegistry],
+  }),
+
   // Gift processing
   giftsProcessed: new Counter({
     name: "flylive_gifts_processed_total",
@@ -119,6 +127,9 @@ export const createMetricsRoutes = (
   return async (fastify) => {
     // Prometheus format endpoint
     fastify.get("/metrics/prometheus", async (_request, reply) => {
+      // Update per-worker metrics before collecting
+      updateWorkerMetrics(workerManager);
+
       reply.header("Content-Type", metricsRegistry.contentType);
       return metricsRegistry.metrics();
     });
@@ -128,6 +139,7 @@ export const createMetricsRoutes = (
       const memoryUsage = process.memoryUsage();
       const cpuUsage = process.cpuUsage();
       const uptime = process.uptime();
+      const workerStats = workerManager.getWorkerStats();
 
       return {
         system: {
@@ -146,6 +158,8 @@ export const createMetricsRoutes = (
         application: {
           rooms: roomManager.getRoomCount(),
           activeWorkers: workerManager.getWorkerCount(),
+          expectedWorkers: workerManager.getExpectedWorkerCount(),
+          workers: workerStats,
           concurrency: os.cpus().length,
         },
         timestamp: new Date().toISOString(),
@@ -153,3 +167,16 @@ export const createMetricsRoutes = (
     });
   };
 };
+
+/**
+ * Update per-worker Prometheus gauges
+ */
+function updateWorkerMetrics(workerManager: WorkerManager): void {
+  // Reset all labels first to remove stale workers
+  metrics.routersPerWorker.reset();
+  metrics.workersActive.set(workerManager.getWorkerCount());
+
+  for (const stat of workerManager.getWorkerStats()) {
+    metrics.routersPerWorker.set({ worker_pid: String(stat.pid) }, stat.routerCount);
+  }
+}

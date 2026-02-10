@@ -8,6 +8,7 @@ import {
   audioProduceSchema,
   audioConsumeSchema,
   consumerResumeSchema,
+  selfMuteSchema,
 } from "../../socket/schemas.js";
 
 export const mediaHandler = (socket: Socket, context: AppContext) => {
@@ -27,14 +28,14 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
     const { type, roomId } = payloadResult.data;
 
-    const routerMgr = await roomManager.getRoom(roomId);
-    if (!routerMgr) {
+    const cluster = await roomManager.getRoom(roomId);
+    if (!cluster) {
       if (callback) callback({ error: "Room not found" });
       return;
     }
 
     try {
-      const transport = await routerMgr.createWebRtcTransport(
+      const transport = await cluster.createWebRtcTransport(
         type === "producer",
       );
 
@@ -67,8 +68,8 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
     const { roomId, transportId, dtlsParameters } = payloadResult.data;
 
-    const routerMgr = await roomManager.getRoom(roomId);
-    const transport = routerMgr?.getTransport(transportId);
+    const cluster = await roomManager.getRoom(roomId);
+    const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
       if (callback) callback({ error: "Transport not found" });
@@ -86,7 +87,7 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
   });
 
-  // 3. Produce (Audio)
+  // 3. Produce (Audio) — always on source router
   socket.on("audio:produce", async (rawPayload: unknown, callback) => {
     const payloadResult = audioProduceSchema.safeParse(rawPayload);
     if (!payloadResult.success) {
@@ -95,8 +96,8 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
     const { roomId, transportId, kind, rtpParameters } = payloadResult.data;
 
-    const routerMgr = await roomManager.getRoom(roomId);
-    const transport = routerMgr?.getTransport(transportId);
+    const cluster = await roomManager.getRoom(roomId);
+    const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
       if (callback) callback({ error: "Transport not found" });
@@ -122,21 +123,23 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
       }
 
       // Add to active speaker observer
-      if (routerMgr?.audioObserver) {
-        await routerMgr.audioObserver.addProducer({ producerId: producer.id });
+      if (cluster?.audioObserver) {
+        await cluster.audioObserver.addProducer({ producerId: producer.id });
+      }
+
+      // Register producer in cluster — auto-pipes to distribution routers
+      // MUST complete before notifying listeners so piped producers exist
+      if (cluster) {
+        await cluster.registerProducer(producer);
       }
 
       // Notify room members causing them to consume
+      // (after piping is complete so distribution routers have the producer)
       socket.to(roomId).emit("audio:newProducer", {
         producerId: producer.id,
         userId: socket.data.user.id,
         kind: "audio",
       });
-
-      // Register producer in router manager for lookups (e.g. for mute)
-      if (routerMgr) {
-        routerMgr.registerProducer(producer);
-      }
 
       producer.on("transportclose", () => {
         // Clean up client tracking
@@ -154,7 +157,7 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
   });
 
-  // 4. Consume
+  // 4. Consume — uses cluster to resolve piped producer IDs
   socket.on("audio:consume", async (rawPayload: unknown, callback) => {
     const payloadResult = audioConsumeSchema.safeParse(rawPayload);
     if (!payloadResult.success) {
@@ -164,38 +167,25 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     const { roomId, transportId, producerId, rtpCapabilities } =
       payloadResult.data;
 
-    const routerMgr = await roomManager.getRoom(roomId);
-    if (!routerMgr || !routerMgr.router) {
+    const cluster = await roomManager.getRoom(roomId);
+    if (!cluster) {
       if (callback) callback({ error: "Room not found" });
       return;
     }
 
-    const transport = routerMgr.getTransport(transportId);
-    if (!transport) {
-      if (callback) callback({ error: "Transport not found" });
-      return;
-    }
-
-    // Ensure we can consume
-    if (!routerMgr.router.canConsume({ producerId, rtpCapabilities: rtpCapabilities as mediasoup.types.RtpCapabilities })) {
+    // Check if the source producer can be consumed
+    if (!cluster.canConsume(producerId, rtpCapabilities as mediasoup.types.RtpCapabilities)) {
       if (callback) callback({ error: "Cannot consume" });
       return;
     }
 
     try {
-      const consumer = await transport.consume({
+      // cluster.consume() resolves piped producer ID and creates consumer
+      const consumer = await cluster.consume(
+        transportId,
         producerId,
-        rtpCapabilities: rtpCapabilities as mediasoup.types.RtpCapabilities,
-        paused: true, // Start paused recommended
-      });
-
-      consumer.on("transportclose", () => consumer.close());
-      consumer.on("producerclose", () => consumer.close());
-
-      // Register consumer for resume capability
-      if (routerMgr) {
-        routerMgr.registerConsumer(consumer);
-      }
+        rtpCapabilities as mediasoup.types.RtpCapabilities,
+      );
 
       if (callback) {
         callback({
@@ -220,24 +210,110 @@ export const mediaHandler = (socket: Socket, context: AppContext) => {
     }
     const { roomId, consumerId } = payloadResult.data;
 
-    const routerMgr = await roomManager.getRoom(roomId);
-    if (!routerMgr) {
+    const cluster = await roomManager.getRoom(roomId);
+    if (!cluster) {
       if (callback) callback({ error: "Room not found" });
       return;
     }
 
-    const consumer = routerMgr.getConsumer(consumerId);
+    const consumer = cluster.getConsumer(consumerId);
     if (!consumer) {
       if (callback) callback({ error: "Consumer not found" });
       return;
     }
 
     try {
+      // Only resume if the source producer is an active speaker
+      // (active speaker forwarding optimization)
+      const sourceProducerId = consumer.appData.sourceProducerId as string | undefined;
+      if (sourceProducerId && !cluster.isActiveSpeaker(sourceProducerId)) {
+        // Don't resume — this speaker is not currently active
+        // The consumer will be auto-resumed when the speaker becomes active
+        if (callback) callback({ success: true, deferred: true });
+        return;
+      }
+
       await consumer.resume();
       if (callback) callback({ success: true });
     } catch (error) {
       logger.error({ error }, "Resume failed");
       if (callback) callback({ error: "Resume failed" });
+    }
+  });
+
+  // 6. Self Mute — pauses producer server-side (stops all downstream consumers)
+  socket.on("audio:selfMute", async (rawPayload: unknown, callback) => {
+    const payloadResult = selfMuteSchema.safeParse(rawPayload);
+    if (!payloadResult.success) {
+      if (callback) callback({ error: "Invalid payload" });
+      return;
+    }
+    const { roomId, producerId } = payloadResult.data;
+
+    const cluster = await roomManager.getRoom(roomId);
+    const producer = cluster?.getProducer(producerId);
+
+    if (!producer) {
+      if (callback) callback({ error: "Producer not found" });
+      return;
+    }
+
+    try {
+      await producer.pause();
+      logger.debug(
+        { producerId, userId: socket.data.user.id },
+        "Producer paused (self-mute)",
+      );
+
+      // Notify room so frontend can update UI
+      socket.to(roomId).emit("seat:userMuted", {
+        userId: socket.data.user.id,
+        isMuted: true,
+        selfMuted: true,
+      });
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error }, "Self-mute failed");
+      if (callback) callback({ error: "Mute failed" });
+    }
+  });
+
+  // 7. Self Unmute — resumes producer server-side
+  socket.on("audio:selfUnmute", async (rawPayload: unknown, callback) => {
+    const payloadResult = selfMuteSchema.safeParse(rawPayload);
+    if (!payloadResult.success) {
+      if (callback) callback({ error: "Invalid payload" });
+      return;
+    }
+    const { roomId, producerId } = payloadResult.data;
+
+    const cluster = await roomManager.getRoom(roomId);
+    const producer = cluster?.getProducer(producerId);
+
+    if (!producer) {
+      if (callback) callback({ error: "Producer not found" });
+      return;
+    }
+
+    try {
+      await producer.resume();
+      logger.debug(
+        { producerId, userId: socket.data.user.id },
+        "Producer resumed (self-unmute)",
+      );
+
+      // Notify room so frontend can update UI
+      socket.to(roomId).emit("seat:userMuted", {
+        userId: socket.data.user.id,
+        isMuted: false,
+        selfMuted: true,
+      });
+
+      if (callback) callback({ success: true });
+    } catch (error) {
+      logger.error({ error }, "Self-unmute failed");
+      if (callback) callback({ error: "Unmute failed" });
     }
   });
 };

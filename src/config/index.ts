@@ -50,7 +50,8 @@ const configSchema = z.object({
 
   // Limits
   MAX_ROOMS_PER_WORKER: z.coerce.number().default(100),
-  MAX_CLIENTS_PER_ROOM: z.coerce.number().default(50),
+  MAX_LISTENERS_PER_DISTRIBUTION_ROUTER: z.coerce.number().default(700),
+  MAX_ACTIVE_SPEAKERS_FORWARDED: z.coerce.number().default(3),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
 
   // Mediasoup Workers

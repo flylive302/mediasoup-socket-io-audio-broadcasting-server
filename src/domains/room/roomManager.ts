@@ -2,17 +2,17 @@ import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "../../infrastructure/logger.js";
 import type { WorkerManager } from "../../infrastructure/worker.manager.js";
-import { RouterManager } from "../media/routerManager.js";
+import { RoomMediaCluster } from "../media/roomMediaCluster.js";
 import { RoomStateRepository } from "./roomState.js";
 import { LaravelClient } from "../../integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "../media/activeSpeaker.js";
 
 export class RoomManager {
-  private readonly rooms = new Map<string, RouterManager>();
+  private readonly rooms = new Map<string, RoomMediaCluster>();
   private readonly stateRepo: RoomStateRepository;
 
   // Track rooms being created to prevent race conditions
-  private readonly creatingRooms = new Map<string, Promise<RouterManager>>();
+  private readonly creatingRooms = new Map<string, Promise<RoomMediaCluster>>();
 
   constructor(
     private readonly workerManager: WorkerManager,
@@ -21,6 +21,9 @@ export class RoomManager {
     private readonly laravelClient: LaravelClient,
   ) {
     this.stateRepo = new RoomStateRepository(redis);
+
+    // Subscribe to worker death events to clean up orphaned rooms
+    this.workerManager.setOnWorkerDied((pid) => this.handleWorkerDeath(pid));
   }
 
   // Getter for state repo
@@ -37,10 +40,10 @@ export class RoomManager {
    * If creating, initializes mediasoup router and Redis state.
    * Race condition safe: concurrent calls for same roomId coalesce.
    */
-  async getOrCreateRoom(roomId: string): Promise<RouterManager> {
+  async getOrCreateRoom(roomId: string): Promise<RoomMediaCluster> {
     // Check if room already exists
-    let routerManager = this.rooms.get(roomId);
-    if (routerManager) return routerManager;
+    let cluster = this.rooms.get(roomId);
+    if (cluster) return cluster;
 
     // Check if room creation is already in progress
     let pending = this.creatingRooms.get(roomId);
@@ -51,8 +54,8 @@ export class RoomManager {
     this.creatingRooms.set(roomId, pending);
 
     try {
-      routerManager = await pending;
-      return routerManager;
+      cluster = await pending;
+      return cluster;
     } finally {
       this.creatingRooms.delete(roomId);
     }
@@ -61,33 +64,29 @@ export class RoomManager {
   /**
    * Internal room creation logic (called only once per roomId)
    */
-  private async doCreateRoom(roomId: string): Promise<RouterManager> {
+  private async doCreateRoom(roomId: string): Promise<RoomMediaCluster> {
     logger.info({ roomId }, "Creating new room");
 
-    // 1. Get worker
-    const worker = await this.workerManager.getLeastLoadedWorker();
+    // 1. Create RoomMediaCluster (handles its own worker selection)
+    const cluster = new RoomMediaCluster(this.workerManager, logger);
+    await cluster.initialize();
 
-    // 2. Create Router
-    const routerManager = new RouterManager(worker, logger);
-    await routerManager.initialize();
-
-    // 3. Setup Active Speaker Detector
-    if (routerManager.audioObserver) {
+    // 2. Setup Active Speaker Detector
+    if (cluster.audioObserver) {
       const detector = new ActiveSpeakerDetector(
-        routerManager.audioObserver,
+        cluster.audioObserver,
         roomId,
         this.io,
         logger,
       );
+      detector.setCluster(cluster);
       detector.start();
-      // Store detector ref if needed for cleanup?
-      // RouterManager closes observer, so detector just stops receiving events.
+      cluster.setActiveSpeakerDetector(detector);
     }
 
-    this.rooms.set(roomId, routerManager);
-    this.workerManager.incrementRouterCount(worker);
+    this.rooms.set(roomId, cluster);
 
-    // 4. Initialize State
+    // 3. Initialize State
     await this.stateRepo.save({
       id: roomId,
       status: "ACTIVE",
@@ -97,21 +96,52 @@ export class RoomManager {
       speakers: [],
     });
 
-    // 5. Notify Laravel Live
+    // 4. Notify Laravel Live
     await this.laravelClient.updateRoomStatus(roomId, {
       is_live: true,
       participant_count: 0,
     });
 
-    return routerManager;
+    return cluster;
+  }
+
+  /**
+   * Handle worker death: close all rooms that have the dead worker
+   * in their cluster (source or distribution).
+   */
+  private handleWorkerDeath(workerPid: number): void {
+    const orphanedRooms: string[] = [];
+
+    for (const [roomId, cluster] of this.rooms) {
+      const workerPids = cluster.getWorkerPids();
+      if (workerPids.includes(workerPid)) {
+        orphanedRooms.push(roomId);
+      }
+    }
+
+    if (orphanedRooms.length === 0) return;
+
+    logger.warn(
+      { workerPid, roomCount: orphanedRooms.length, roomIds: orphanedRooms },
+      "Cleaning up rooms from dead worker",
+    );
+
+    // Close each orphaned room (fire-and-forget with error handling)
+    for (const roomId of orphanedRooms) {
+      this.closeRoom(roomId, "worker_died").catch((err) => {
+        logger.error({ err, roomId, workerPid }, "Error closing orphaned room");
+        // Even if closeRoom fails, ensure we remove from local map
+        this.rooms.delete(roomId);
+      });
+    }
   }
 
   /**
    * Close a room and cleanup all resources.
    */
   async closeRoom(roomId: string, reason = "host_left"): Promise<void> {
-    const routerMgr = this.rooms.get(roomId);
-    if (!routerMgr) return;
+    const cluster = this.rooms.get(roomId);
+    if (!cluster) return;
 
     logger.info({ roomId, reason }, "Closing room");
 
@@ -126,21 +156,18 @@ export class RoomManager {
     await this.laravelClient.updateRoomStatus(roomId, {
       is_live: false,
       participant_count: 0,
-      ended_at: new Date().toISOString(), // Changed from closed_at per protocol
+      ended_at: new Date().toISOString(),
     });
 
-    // 3. Cleanup Mediasoup
-    await routerMgr.close();
+    // 3. Cleanup Mediasoup (cluster handles all its routers)
+    await cluster.close();
     this.rooms.delete(roomId);
-
-    // 5. Decrement Worker Load
-    this.workerManager.decrementRouterCount(routerMgr.worker);
 
     // 4. Cleanup Redis
     await this.stateRepo.delete(roomId);
   }
 
-  async getRoom(roomId: string): Promise<RouterManager | undefined> {
+  async getRoom(roomId: string): Promise<RoomMediaCluster | undefined> {
     return this.rooms.get(roomId);
   }
 }
