@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "timestamp": "2026-02-10T09:22:00+05:00",
+    "auditRef": "reports/audit-2026-02-10-0900-supporting-layers.json",
+    "commit": "37734a7"
+  },
+  "remediations": [
+    {
+      "issueId": "SL-001",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/infrastructure/health.ts", "src/infrastructure/server.ts"],
+      "patchSketch": "- return { status, uptime, redis, workers, rooms, build }\n+ return { status, uptime, timestamp }",
+      "downstreamCallsites": ["src/infrastructure/server.ts:69 — createHealthRoutes(workerManager)"],
+      "runtimeRisk": "Monitoring dashboards that consume /health details will lose granularity",
+      "rollback": "git revert HEAD",
+      "hours": 0.5,
+      "owner": "backend",
+      "priority": "P1",
+      "docsUpdates": ["docs/Architecture/README.md — health endpoint section"],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-002",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/infrastructure/redis.ts"],
+      "patchSketch": "+ export async function disconnectRedis(): Promise<void> {\n+   if (redisInstance) { await redisInstance.quit(); redisInstance = null; }\n+ }",
+      "downstreamCallsites": ["src/index.ts:64 — gracefulShutdown (optional use)"],
+      "runtimeRisk": "None — additive change",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-003",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/event-subscriber.ts"],
+      "patchSketch": "- const parsed = JSON.parse(message);\n+ let parsed: unknown;\n+ try { parsed = JSON.parse(message); } catch { return null; }",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — improves resilience",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-004",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "- for (const socketId of socketIds) { this.io.to(socketId).emit(...); }\n+ let target = this.io.to(socketIds[0]!); for (...) { target = target.to(...); } target.emit(...);",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — Socket.IO .to() chaining is documented API",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-005",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/socket/index.ts"],
+      "patchSketch": "- socket.on('disconnect', async (reason) => { ...55 lines... });\n+ socket.on('disconnect', (reason) => handleDisconnect(socket, reason, deps));",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — behavioral equivalent",
+      "rollback": "git revert HEAD",
+      "hours": 0.5,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-006",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/shared/crypto.ts", "src/shared/index.ts", "src/shared/handler.utils.ts", "src/auth/jwtValidator.ts"],
+      "patchSketch": "+ src/shared/crypto.ts (NEW: generateCorrelationId + hashToken)\n- src/utils/crypto.ts (DELETED)\n- src/shared/correlation.ts (DELETED)",
+      "downstreamCallsites": ["src/auth/jwtValidator.ts:18 — import hashToken", "src/shared/handler.utils.ts:8 — import generateCorrelationId"],
+      "runtimeRisk": "None — consolidation only",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-007",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/user-socket.repository.ts", "src/socket/index.ts"],
+      "patchSketch": "- constructor(private readonly redis: Redis) {}\n+ constructor(private readonly redis: Redis, private readonly logger: Logger) {}",
+      "downstreamCallsites": ["src/socket/index.ts:64 — new UserSocketRepository(redis, logger)"],
+      "runtimeRisk": "None — signature change with callsite update",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-008",
+      "severity": "LOW",
+      "filesTouched": ["src/socket/index.ts"],
+      "patchSketch": "- socket.onAny((eventName, ...args) => { ... }); // 9 lines removed",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — removes dead code",
+      "rollback": "git revert HEAD",
+      "hours": 0.1,
+      "owner": "backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-009",
+      "severity": "LOW",
+      "filesTouched": ["src/infrastructure/worker.manager.ts"],
+      "patchSketch": "- cpuUsage: number; // removed from WorkerInfo\n- private async updateAllCpuUsage() { ... } // removed\n- async getLeastLoadedWorker() // changed to sync",
+      "downstreamCallsites": ["src/domains/room/roomManager.ts:68 — await getLeastLoadedWorker() (still works)"],
+      "runtimeRisk": "Awaiting synchronous function is harmless",
+      "rollback": "git revert HEAD",
+      "hours": 0.25,
+      "owner": "backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-012",
+      "severity": "LOW",
+      "filesTouched": ["src/socket/index.ts"],
+      "patchSketch": "- await unregisterSocket(); await clearUserRoom();\n+ await Promise.allSettled([unregisterSocket(), clearUserRoom()]);",
+      "downstreamCallsites": [],
+      "runtimeRisk": "Promise.allSettled never rejects — safe",
+      "rollback": "git revert HEAD",
+      "hours": 0.1,
+      "owner": "backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SL-013",
+      "severity": "LOW",
+      "filesTouched": ["src/config/index.ts"],
+      "patchSketch": "+ const booleanEnvSchema = z.enum([...]).default('').transform(...);\n- REDIS_TLS: z.enum([...]).transform(...) // 4 lines → 1 line\n- MSAB_EVENTS_ENABLED: z.enum([...]).transform(...) // 4 lines → 1 line",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — behavioral equivalent",
+      "rollback": "git revert HEAD",
+      "hours": 0.1,
+      "owner": "backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 1,
+      "title": "fix(infra): minimize health endpoint, add disconnectRedis",
+      "files": ["src/infrastructure/health.ts", "src/infrastructure/redis.ts", "src/infrastructure/server.ts"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 2,
+      "title": "fix(events): guard JSON.parse, batch socket emission",
+      "files": ["src/integrations/laravel/event-subscriber.ts", "src/integrations/laravel/event-router.ts"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 3,
+      "title": "refactor(shared): consolidate crypto, inject logger DI",
+      "files": ["src/shared/crypto.ts", "src/shared/index.ts", "src/shared/handler.utils.ts", "src/auth/jwtValidator.ts", "src/integrations/laravel/user-socket.repository.ts", "src/socket/index.ts"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 4,
+      "title": "refactor(socket): extract disconnect handler, remove dead code",
+      "files": ["src/socket/index.ts", "src/infrastructure/worker.manager.ts", "src/config/index.ts"],
+      "dependsOn": [3]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "Security & resilience fixes",
+      "prs": [1, 2],
+      "hours": 1.5
+    },
+    {
+      "sprint": 1,
+      "focus": "Code quality & architecture",
+      "prs": [3, 4],
+      "hours": 1.5
+    }
+  ]
+}

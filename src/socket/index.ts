@@ -61,7 +61,7 @@ export async function initializeSocket(
   autoCloseJob.start();
 
   // Initialize events system (Laravel pub/sub)
-  const userSocketRepository = new UserSocketRepository(redis);
+  const userSocketRepository = new UserSocketRepository(redis, logger);
   const eventRouter = new EventRouter(io, userSocketRepository, logger);
 
   // Create event subscriber with router callback
@@ -118,15 +118,7 @@ export async function initializeSocket(
       });
     }
 
-    // Debug: Log all incoming socket events (temporary for debugging)
-    socket.onAny((eventName, ...args) => {
-      if (eventName === "seat:lock" || eventName === "seat:invite") {
-        logger.info(
-          { socketId: socket.id, eventName, argsCount: args.length },
-          "Socket event received",
-        );
-      }
-    });
+
 
     // Register all domain handlers via domain registry
     registerAllDomains(socket, appContext);
@@ -136,62 +128,88 @@ export async function initializeSocket(
     giftHandler.handle(socket);
 
     // Disconnect
-    socket.on("disconnect", async (reason) => {
-      logger.info({ socketId: socket.id, reason }, "Socket disconnected");
-
-      const client = clientManager.getClient(socket.id);
-
-      // Unregister from UserSocketRepository (Redis)
-      if (client?.userId) {
-        await userSocketRepository.unregisterSocket(client.userId, socket.id);
-        // Clear user's room tracking (for user:getRoom feature)
-        await userSocketRepository.clearUserRoom(client.userId);
-      }
-
-      if (client?.roomId) {
-        const roomUserId = String(client.userId);
-
-        // Clear user's seat if seated (using Redis-backed repository)
-        const result = await seatRepository.leaveSeat(client.roomId, roomUserId);
-        if (result.success && result.seatIndex !== undefined) {
-          socket
-            .to(client.roomId)
-            .emit("seat:cleared", { seatIndex: result.seatIndex });
-          logger.debug(
-            { roomId: client.roomId, userId: roomUserId, seatIndex: result.seatIndex },
-            "User seat cleared on disconnect",
-          );
-        }
-
-        // Cleanup transports
-        for (const [transportId] of client.transports) {
-          try {
-            const routerMgr = await roomManager.getRoom(client.roomId);
-            if (routerMgr) {
-              const transport = routerMgr.getTransport(transportId);
-              if (transport && !transport.closed) {
-                await transport.close();
-              }
-            }
-          } catch (err) {
-            logger.warn(
-              { err, transportId },
-              "Error closing transport on disconnect",
-            );
-          }
-        }
-      }
-
-      if (client?.roomId) {
-        socket
-          .to(client.roomId)
-          .emit("room:userLeft", { userId: client.userId });
-      }
-
-      clientManager.removeClient(socket.id);
-    });
+    socket.on("disconnect", (reason) =>
+      handleDisconnect(socket, reason, {
+        clientManager,
+        userSocketRepository,
+        seatRepository,
+        roomManager,
+        logger,
+      }),
+    );
   });
 
   return appContext;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Disconnect Handler (extracted for testability, SL-005 + SL-012)
+// ─────────────────────────────────────────────────────────────────
+
+interface DisconnectDeps {
+  clientManager: ClientManager;
+  userSocketRepository: UserSocketRepository;
+  seatRepository: SeatRepository;
+  roomManager: RoomManager;
+  logger: typeof logger;
+}
+
+async function handleDisconnect(
+  socket: Parameters<Parameters<Server["on"]>[1]>[0],
+  reason: string,
+  deps: DisconnectDeps,
+): Promise<void> {
+  const { clientManager, userSocketRepository, seatRepository, roomManager, logger: log } = deps;
+
+  log.info({ socketId: socket.id, reason }, "Socket disconnected");
+
+  const client = clientManager.getClient(socket.id);
+
+  // Parallel: unregister socket + clear room tracking (independent Redis ops)
+  if (client?.userId) {
+    await Promise.allSettled([
+      userSocketRepository.unregisterSocket(client.userId, socket.id),
+      userSocketRepository.clearUserRoom(client.userId),
+    ]);
+  }
+
+  if (client?.roomId) {
+    const roomUserId = String(client.userId);
+
+    // Clear user's seat if seated
+    const result = await seatRepository.leaveSeat(client.roomId, roomUserId);
+    if (result.success && result.seatIndex !== undefined) {
+      socket
+        .to(client.roomId)
+        .emit("seat:cleared", { seatIndex: result.seatIndex });
+      log.debug(
+        { roomId: client.roomId, userId: roomUserId, seatIndex: result.seatIndex },
+        "User seat cleared on disconnect",
+      );
+    }
+
+    // Cleanup transports
+    for (const [transportId] of client.transports) {
+      try {
+        const routerMgr = await roomManager.getRoom(client.roomId);
+        if (routerMgr) {
+          const transport = routerMgr.getTransport(transportId);
+          if (transport && !transport.closed) {
+            await transport.close();
+          }
+        }
+      } catch (err) {
+        log.warn(
+          { err, transportId },
+          "Error closing transport on disconnect",
+        );
+      }
+    }
+
+    socket
+      .to(client.roomId)
+      .emit("room:userLeft", { userId: client.userId });
+  }
+
+  clientManager.removeClient(socket.id);
+}

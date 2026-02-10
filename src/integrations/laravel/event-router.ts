@@ -152,10 +152,12 @@ export class EventRouter {
       return { delivered: false, targetCount: 0 };
     }
 
-    // Emit to each socket
-    for (const socketId of socketIds) {
-      this.io.to(socketId).emit(event, payload);
+    // Chain .to() for a single adapter call instead of N separate emits
+    let target = this.io.to(socketIds[0]!);
+    for (let i = 1; i < socketIds.length; i++) {
+      target = target.to(socketIds[i]!);
     }
+    target.emit(event, payload);
 
     return { delivered: true, targetCount: socketIds.length };
   }
@@ -208,9 +210,12 @@ export class EventRouter {
       return { delivered: false, targetCount: 0 };
     }
 
-    for (const socketId of targetSockets) {
-      this.io.to(socketId).emit(event, payload);
+    // Chain .to() for a single adapter call
+    let target = this.io.to(targetSockets[0]!);
+    for (let i = 1; i < targetSockets.length; i++) {
+      target = target.to(targetSockets[i]!);
     }
+    target.emit(event, payload);
 
     return { delivered: true, targetCount: targetSockets.length };
   }

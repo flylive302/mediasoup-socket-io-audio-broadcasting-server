@@ -33,3 +33,11 @@ export function getRedisClient(): Redis {
 
   return redisInstance;
 }
+
+/** Gracefully disconnect the Redis singleton (for shutdown / tests) */
+export async function disconnectRedis(): Promise<void> {
+  if (redisInstance) {
+    await redisInstance.quit();
+    redisInstance = null;
+  }
+}

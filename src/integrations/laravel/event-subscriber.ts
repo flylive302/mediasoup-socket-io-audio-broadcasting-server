@@ -113,7 +113,16 @@ export class LaravelEventSubscriber {
    * Parse and validate event message
    */
   private parseEvent(message: string): LaravelEvent | null {
-    const parsed = JSON.parse(message);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message);
+    } catch {
+      this.logger.warn(
+        { messagePreview: message.substring(0, 100) },
+        "Malformed JSON in event message",
+      );
+      return null;
+    }
 
     // Basic validation
     if (typeof parsed !== "object" || parsed === null) {
@@ -121,29 +130,31 @@ export class LaravelEventSubscriber {
       return null;
     }
 
-    if (typeof parsed.event !== "string") {
+    const obj = parsed as Record<string, unknown>;
+
+    if (typeof obj.event !== "string") {
       this.logger.warn("Invalid event: missing event type");
       return null;
     }
 
     // Validate user_id and room_id types
-    if (parsed.user_id !== null && typeof parsed.user_id !== "number") {
-      this.logger.warn({ user_id: parsed.user_id }, "Invalid user_id type");
+    if (obj.user_id !== null && typeof obj.user_id !== "number") {
+      this.logger.warn({ user_id: obj.user_id }, "Invalid user_id type");
       return null;
     }
 
-    if (parsed.room_id !== null && typeof parsed.room_id !== "number") {
-      this.logger.warn({ room_id: parsed.room_id }, "Invalid room_id type");
+    if (obj.room_id !== null && typeof obj.room_id !== "number") {
+      this.logger.warn({ room_id: obj.room_id }, "Invalid room_id type");
       return null;
     }
 
     return {
-      event: parsed.event,
-      user_id: parsed.user_id ?? null,
-      room_id: parsed.room_id ?? null,
-      payload: parsed.payload ?? {},
-      timestamp: parsed.timestamp ?? new Date().toISOString(),
-      correlation_id: parsed.correlation_id ?? "unknown",
+      event: obj.event as string,
+      user_id: (obj.user_id as number) ?? null,
+      room_id: (obj.room_id as number) ?? null,
+      payload: (obj.payload as Record<string, unknown>) ?? {},
+      timestamp: (obj.timestamp as string) ?? new Date().toISOString(),
+      correlation_id: (obj.correlation_id as string) ?? "unknown",
     };
   }
 }

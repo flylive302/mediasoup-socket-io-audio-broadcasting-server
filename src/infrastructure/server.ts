@@ -66,7 +66,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     await initializeSocket(io, pubClient);
 
   // Register health check
-  await fastify.register(createHealthRoutes(roomManager, workerManager));
+  await fastify.register(createHealthRoutes(workerManager));
 
   // Register metrics
   await fastify.register(createMetricsRoutes(roomManager, workerManager));

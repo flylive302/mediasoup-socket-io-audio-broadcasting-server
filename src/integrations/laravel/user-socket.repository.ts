@@ -5,7 +5,7 @@
  * Pattern: Follows SeatRepository design with Redis Sets for multi-socket support
  */
 import type { Redis } from "ioredis";
-import { logger } from "../../infrastructure/logger.js";
+import type { Logger } from "../../infrastructure/logger.js";
 
 // Redis key patterns
 const USER_SOCKETS_KEY = (userId: number) => `user:${userId}:sockets`;
@@ -15,7 +15,10 @@ const USER_ROOM_KEY = (userId: number) => `user:${userId}:room`;
 const SOCKET_TTL_SECONDS = 86400;
 
 export class UserSocketRepository {
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly logger: Logger,
+  ) {}
 
   /**
    * Register a socket for a user
@@ -28,10 +31,10 @@ export class UserSocketRepository {
       // Refresh TTL on each registration
       await this.redis.expire(key, SOCKET_TTL_SECONDS);
 
-      logger.debug({ userId, socketId }, "Socket registered for user");
+      this.logger.debug({ userId, socketId }, "Socket registered for user");
       return true;
     } catch (err) {
-      logger.error({ err, userId, socketId }, "Failed to register socket");
+      this.logger.error({ err, userId, socketId }, "Failed to register socket");
       return false;
     }
   }
@@ -46,7 +49,7 @@ export class UserSocketRepository {
       const removed = await this.redis.srem(key, socketId);
 
       if (removed > 0) {
-        logger.debug({ userId, socketId }, "Socket unregistered for user");
+        this.logger.debug({ userId, socketId }, "Socket unregistered for user");
       }
 
       // Clean up key if no sockets remain
@@ -57,7 +60,7 @@ export class UserSocketRepository {
 
       return true;
     } catch (err) {
-      logger.error({ err, userId, socketId }, "Failed to unregister socket");
+      this.logger.error({ err, userId, socketId }, "Failed to unregister socket");
       return false;
     }
   }
@@ -71,7 +74,7 @@ export class UserSocketRepository {
       const key = USER_SOCKETS_KEY(userId);
       return await this.redis.smembers(key);
     } catch (err) {
-      logger.error({ err, userId }, "Failed to get socket IDs");
+      this.logger.error({ err, userId }, "Failed to get socket IDs");
       return [];
     }
   }
@@ -85,7 +88,7 @@ export class UserSocketRepository {
       const count = await this.redis.scard(key);
       return count > 0;
     } catch (err) {
-      logger.error({ err, userId }, "Failed to check active sockets");
+      this.logger.error({ err, userId }, "Failed to check active sockets");
       return false;
     }
   }
@@ -98,10 +101,10 @@ export class UserSocketRepository {
     try {
       const key = USER_SOCKETS_KEY(userId);
       await this.redis.del(key);
-      logger.debug({ userId }, "Cleared all sockets for user");
+      this.logger.debug({ userId }, "Cleared all sockets for user");
       return true;
     } catch (err) {
-      logger.error({ err, userId }, "Failed to clear user sockets");
+      this.logger.error({ err, userId }, "Failed to clear user sockets");
       return false;
     }
   }
@@ -114,7 +117,7 @@ export class UserSocketRepository {
       const key = USER_SOCKETS_KEY(userId);
       return await this.redis.scard(key);
     } catch (err) {
-      logger.error({ err, userId }, "Failed to get socket count");
+      this.logger.error({ err, userId }, "Failed to get socket count");
       return 0;
     }
   }
@@ -134,10 +137,10 @@ export class UserSocketRepository {
       // Use TTL (same as socket TTL) to auto-expire stale entries
       // If user remains in room, this gets refreshed on rejoin/reconnect
       await this.redis.setex(key, SOCKET_TTL_SECONDS, roomId);
-      logger.debug({ userId, roomId }, "User room set");
+      this.logger.debug({ userId, roomId }, "User room set");
       return true;
     } catch (err) {
-      logger.error({ err, userId, roomId }, "Failed to set user room");
+      this.logger.error({ err, userId, roomId }, "Failed to set user room");
       return false;
     }
   }
@@ -150,10 +153,10 @@ export class UserSocketRepository {
     try {
       const key = USER_ROOM_KEY(userId);
       await this.redis.del(key);
-      logger.debug({ userId }, "User room cleared");
+      this.logger.debug({ userId }, "User room cleared");
       return true;
     } catch (err) {
-      logger.error({ err, userId }, "Failed to clear user room");
+      this.logger.error({ err, userId }, "Failed to clear user room");
       return false;
     }
   }
@@ -167,7 +170,7 @@ export class UserSocketRepository {
       const key = USER_ROOM_KEY(userId);
       return await this.redis.get(key);
     } catch (err) {
-      logger.error({ err, userId }, "Failed to get user room");
+      this.logger.error({ err, userId }, "Failed to get user room");
       return null;
     }
   }

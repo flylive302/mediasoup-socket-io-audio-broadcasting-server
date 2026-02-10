@@ -5,6 +5,12 @@
 import { z } from "zod";
 import "dotenv/config";
 
+/** Reusable schema for boolean-like env vars ("true"/"1" → true, else false) */
+const booleanEnvSchema = z
+  .enum(["true", "false", "1", "0", ""])
+  .default("")
+  .transform((v) => v === "true" || v === "1");
+
 const configSchema = z.object({
   // Server
   NODE_ENV: z
@@ -25,10 +31,7 @@ const configSchema = z.object({
   REDIS_USERNAME: z.string().optional(), // Digital Ocean ACL username (usually 'default')
   REDIS_PASSWORD: z.string().optional(),
   REDIS_DB: z.coerce.number().default(3), // Separate DB from Laravel
-  REDIS_TLS: z
-    .enum(["true", "false", "1", "0", ""])
-    .default("")
-    .transform((v) => v === "true" || v === "1"),
+  REDIS_TLS: booleanEnvSchema,
 
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),
@@ -66,10 +69,7 @@ const configSchema = z.object({
 
   // Laravel Events (Redis pub/sub)
   MSAB_EVENTS_CHANNEL: z.string().default("flylive:msab:events"),
-  MSAB_EVENTS_ENABLED: z
-    .enum(["true", "false", "1", "0", ""])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MSAB_EVENTS_ENABLED: booleanEnvSchema.default("true"),
 
   // Security
   CORS_ORIGINS: z

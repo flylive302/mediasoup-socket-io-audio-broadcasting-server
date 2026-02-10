@@ -12,13 +12,10 @@ import { config } from "../config/index.js";
 interface WorkerInfo {
   worker: mediasoup.types.Worker;
   routerCount: number;
-  cpuUsage: number;
 }
 
 export class WorkerManager {
   private readonly workers: WorkerInfo[] = [];
-  private lastCpuUpdate = 0;
-  private readonly CPU_UPDATE_INTERVAL = 10_000; // 10 seconds
 
   constructor(private readonly logger: Logger) {}
 
@@ -40,21 +37,12 @@ export class WorkerManager {
     this.logger.info({ count: this.workers.length }, "Workers initialized");
   }
 
-  /** Get the least loaded worker */
-  async getLeastLoadedWorker(): Promise<mediasoup.types.Worker> {
+  /** Get the least loaded worker (by router count) */
+  getLeastLoadedWorker(): mediasoup.types.Worker {
     if (this.workers.length === 0) {
       throw new Error("No workers available. Did you call initialize()?");
     }
 
-    // Time-based throttle for CPU usage updates (every 10 seconds max)
-    const now = Date.now();
-    if (now - this.lastCpuUpdate > this.CPU_UPDATE_INTERVAL) {
-      await this.updateAllCpuUsage();
-      this.lastCpuUpdate = now;
-    }
-
-    // Simple sorting: router count is primary factor
-    // We assume 1 router = 1 room
     let bestWorker = this.workers[0]!;
 
     for (const info of this.workers) {
@@ -111,7 +99,7 @@ export class WorkerManager {
         this.handleWorkerDeath(worker.pid);
       });
 
-      this.workers.push({ worker, routerCount: 0, cpuUsage: 0 });
+      this.workers.push({ worker, routerCount: 0 });
       this.logger.debug({ index, pid: worker.pid }, "Worker created");
     } catch (error) {
       this.logger.fatal({ error, index }, "Failed to create worker");
@@ -154,18 +142,5 @@ export class WorkerManager {
       { idx, pid, maxRetries: MAX_RETRIES },
       "Worker recreation failed after all retries",
     );
-  }
-
-  private async updateAllCpuUsage(): Promise<void> {
-    try {
-      await Promise.all(
-        this.workers.map(async (info) => {
-          const usage = await info.worker.getResourceUsage();
-          info.cpuUsage = usage.ru_utime + usage.ru_stime;
-        }),
-      );
-    } catch {
-      // Ignore resource usage errors
-    }
   }
 }

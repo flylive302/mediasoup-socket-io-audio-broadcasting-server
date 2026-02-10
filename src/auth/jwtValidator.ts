@@ -15,7 +15,7 @@ import { config } from "../config/index.js";
 import { UserSchema } from "./types.js";
 import type { User } from "./types.js";
 import type { Logger } from "../infrastructure/logger.js";
-import { hashToken } from "../utils/crypto.js";
+import { hashToken } from "../shared/crypto.js";
 
 /**
  * Base64URL decode (RFC 7515)
