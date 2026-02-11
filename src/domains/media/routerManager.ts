@@ -18,8 +18,7 @@ export class RouterManager {
   // Track producers for mute/close
   private readonly producers = new Map<string, mediasoup.types.Producer>();
 
-  // Store ActiveSpeakerDetector reference for cleanup
-  private activeSpeakerDetector: { stop(): void } | null = null;
+
 
   constructor(
     worker: mediasoup.types.Worker,
@@ -44,18 +43,9 @@ export class RouterManager {
     );
   }
 
-  /** Store detector reference for cleanup on close */
-  setActiveSpeakerDetector(detector: { stop(): void }): void {
-    this.activeSpeakerDetector = detector;
-  }
+
 
   async close(): Promise<void> {
-    // Stop active speaker detector first
-    if (this.activeSpeakerDetector) {
-      this.activeSpeakerDetector.stop();
-      this.activeSpeakerDetector = null;
-    }
-
     this.transports.forEach((t) => t.close());
     this.transports.clear();
     this.consumers.clear();

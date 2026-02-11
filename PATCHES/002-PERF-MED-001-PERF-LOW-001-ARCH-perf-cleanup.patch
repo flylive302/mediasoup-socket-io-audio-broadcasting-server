@@ -1,0 +1,187 @@
+diff --git a/src/domains/media/index.ts b/src/domains/media/index.ts
+index bf86234..30def3c 100644
+--- a/src/domains/media/index.ts
++++ b/src/domains/media/index.ts
+@@ -11,3 +11,6 @@ export { RouterManager } from "./routerManager.js";
+ 
+ // Active speaker detection
+ export { ActiveSpeakerDetector } from "./activeSpeaker.js";
++
++// Room media cluster
++export { RoomMediaCluster } from "./roomMediaCluster.js";
+diff --git a/src/domains/media/roomMediaCluster.ts b/src/domains/media/roomMediaCluster.ts
+index 9354646..ffe2765 100644
+--- a/src/domains/media/roomMediaCluster.ts
++++ b/src/domains/media/roomMediaCluster.ts
+@@ -29,8 +29,11 @@ export class RoomMediaCluster {
+   /** Distribution routers where listeners consume */
+   private readonly distributionRouters: DistributionRouter[] = [];
+ 
+-  /** Maps transportId → which RouterManager owns it */
+-  private readonly transportOwnership = new Map<string, RouterManager>();
++  /** Maps transportId → which DistributionRouter owns it (PERF-LOW-001: O(1) lookup) */
++  private readonly transportOwnership = new Map<string, DistributionRouter>();
++
++  /** Maps consumerId → DistributionRouter for O(1) lookup (PERF-MED-001) */
++  private readonly consumerOwnership = new Map<string, DistributionRouter>();
+ 
+   /** Tracks sourceProducerIds for piping to new distribution routers */
+   private readonly sourceProducerIds: Set<string> = new Set();
+@@ -120,7 +123,7 @@ export class RoomMediaCluster {
+     if (isProducer) {
+       // Speakers always produce on the source router
+       const transport = await this.sourceRouter.createWebRtcTransport(true);
+-      this.transportOwnership.set(transport.id, this.sourceRouter);
++      // Producer transports don't belong to a DistributionRouter — skip ownership map
+       return transport;
+     }
+ 
+@@ -129,7 +132,7 @@ export class RoomMediaCluster {
+     const transport = await distRouter.routerManager.createWebRtcTransport(
+       false,
+     );
+-    this.transportOwnership.set(transport.id, distRouter.routerManager);
++    this.transportOwnership.set(transport.id, distRouter);
+     distRouter.listenerCount++;
+ 
+     // ARCH-001 FIX: Decrement listener count when transport closes
+@@ -158,19 +161,12 @@ export class RoomMediaCluster {
+   getTransport(
+     transportId: string,
+   ): mediasoup.types.WebRtcTransport | undefined {
+-    // Fast path: check ownership map
+-    const owner = this.transportOwnership.get(transportId);
+-    if (owner) return owner.getTransport(transportId);
+-
+-    // Fallback: search all routers
+-    const fromSource = this.sourceRouter?.getTransport(transportId);
+-    if (fromSource) return fromSource;
++    // Fast path: check distribution router ownership map (PERF-LOW-001)
++    const dist = this.transportOwnership.get(transportId);
++    if (dist) return dist.routerManager.getTransport(transportId);
+ 
+-    for (const dist of this.distributionRouters) {
+-      const t = dist.routerManager.getTransport(transportId);
+-      if (t) return t;
+-    }
+-    return undefined;
++    // Fallback: check source router (producer transports)
++    return this.sourceRouter?.getTransport(transportId);
+   }
+ 
+   // ─────────────────────────────────────────────────────────────────
+@@ -213,7 +209,8 @@ export class RoomMediaCluster {
+     sourceProducerId: string,
+     rtpCapabilities: mediasoup.types.RtpCapabilities,
+   ): boolean {
+-    // If no distribution routers, listeners haven't joined yet
++    // ARCH-LOW-001b: All distribution routers have identical piped producer sets
++    // (each gets every source producer piped), so checking any one is sufficient.
+     if (this.distributionRouters.length === 0) return false;
+ 
+     const dist = this.distributionRouters[0];
+@@ -268,8 +265,11 @@ export class RoomMediaCluster {
+ 
+     // CQ-002 FIX: Combined cleanup for both close events (was 4 listeners, now 2)
+     this.consumerSourceMap.set(consumer.id, sourceProducerId);
++    // PERF-MED-001: Track consumer ownership for O(1) lookup
++    this.consumerOwnership.set(consumer.id, dist);
+     const cleanup = () => {
+       this.consumerSourceMap.delete(consumer.id);
++      this.consumerOwnership.delete(consumer.id);
+       if (!consumer.closed) consumer.close();
+     };
+     consumer.on("transportclose", cleanup);
+@@ -284,24 +284,20 @@ export class RoomMediaCluster {
+     return consumer;
+   }
+ 
+-  /** Find a consumer across all distribution routers */
++  /** Find a consumer across all distribution routers (PERF-MED-001: O(1) via ownership map) */
+   getConsumer(consumerId: string): mediasoup.types.Consumer | undefined {
+-    for (const dist of this.distributionRouters) {
+-      const c = dist.routerManager.getConsumer(consumerId);
++    // Fast path: check ownership map
++    const dist = this.consumerOwnership.get(consumerId);
++    if (dist) return dist.routerManager.getConsumer(consumerId);
++
++    // Fallback: linear scan (for consumers created before ownership tracking)
++    for (const d of this.distributionRouters) {
++      const c = d.routerManager.getConsumer(consumerId);
+       if (c) return c;
+     }
+     return undefined;
+   }
+ 
+-  /** Register an externally-created consumer (for compatibility) */
+-  registerConsumer(consumer: mediasoup.types.Consumer): void {
+-    // Find the distribution router that owns this consumer's transport
+-    for (const dist of this.distributionRouters) {
+-      dist.routerManager.registerConsumer(consumer);
+-      return;
+-    }
+-  }
+-
+   // ─────────────────────────────────────────────────────────────────
+   // Active Speaker Forwarding
+   // ─────────────────────────────────────────────────────────────────
+@@ -527,6 +523,7 @@ export class RoomMediaCluster {
+     this.transportOwnership.clear();
+     this.sourceProducerIds.clear();
+     this.consumerSourceMap.clear();
++    this.consumerOwnership.clear();
+     this.activeSpeakerProducerIds.clear();
+   }
+ 
+@@ -534,15 +531,10 @@ export class RoomMediaCluster {
+   // Helpers
+   // ─────────────────────────────────────────────────────────────────
+ 
+-  /** Find which distribution router owns a given transport */
++  /** Find which distribution router owns a given transport (PERF-LOW-001: O(1) via map) */
+   private findDistributionRouterForTransport(
+     transportId: string,
+   ): DistributionRouter | undefined {
+-    for (const dist of this.distributionRouters) {
+-      if (dist.routerManager.getTransport(transportId)) {
+-        return dist;
+-      }
+-    }
+-    return undefined;
++    return this.transportOwnership.get(transportId);
+   }
+ }
+diff --git a/src/domains/media/routerManager.ts b/src/domains/media/routerManager.ts
+index 0503b11..54730ac 100644
+--- a/src/domains/media/routerManager.ts
++++ b/src/domains/media/routerManager.ts
+@@ -18,8 +18,7 @@ export class RouterManager {
+   // Track producers for mute/close
+   private readonly producers = new Map<string, mediasoup.types.Producer>();
+ 
+-  // Store ActiveSpeakerDetector reference for cleanup
+-  private activeSpeakerDetector: { stop(): void } | null = null;
++
+ 
+   constructor(
+     worker: mediasoup.types.Worker,
+@@ -44,18 +43,9 @@ export class RouterManager {
+     );
+   }
+ 
+-  /** Store detector reference for cleanup on close */
+-  setActiveSpeakerDetector(detector: { stop(): void }): void {
+-    this.activeSpeakerDetector = detector;
+-  }
+ 
+-  async close(): Promise<void> {
+-    // Stop active speaker detector first
+-    if (this.activeSpeakerDetector) {
+-      this.activeSpeakerDetector.stop();
+-      this.activeSpeakerDetector = null;
+-    }
+ 
++  async close(): Promise<void> {
+     this.transports.forEach((t) => t.close());
+     this.transports.clear();
+     this.consumers.clear();

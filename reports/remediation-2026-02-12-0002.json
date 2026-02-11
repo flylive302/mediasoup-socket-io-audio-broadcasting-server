@@ -1,0 +1,211 @@
+{
+  "meta": {
+    "timestamp": "2026-02-12T00:02:00+05:00",
+    "auditRef": "reports/audit-2026-02-11-2334-media-domain.json",
+    "commit": "a6d5087",
+    "branch": "work"
+  },
+  "remediations": [
+    {
+      "issueId": "SEC-MED-001",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/media/media.handler.ts"],
+      "patchSketch": "Added per-client transport limit (max 2) guard before transport creation",
+      "downstreamCallsites": ["src/domains/media/media.handler.ts:27 — transportCreateHandler"],
+      "runtimeRisk": "None — clients use exactly 2 transports in current design",
+      "rollback": "Revert the 4-line guard block in transportCreateHandler",
+      "hours": 0.25,
+      "owner": "media-team",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["Integration test: 3rd transport returns error"]
+    },
+    {
+      "issueId": "RT-LOW-001",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/media/media.handler.ts"],
+      "patchSketch": "Added producer.appData.userId ownership check in selfMuteHandler and selfUnmuteHandler",
+      "downstreamCallsites": [
+        "src/domains/media/media.handler.ts:222 — selfMuteHandler",
+        "src/domains/media/media.handler.ts:263 — selfUnmuteHandler"
+      ],
+      "runtimeRisk": "None — only rejects unauthorized callers",
+      "rollback": "Remove ownership check block from both handlers",
+      "hours": 0.25,
+      "owner": "media-team",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "CQ-LOW-001",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/media/media.handler.ts"],
+      "patchSketch": "Added if (!producer.closed) guard before producer.close() in transportclose handler",
+      "downstreamCallsites": ["src/domains/media/media.handler.ts:128 — audioProduceHandler"],
+      "runtimeRisk": "None — strictly defensive",
+      "rollback": "Remove the guard",
+      "hours": 0.1,
+      "owner": "media-team",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "PERF-MED-001",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/media/roomMediaCluster.ts"],
+      "patchSketch": "Added consumerOwnership Map for O(1) consumer-to-dist-router lookup",
+      "downstreamCallsites": [
+        "src/domains/media/media.handler.ts:187 — consumer:resume",
+        "src/domains/media/roomMediaCluster.ts:333,339 — updateActiveSpeakers"
+      ],
+      "runtimeRisk": "None — O(1) fast path with O(D) fallback",
+      "rollback": "Remove consumerOwnership map and revert getConsumer()",
+      "hours": 0.5,
+      "owner": "media-team",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["roomMediaCluster.test.ts — verify O(1) consumer lookup"]
+    },
+    {
+      "issueId": "PERF-LOW-001",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/media/roomMediaCluster.ts"],
+      "patchSketch": "Changed transportOwnership Map type to DistributionRouter; rewrote findDistributionRouterForTransport to O(1)",
+      "downstreamCallsites": [
+        "src/domains/media/roomMediaCluster.ts — consume(), getTransport()"
+      ],
+      "runtimeRisk": "Producer transports not tracked in ownership map (not needed)",
+      "rollback": "Revert transportOwnership type and restore linear scan",
+      "hours": 0.5,
+      "owner": "media-team",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "ARCH-MED-001",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/media/roomMediaCluster.ts"],
+      "patchSketch": "Deleted dead registerConsumer() public method (7 lines)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — method was unused externally",
+      "rollback": "git revert",
+      "hours": 0.25,
+      "owner": "media-team",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "ARCH-LOW-001",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/media/routerManager.ts"],
+      "patchSketch": "Removed dead activeSpeakerDetector field, setter, and cleanup code (~12 lines)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — only RoomMediaCluster owns detector lifecycle",
+      "rollback": "git revert",
+      "hours": 0.25,
+      "owner": "media-team",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "READ-INFO-001",
+      "severity": "INFO",
+      "filesTouched": ["src/domains/media/index.ts"],
+      "patchSketch": "Added RoomMediaCluster to barrel export",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — additive export",
+      "rollback": "Remove export line",
+      "hours": 0.1,
+      "owner": "media-team",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "ARCH-LOW-001b",
+      "severity": "INFO",
+      "filesTouched": ["src/domains/media/roomMediaCluster.ts"],
+      "patchSketch": "Added comment documenting canConsume() invariant",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — comment only",
+      "rollback": "Remove comment",
+      "hours": 0.1,
+      "owner": "media-team",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "CQ-MED-001",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "tests/unit/domains/media/activeSpeaker.test.ts",
+        "tests/unit/domains/media/routerManager.test.ts"
+      ],
+      "patchSketch": "Created 2 new test files: activeSpeaker.test.ts (8 tests), routerManager.test.ts (11 tests)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — test-only changes",
+      "rollback": "Delete both test files",
+      "hours": 2.0,
+      "owner": "media-team",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": [
+        "activeSpeaker.test.ts — start, topN, stale eviction, PERF-003, cluster integration, error handling, stop",
+        "routerManager.test.ts — initialize, idempotent, WebRtcServer, fallback, uninit error, DTLS close, lookup, producer/consumer lifecycle, close"
+      ]
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 1,
+      "title": "fix(media): security & correctness hardening",
+      "files": ["src/domains/media/media.handler.ts"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 2,
+      "title": "perf(media): O(1) lookups + dead code removal",
+      "files": [
+        "src/domains/media/roomMediaCluster.ts",
+        "src/domains/media/routerManager.ts",
+        "src/domains/media/index.ts"
+      ],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 3,
+      "title": "test(media): unit tests for activeSpeaker + routerManager",
+      "files": [
+        "tests/unit/domains/media/activeSpeaker.test.ts",
+        "tests/unit/domains/media/routerManager.test.ts"
+      ],
+      "dependsOn": [2]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "Security, performance, and cleanup",
+      "prs": [1, 2],
+      "hours": 2.55
+    },
+    {
+      "sprint": 1,
+      "focus": "Tests",
+      "prs": [3],
+      "hours": 2.0
+    }
+  ],
+  "qaResults": {
+    "lint": "clean",
+    "typecheck": "clean",
+    "tests": "85/85 passed (10 files)",
+    "build": "138.76 KB ESM"
+  }
+}

@@ -1,0 +1,60 @@
+diff --git a/src/domains/media/media.handler.ts b/src/domains/media/media.handler.ts
+index 7d01bd8..d4a3814 100644
+--- a/src/domains/media/media.handler.ts
++++ b/src/domains/media/media.handler.ts
+@@ -26,6 +26,13 @@ const transportCreateHandler = createHandler(
+   transportCreateSchema,
+   async (payload, socket, context) => {
+     const { type, roomId } = payload;
++
++    // SEC-MED-001: Limit transports per client (1 producer + 1 consumer max)
++    const client = context.clientManager.getClient(socket.id);
++    if (client && client.transports.size >= 2) {
++      return { success: false, error: "Transport limit reached" };
++    }
++
+     const cluster = await context.roomManager.getRoom(roomId);
+     if (!cluster) {
+       return { success: false, error: "Room not found" };
+@@ -34,7 +41,6 @@ const transportCreateHandler = createHandler(
+     const transport = await cluster.createWebRtcTransport(type === "producer");
+ 
+     // Track transport on client for cleanup
+-    const client = context.clientManager.getClient(socket.id);
+     if (client) {
+       client.transports.set(transport.id, type);
+     }
+@@ -126,7 +132,8 @@ const audioProduceHandler = createHandler(
+         client.producers.delete(kind);
+         client.isSpeaker = client.producers.size > 0;
+       }
+-      producer.close();
++      // CQ-LOW-001: Guard against double-close
++      if (!producer.closed) producer.close();
+     });
+ 
+     return { success: true, data: { id: producer.id } };
+@@ -218,6 +225,11 @@ const selfMuteHandler = createHandler(
+       return { success: false, error: "Producer not found" };
+     }
+ 
++    // RT-LOW-001: Verify requesting socket owns this producer
++    if (producer.appData.userId !== socket.data.user.id) {
++      return { success: false, error: "Not your producer" };
++    }
++
+     await producer.pause();
+     logger.debug(
+       { producerId, userId: socket.data.user.id },
+@@ -248,6 +260,11 @@ const selfUnmuteHandler = createHandler(
+       return { success: false, error: "Producer not found" };
+     }
+ 
++    // RT-LOW-001: Verify requesting socket owns this producer
++    if (producer.appData.userId !== socket.data.user.id) {
++      return { success: false, error: "Not your producer" };
++    }
++
+     await producer.resume();
+     logger.debug(
+       { producerId, userId: socket.data.user.id },

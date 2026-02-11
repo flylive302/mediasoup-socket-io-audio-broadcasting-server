@@ -11,3 +11,6 @@ export { RouterManager } from "./routerManager.js";
 
 // Active speaker detection
 export { ActiveSpeakerDetector } from "./activeSpeaker.js";
+
+// Room media cluster
+export { RoomMediaCluster } from "./roomMediaCluster.js";

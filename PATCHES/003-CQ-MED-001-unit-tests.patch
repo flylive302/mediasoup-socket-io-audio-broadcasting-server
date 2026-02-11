@@ -1,0 +1,481 @@
+diff --git a/tests/unit/domains/media/activeSpeaker.test.ts b/tests/unit/domains/media/activeSpeaker.test.ts
+new file mode 100644
+index 0000000..813a980
+--- /dev/null
++++ b/tests/unit/domains/media/activeSpeaker.test.ts
+@@ -0,0 +1,204 @@
++import { describe, it, expect, vi, beforeEach } from "vitest";
++
++// Mock config
++vi.mock("@src/config/index.js", () => ({
++  config: {
++    MAX_ACTIVE_SPEAKERS_FORWARDED: 3,
++  },
++}));
++
++import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
++
++// ─── Helpers ────────────────────────────────────────────────────────
++
++function createMockObserver() {
++  const handlers = new Map<string, Function>();
++  return {
++    on: vi.fn((event: string, handler: Function) => {
++      handlers.set(event, handler);
++    }),
++    removeAllListeners: vi.fn(),
++    // Test helper: fire the dominantspeaker event
++    _fire: (producerId: string, userId: string) => {
++      const handler = handlers.get("dominantspeaker");
++      if (handler) {
++        handler({
++          producer: {
++            id: producerId,
++            appData: { userId },
++          },
++        });
++      }
++    },
++  };
++}
++
++function createMockIO() {
++  const emitFn = vi.fn();
++  return {
++    to: vi.fn().mockReturnValue({ emit: emitFn }),
++    _emit: emitFn,
++  };
++}
++
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++const mockLogger: any = {
++  info: vi.fn(),
++  debug: vi.fn(),
++  warn: vi.fn(),
++  error: vi.fn(),
++};
++
++// ─── Tests ──────────────────────────────────────────────────────────
++
++describe("ActiveSpeakerDetector", () => {
++  let observer: ReturnType<typeof createMockObserver>;
++  let io: ReturnType<typeof createMockIO>;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    observer = createMockObserver();
++    io = createMockIO();
++  });
++
++  describe("start()", () => {
++    it("registers a dominantspeaker listener on the observer", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      expect(observer.on).toHaveBeenCalledWith("dominantspeaker", expect.any(Function));
++    });
++
++    it("emits speaker:active to the room on first dominant speaker", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      observer._fire("prod-1", "user-1");
++
++      expect(io.to).toHaveBeenCalledWith("room-1");
++      expect(io._emit).toHaveBeenCalledWith(
++        "speaker:active",
++        expect.objectContaining({
++          userId: "user-1",
++          activeSpeakers: expect.arrayContaining(["user-1"]),
++        }),
++      );
++    });
++  });
++
++  describe("computeTopN()", () => {
++    it("returns at most MAX_ACTIVE_SPEAKERS_FORWARDED speakers", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      // Fire 5 different speakers (config max is 3)
++      observer._fire("prod-1", "user-1");
++      observer._fire("prod-2", "user-2");
++      observer._fire("prod-3", "user-3");
++      observer._fire("prod-4", "user-4");
++      observer._fire("prod-5", "user-5");
++
++      // Access currentActiveSpeakers via the last emitted event
++      const lastCall = io._emit.mock.calls[io._emit.mock.calls.length - 1];
++      const payload = lastCall?.[1];
++      expect(payload.activeSpeakers.length).toBeLessThanOrEqual(3);
++    });
++
++    it("evicts speakers older than 10 seconds", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      // Fire a speaker, then advance time past 10s stale cutoff
++      const now = Date.now();
++      vi.spyOn(Date, "now").mockReturnValue(now);
++      observer._fire("prod-1", "user-1");
++
++      // Advance to 11 seconds later
++      vi.spyOn(Date, "now").mockReturnValue(now + 11_000);
++      observer._fire("prod-2", "user-2");
++
++      // prod-1 should be evicted (stale), only prod-2 active
++      const lastCall = io._emit.mock.calls[io._emit.mock.calls.length - 1];
++      const payload = lastCall?.[1];
++      expect(payload.activeSpeakers).toContain("user-2");
++      expect(payload.activeSpeakers).not.toContain("user-1");
++    });
++  });
++
++  describe("PERF-003: no-emit on unchanged set", () => {
++    it("does not emit when the same speaker fires twice consecutively", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      observer._fire("prod-1", "user-1");
++      const emitCountAfterFirst = io._emit.mock.calls.length;
++
++      // Same speaker fires again — set shouldn't change
++      observer._fire("prod-1", "user-1");
++      expect(io._emit.mock.calls.length).toBe(emitCountAfterFirst);
++    });
++  });
++
++  describe("cluster integration", () => {
++    it("calls cluster.updateActiveSpeakers when active set changes", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++
++      const mockCluster = {
++        updateActiveSpeakers: vi.fn().mockResolvedValue(undefined),
++      };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      detector.setCluster(mockCluster as any);
++      detector.start();
++
++      observer._fire("prod-1", "user-1");
++
++      expect(mockCluster.updateActiveSpeakers).toHaveBeenCalledWith(["prod-1"]);
++    });
++
++    it("logs error if cluster.updateActiveSpeakers rejects", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++
++      const mockCluster = {
++        updateActiveSpeakers: vi.fn().mockRejectedValue(new Error("fail")),
++      };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      detector.setCluster(mockCluster as any);
++      detector.start();
++
++      observer._fire("prod-1", "user-1");
++
++      // Wait for promise rejection to be handled
++      await vi.waitFor(() => {
++        expect(mockLogger.error).toHaveBeenCalledWith(
++          expect.objectContaining({ roomId: "room-1" }),
++          "Failed to update active speakers on cluster",
++        );
++      });
++    });
++  });
++
++  describe("stop()", () => {
++    it("removes all listeners and clears state", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
++      detector.start();
++
++      observer._fire("prod-1", "user-1");
++      detector.stop();
++
++      expect(observer.removeAllListeners).toHaveBeenCalled();
++      // After stop, internal state should be cleared
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      expect((detector as any).recentSpeakers.size).toBe(0);
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      expect((detector as any).currentActiveSpeakers.length).toBe(0);
++    });
++  });
++});
+diff --git a/tests/unit/domains/media/routerManager.test.ts b/tests/unit/domains/media/routerManager.test.ts
+new file mode 100644
+index 0000000..beb9e6e
+--- /dev/null
++++ b/tests/unit/domains/media/routerManager.test.ts
+@@ -0,0 +1,265 @@
++import { describe, it, expect, vi, beforeEach } from "vitest";
++
++// Mock mediasoup config
++vi.mock("@src/config/mediasoup.js", () => ({
++  mediasoupConfig: {
++    router: {
++      mediaCodecs: [{ kind: "audio", mimeType: "audio/opus", clockRate: 48000, channels: 2 }],
++    },
++    webRtcTransport: {
++      initialAvailableOutgoingBitrate: 600000,
++      listenInfos: [{ protocol: "udp", ip: "0.0.0.0" }],
++    },
++    maxIncomingBitrate: 0,
++    activeSpeakerObserver: { interval: 200 },
++  },
++}));
++
++import { RouterManager } from "@src/domains/media/routerManager.js";
++
++// ─── Helpers ────────────────────────────────────────────────────────
++
++function createMockWebRtcTransport(id: string) {
++  const handlers = new Map<string, Function>();
++  return {
++    id,
++    close: vi.fn(),
++    closed: false,
++    setMaxIncomingBitrate: vi.fn().mockResolvedValue(undefined),
++    on: vi.fn((event: string, handler: Function) => {
++      handlers.set(event, handler);
++    }),
++    _fireDtls: (state: string) => handlers.get("dtlsstatechange")?.(state),
++  };
++}
++
++function createMockRouter() {
++  return {
++    createWebRtcTransport: vi.fn(),
++    createActiveSpeakerObserver: vi.fn().mockResolvedValue({ on: vi.fn(), close: vi.fn() }),
++    close: vi.fn(),
++  };
++}
++
++function createMockWorker() {
++  const mockRouter = createMockRouter();
++  return {
++    pid: 1234,
++    createRouter: vi.fn().mockResolvedValue(mockRouter),
++    _router: mockRouter,
++  };
++}
++
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++const mockLogger: any = {
++  info: vi.fn(),
++  debug: vi.fn(),
++  warn: vi.fn(),
++  error: vi.fn(),
++};
++
++// ─── Tests ──────────────────────────────────────────────────────────
++
++describe("RouterManager", () => {
++  let worker: ReturnType<typeof createMockWorker>;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    worker = createMockWorker();
++  });
++
++  describe("initialize()", () => {
++    it("creates router and audio observer", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++
++      expect(worker.createRouter).toHaveBeenCalledWith(
++        expect.objectContaining({
++          mediaCodecs: expect.any(Array),
++        }),
++      );
++      expect(rm.router).not.toBeNull();
++      expect(rm.audioObserver).not.toBeNull();
++    });
++
++    it("is idempotent — second call is a no-op", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++      await rm.initialize();
++
++      expect(worker.createRouter).toHaveBeenCalledTimes(1);
++    });
++  });
++
++  describe("createWebRtcTransport()", () => {
++    it("creates transport with WebRtcServer when provided", async () => {
++      const mockWebRtcServer = { id: "wrs-1" };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger, mockWebRtcServer as any);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-1");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++
++      const transport = await rm.createWebRtcTransport(true);
++
++      expect(transport.id).toBe("t-1");
++      // Should use webRtcServer option
++      expect(worker._router.createWebRtcTransport).toHaveBeenCalledWith(
++        expect.objectContaining({
++          webRtcServer: mockWebRtcServer,
++          appData: { isProducer: true },
++        }),
++      );
++    });
++
++    it("creates transport with fallback config when no WebRtcServer", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger, null);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-2");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++
++      const transport = await rm.createWebRtcTransport(false);
++
++      expect(transport.id).toBe("t-2");
++      expect(worker._router.createWebRtcTransport).toHaveBeenCalledWith(
++        expect.objectContaining({
++          appData: { isProducer: false },
++        }),
++      );
++    });
++
++    it("throws if router is not initialized", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      // Don't initialize
++      await expect(rm.createWebRtcTransport(true)).rejects.toThrow("Router not initialized");
++    });
++
++    it("closes transport on DTLS state 'closed'", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-3");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++
++      await rm.createWebRtcTransport(true);
++
++      // Fire dtlsstatechange → closed
++      mockTransport._fireDtls("closed");
++      expect(mockTransport.close).toHaveBeenCalled();
++    });
++
++    it("stores transport for lookup via getTransport()", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-4");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++
++      await rm.createWebRtcTransport(true);
++
++      expect(rm.getTransport("t-4")).toBe(mockTransport);
++      expect(rm.getTransport("nonexistent")).toBeUndefined();
++    });
++  });
++
++  describe("registerProducer()", () => {
++    it("tracks producer and cleans up on transportclose", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      const handlers = new Map<string, Function>();
++      const producer = {
++        id: "p-1",
++        on: vi.fn((event: string, handler: Function) => handlers.set(event, handler)),
++      };
++
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      rm.registerProducer(producer as any);
++      expect(rm.getProducer("p-1")).toBe(producer);
++
++      // Trigger transportclose
++      handlers.get("transportclose")?.();
++      expect(rm.getProducer("p-1")).toBeUndefined();
++    });
++  });
++
++  describe("registerConsumer()", () => {
++    it("tracks consumer and cleans up on transportclose and producerclose", () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++
++      // Test transportclose cleanup
++      const handlers1 = new Map<string, Function>();
++      const consumer1 = {
++        id: "c-1",
++        on: vi.fn((event: string, handler: Function) => handlers1.set(event, handler)),
++      };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      rm.registerConsumer(consumer1 as any);
++      expect(rm.getConsumer("c-1")).toBe(consumer1);
++      handlers1.get("transportclose")?.();
++      expect(rm.getConsumer("c-1")).toBeUndefined();
++
++      // Test producerclose cleanup
++      const handlers2 = new Map<string, Function>();
++      const consumer2 = {
++        id: "c-2",
++        on: vi.fn((event: string, handler: Function) => handlers2.set(event, handler)),
++      };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      rm.registerConsumer(consumer2 as any);
++      expect(rm.getConsumer("c-2")).toBe(consumer2);
++      handlers2.get("producerclose")?.();
++      expect(rm.getConsumer("c-2")).toBeUndefined();
++    });
++  });
++
++  describe("close()", () => {
++    it("closes all transports, observer, and router", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-5");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++      await rm.createWebRtcTransport(true);
++
++      await rm.close();
++
++      expect(mockTransport.close).toHaveBeenCalled();
++      expect(rm.router).toBeNull();
++      expect(rm.audioObserver).toBeNull();
++    });
++
++    it("clears all tracking maps", async () => {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const rm = new RouterManager(worker as any, mockLogger);
++      await rm.initialize();
++
++      const mockTransport = createMockWebRtcTransport("t-6");
++      worker._router.createWebRtcTransport.mockResolvedValue(mockTransport);
++      await rm.createWebRtcTransport(true);
++
++      // Register a producer and consumer
++      const producer = { id: "p-1", on: vi.fn() };
++      const consumer = { id: "c-1", on: vi.fn() };
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      rm.registerProducer(producer as any);
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      rm.registerConsumer(consumer as any);
++
++      await rm.close();
++
++      expect(rm.getTransport("t-6")).toBeUndefined();
++      expect(rm.getProducer("p-1")).toBeUndefined();
++      expect(rm.getConsumer("c-1")).toBeUndefined();
++    });
++  });
++});
