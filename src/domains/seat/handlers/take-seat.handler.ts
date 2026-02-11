@@ -1,71 +1,39 @@
 /**
  * seat:take - User takes an available seat
  */
-import type { Socket } from "socket.io";
-import type { AppContext } from "../../../context.js";
-import { logger } from "../../../infrastructure/logger.js";
-import { seatTakeSchema } from "../seat.requests.js";
-import { config } from "../../../config/index.js";
+import { seatTakeSchema } from "@src/socket/schemas.js";
+import { createHandler } from "@src/shared/handler.utils.js";
+import { config } from "@src/config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
 
-export function takeSeatHandler(socket: Socket, context: AppContext) {
-  const userId = String(socket.data.user.id);
+export const takeSeatHandler = createHandler(
+  "seat:take",
+  seatTakeSchema,
+  async (payload, socket, context) => {
+    const userId = String(socket.data.user.id);
+    const { roomId, seatIndex } = payload;
 
-  return async (
-    rawPayload: unknown,
-    callback?: (response: { success: boolean; error?: string }) => void,
-  ) => {
-    const parseResult = seatTakeSchema.safeParse(rawPayload);
-    if (!parseResult.success) {
-      if (callback) callback({ success: false, error: "Invalid payload" });
-      return;
+    // Use atomic Redis operation for horizontal scaling safety
+    const result = await context.seatRepository.takeSeat(
+      roomId,
+      userId,
+      seatIndex,
+      config.DEFAULT_SEAT_COUNT,
+    );
+
+    if (!result.success) {
+      return { success: false, error: result.error };
     }
 
-    const { roomId, seatIndex } = parseResult.data;
+    logger.info({ roomId, userId, seatIndex }, "User took seat");
 
-    try {
-      // Use atomic Redis operation for horizontal scaling safety
-      const result = await context.seatRepository.takeSeat(
-        roomId,
-        userId,
-        seatIndex,
-        config.DEFAULT_SEAT_COUNT,
-      );
+    // BL-007 FIX: userId-only — frontend looks up user from participants
+    socket.to(roomId).emit("seat:updated", {
+      seatIndex,
+      userId: socket.data.user.id,
+      isMuted: false,
+    });
 
-      if (!result.success) {
-        if (callback) callback({ success: false, error: result.error });
-        return;
-      }
-
-      logger.info({ roomId, userId, seatIndex }, "User took seat");
-
-      // Broadcast to room
-      const user = socket.data.user;
-      const seatUpdate = {
-        seatIndex,
-        user: {
-          id: user.id,
-          name: user.name,
-          avatar: user.avatar,
-          signature: user.signature,
-          frame: user.frame,
-          gender: user.gender,
-          country: user.country,
-          phone: user.phone,
-          email: user.email,
-          date_of_birth: user.date_of_birth,
-          wealth_xp: user.wealth_xp,
-          charm_xp: user.charm_xp,
-        },
-        isMuted: false,
-      };
-
-      socket.to(roomId).emit("seat:updated", seatUpdate);
-
-      if (callback) callback({ success: true });
-    } catch (error) {
-      logger.error({ error, roomId, userId, seatIndex }, "Failed to take seat");
-      if (callback)
-        callback({ success: false, error: "Internal server error" });
-    }
-  };
-}
+    return { success: true };
+  },
+);

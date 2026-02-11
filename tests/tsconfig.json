@@ -1,17 +1,9 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@src/*": ["src/*"]
-    },
     "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "ES2024"
-    ],
-    "outDir": "./dist",
-    "rootDir": "./src",
+    "lib": ["ES2024"],
     "strict": true,
     "strictNullChecks": true,
     "strictFunctionTypes": true,
@@ -25,16 +17,14 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
+    "noEmit": true,
+    "rootDir": "..",
+    "baseUrl": "..",
+    "paths": {
+      "@src/*": ["src/*"]
+    }
   },
   "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "tests"
+    "./**/*.test.ts"
   ]
 }

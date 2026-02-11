@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { RateLimiter } from "./rateLimiter.js";
+import { RateLimiter } from "@src/utils/rateLimiter.js";
 import type { Redis } from "ioredis";
 
 describe("RateLimiter", () => {

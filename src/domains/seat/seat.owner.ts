@@ -4,8 +4,9 @@
  * Owner caching and verification logic for seat management.
  * Separated from seat.state.ts to keep only owner-related functionality.
  */
-import type { AppContext } from "../../context.js";
-import { logger } from "../../infrastructure/logger.js";
+import type { AppContext } from "@src/context.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
 
 // ============== Constants ==============
 
@@ -72,99 +73,83 @@ export async function fetchRoomOwner(
   return ownerId;
 }
 
+// ============== Authorization Result Type ==============
+
+type AuthResult = { allowed: true } | { allowed: false; error: string };
+
 /**
- * Verify that a user is the room owner
+ * Shared authorization check pattern — DRY extraction of timing, logging, and error wrapping
  */
-export async function verifyRoomOwner(
+async function withAuthCheck(
+  checkFn: () => Promise<boolean>,
   roomId: string,
   requesterId: string,
-  context: AppContext,
-): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  actionName: string,
+): Promise<AuthResult> {
   const startTime = Date.now();
   try {
-    logger.info({ roomId, requesterId }, "verifyRoomOwner: starting");
-    const ownerId = await fetchRoomOwner(roomId, context);
-    const fetchTime = Date.now() - startTime;
-    logger.info(
-      { roomId, requesterId, ownerId, fetchTimeMs: fetchTime },
-      "verifyRoomOwner: fetched owner",
-    );
+    logger.info({ roomId, requesterId }, `${actionName}: starting`);
+    const allowed = await checkFn();
+    const elapsed = Date.now() - startTime;
+    logger.info({ roomId, requesterId, allowed, elapsedMs: elapsed }, `${actionName}: result`);
 
-    if (requesterId !== ownerId) {
-      logger.warn(
-        { roomId, requesterId, ownerId },
-        "Unauthorized attempt to perform owner action",
-      );
-      return { allowed: false, error: "Not authorized" };
+    if (!allowed) {
+      logger.warn({ roomId, requesterId }, `Unauthorized: ${actionName}`);
+      return { allowed: false, error: Errors.NOT_AUTHORIZED };
     }
-
-    const totalTime = Date.now() - startTime;
-    logger.info(
-      { roomId, requesterId, totalTimeMs: totalTime },
-      "verifyRoomOwner: success",
-    );
     return { allowed: true };
   } catch (err) {
-    const totalTime = Date.now() - startTime;
+    const elapsed = Date.now() - startTime;
     logger.error(
       {
         err,
         roomId,
         requesterId,
-        totalTimeMs: totalTime,
+        elapsedMs: elapsed,
         errorMessage: err instanceof Error ? err.message : String(err),
         errorStack: err instanceof Error ? err.stack : undefined,
       },
-      "Failed to verify room ownership",
+      `${actionName}: failed`,
     );
-    return { allowed: false, error: "Authorization check failed" };
+    return { allowed: false, error: Errors.AUTH_CHECK_FAILED };
   }
+}
+
+// ============== Public Verification Functions ==============
+
+/**
+ * Verify that a user is the room owner
+ */
+export function verifyRoomOwner(
+  roomId: string,
+  requesterId: string,
+  context: AppContext,
+): Promise<AuthResult> {
+  return withAuthCheck(
+    async () => {
+      const ownerId = await fetchRoomOwner(roomId, context);
+      return requesterId === ownerId;
+    },
+    roomId,
+    requesterId,
+    "verifyRoomOwner",
+  );
 }
 
 /**
  * Verify that a user can manage the room (owner OR admin)
- * This is more permissive than verifyRoomOwner and allows admins to perform actions.
+ * More permissive than verifyRoomOwner — allows admins to perform actions.
  */
-export async function verifyRoomManager(
+export function verifyRoomManager(
   roomId: string,
   requesterId: string,
   context: AppContext,
-): Promise<{ allowed: true } | { allowed: false; error: string }> {
-  const startTime = Date.now();
-  try {
-    logger.info({ roomId, requesterId }, "verifyRoomManager: starting");
-    
-    // Check if user can manage room (owner or admin)
-    const canManage = await context.laravelClient.canManageRoom(roomId, requesterId);
-    
-    const fetchTime = Date.now() - startTime;
-    logger.info(
-      { roomId, requesterId, canManage, fetchTimeMs: fetchTime },
-      "verifyRoomManager: result",
-    );
-
-    if (!canManage) {
-      logger.warn(
-        { roomId, requesterId },
-        "Unauthorized attempt to perform manager action",
-      );
-      return { allowed: false, error: "Not authorized" };
-    }
-
-    return { allowed: true };
-  } catch (err) {
-    const totalTime = Date.now() - startTime;
-    logger.error(
-      {
-        err,
-        roomId,
-        requesterId,
-        totalTimeMs: totalTime,
-        errorMessage: err instanceof Error ? err.message : String(err),
-        errorStack: err instanceof Error ? err.stack : undefined,
-      },
-      "Failed to verify room manager",
-    );
-    return { allowed: false, error: "Authorization check failed" };
-  }
+): Promise<AuthResult> {
+  return withAuthCheck(
+    () => context.laravelClient.canManageRoom(roomId, requesterId),
+    roomId,
+    requesterId,
+    "verifyRoomManager",
+  );
 }
+

@@ -11,7 +11,7 @@ import {
   Registry,
   collectDefaultMetrics,
 } from "prom-client";
-import type { RoomManager } from "../domains/room/roomManager.js";
+import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 
 // Create a custom registry

@@ -6,8 +6,8 @@
 import * as mediasoup from "mediasoup";
 import { cpus } from "os";
 import type { Logger } from "./logger.js";
-import { mediasoupConfig } from "../config/mediasoup.js";
-import { config } from "../config/index.js";
+import { mediasoupConfig } from "@src/config/mediasoup.js";
+import { config } from "@src/config/index.js";
 
 interface WorkerInfo {
   worker: mediasoup.types.Worker;
@@ -22,7 +22,9 @@ export interface WorkerStats {
 
 export class WorkerManager {
   private readonly workers: WorkerInfo[] = [];
-  private onWorkerDied?: (workerPid: number) => void;
+  /** PERF-001: O(1) worker lookup by PID instead of O(n) array scan */
+  private readonly workerByPid = new Map<number, WorkerInfo>();
+  private onWorkerDied?: (workerPid: number) => void | Promise<void>;
   private expectedWorkerCount = 0;
 
   constructor(private readonly logger: Logger) {}
@@ -36,7 +38,7 @@ export class WorkerManager {
   }
 
   /** Register a callback invoked when a worker dies (before re-creation) */
-  setOnWorkerDied(callback: (workerPid: number) => void): void {
+  setOnWorkerDied(callback: (workerPid: number) => void | Promise<void>): void {
     this.onWorkerDied = callback;
   }
 
@@ -93,19 +95,19 @@ export class WorkerManager {
   getWebRtcServer(
     worker: mediasoup.types.Worker,
   ): mediasoup.types.WebRtcServer | null {
-    const info = this.workers.find((w) => w.worker.pid === worker.pid);
+    const info = this.workerByPid.get(worker.pid);
     return info?.webRtcServer ?? null;
   }
 
   /** Increment router count when a room is created on this worker */
   incrementRouterCount(worker: mediasoup.types.Worker): void {
-    const info = this.workers.find((w) => w.worker.pid === worker.pid);
+    const info = this.workerByPid.get(worker.pid);
     if (info) info.routerCount++;
   }
 
   /** Decrement router count when a room is destroyed */
   decrementRouterCount(worker: mediasoup.types.Worker): void {
-    const info = this.workers.find((w) => w.worker.pid === worker.pid);
+    const info = this.workerByPid.get(worker.pid);
     if (info) info.routerCount = Math.max(0, info.routerCount - 1);
   }
 
@@ -124,6 +126,7 @@ export class WorkerManager {
       worker.close();
     }
     this.workers.length = 0;
+    this.workerByPid.clear();
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -173,7 +176,9 @@ export class WorkerManager {
         );
       }
 
-      this.workers.push({ worker, webRtcServer, routerCount: 0 });
+      const info: WorkerInfo = { worker, webRtcServer, routerCount: 0 };
+      this.workers.push(info);
+      this.workerByPid.set(worker.pid, info);
       this.logger.debug({ index, pid: worker.pid }, "Worker created");
     } catch (error) {
       this.logger.fatal({ error, index }, "Failed to create worker");
@@ -186,11 +191,12 @@ export class WorkerManager {
     if (idx === -1) return;
 
     this.workers.splice(idx, 1);
+    this.workerByPid.delete(pid);
 
-    // Notify subscribers (e.g. RoomManager) BEFORE re-creation
+    // ARCH-002 FIX: Await cleanup of orphaned rooms before re-creating worker
     if (this.onWorkerDied) {
       try {
-        this.onWorkerDied(pid);
+        await this.onWorkerDied(pid);
       } catch (error) {
         this.logger.error(
           { error, pid },
@@ -198,6 +204,10 @@ export class WorkerManager {
         );
       }
     }
+
+    // RT-001 FIX: Wait for OS to release ports before re-creating worker
+    // TIME_WAIT is typically 60s, but 5s is usually sufficient for port reuse
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     // Retry with exponential backoff: 1s, 2s, 4s
     const MAX_RETRIES = 3;

@@ -4,9 +4,10 @@
  */
 import { z } from "zod";
 import type { Socket } from "socket.io";
-import { logger } from "../infrastructure/logger.js";
+import { logger } from "@src/infrastructure/logger.js";
 import { generateCorrelationId } from "./crypto.js";
-import type { AppContext } from "../context.js";
+import { Errors } from "./errors.js";
+import type { AppContext } from "@src/context.js";
 
 /**
  * Standard handler result shape
@@ -81,7 +82,7 @@ export function createHandler<TPayload>(
           },
           "Validation failed",
         );
-        callback?.({ success: false, error: "Invalid payload" });
+        callback?.({ success: false, error: Errors.INVALID_PAYLOAD });
         return;
       }
 
@@ -115,7 +116,7 @@ export function createHandler<TPayload>(
           "Handler exception",
         );
 
-        callback?.({ success: false, error: "Internal server error" });
+        callback?.({ success: false, error: Errors.INTERNAL_ERROR });
       }
     };
   };
@@ -163,7 +164,7 @@ export function createSimpleHandler(
           "Handler exception",
         );
 
-        callback?.({ success: false, error: "Internal server error" });
+        callback?.({ success: false, error: Errors.INTERNAL_ERROR });
       }
     };
   };

@@ -1,98 +1,77 @@
 /**
  * seat:mute - Owner/Admin mutes user
  */
-import type { Socket } from "socket.io";
-import type { AppContext } from "../../../context.js";
-import { logger } from "../../../infrastructure/logger.js";
-import { seatMuteSchema } from "../seat.requests.js";
-import { verifyRoomManager } from "../seat.owner.js";
+import { seatMuteSchema } from "@src/socket/schemas.js";
+import { createHandler } from "@src/shared/handler.utils.js";
+import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
+import { emitToRoom } from "@src/shared/socket.utils.js";
 
-export function muteSeatHandler(socket: Socket, context: AppContext) {
-  const userId = String(socket.data.user.id);
+export const muteSeatHandler = createHandler(
+  "seat:mute",
+  seatMuteSchema,
+  async (payload, socket, context) => {
+    const userId = String(socket.data.user.id);
+    const { roomId, userId: targetUserId } = payload;
 
-  return async (
-    rawPayload: unknown,
-    callback?: (response: { success: boolean; error?: string }) => void,
-  ) => {
-    try {
-      const parseResult = seatMuteSchema.safeParse(rawPayload);
-      if (!parseResult.success) {
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
-      }
+    const authorization = await verifyRoomManager(roomId, userId, context);
+    if (!authorization.allowed) {
+      return { success: false, error: authorization.error };
+    }
 
-      const { roomId, userId: targetUserId } = parseResult.data;
+    const targetUserIdStr = String(targetUserId);
 
-      const authorization = await verifyRoomManager(roomId, userId, context);
-      if (!authorization.allowed) {
-        if (callback) callback({ success: false, error: authorization.error });
-        return;
-      }
+    // Find user's seat using Redis
+    const seatIndex = await context.seatRepository.getUserSeat(
+      roomId,
+      targetUserIdStr,
+    );
 
-      const targetUserIdStr = String(targetUserId);
+    if (seatIndex === null) {
+      return { success: false, error: Errors.USER_NOT_SEATED };
+    }
 
-      // Find user's seat using Redis
-      const seatIndex = await context.seatRepository.getUserSeat(
-        roomId,
-        targetUserIdStr,
-      );
+    // Update mute status in Redis
+    const success = await context.seatRepository.setMute(
+      roomId,
+      seatIndex,
+      true,
+    );
+    if (!success) {
+      return { success: false, error: Errors.MUTE_FAILED };
+    }
 
-      if (seatIndex === null) {
-        if (callback) callback({ success: false, error: "User is not seated" });
-        return;
-      }
+    logger.info(
+      { roomId, targetUserId, seatIndex, mutedBy: userId },
+      "User muted",
+    );
 
-      // Update mute status in Redis
-      const success = await context.seatRepository.setMute(
-        roomId,
-        seatIndex,
-        true,
-      );
-      if (!success) {
-        if (callback)
-          callback({ success: false, error: "Failed to mute user" });
-        return;
-      }
+    // Enforce silence on the server side by pausing the producer
+    const targetClient = context.clientManager
+      .getClientsInRoom(roomId)
+      .find((c) => String(c.userId) === targetUserIdStr);
 
-      logger.info(
-        { roomId, targetUserId, seatIndex, mutedBy: userId },
-        "User muted",
-      );
-
-      // Enforce silence on the server side by pausing the producer
-      const targetClient = context.clientManager
-        .getClientsInRoom(roomId)
-        .find((c) => String(c.userId) === targetUserIdStr);
-
-      if (targetClient) {
-        const audioProducerId = targetClient.producers.get("audio");
-        if (audioProducerId) {
-          const room = await context.roomManager.getRoom(roomId);
-          const producer = room?.getProducer(audioProducerId);
-          if (producer) {
-            await producer.pause();
-            logger.info(
-              { roomId, targetUserId, producerId: audioProducerId },
-              "Producer paused (server-side mute)",
-            );
-          }
+    if (targetClient) {
+      const audioProducerId = targetClient.producers.get("audio");
+      if (audioProducerId) {
+        const room = await context.roomManager.getRoom(roomId);
+        const producer = room?.getProducer(audioProducerId);
+        if (producer) {
+          await producer.pause();
+          logger.info(
+            { roomId, targetUserId, producerId: audioProducerId },
+            "Producer paused (server-side mute)",
+          );
         }
       }
-
-      socket.to(roomId).emit("seat:userMuted", {
-        userId: targetUserId,
-        isMuted: true,
-      });
-      socket.emit("seat:userMuted", {
-        userId: targetUserId,
-        isMuted: true,
-      });
-
-      if (callback) callback({ success: true });
-    } catch (error) {
-      logger.error({ error, userId }, "seat:mute handler exception");
-      if (callback)
-        callback({ success: false, error: "Internal server error" });
     }
-  };
-}
+
+    emitToRoom(socket, roomId, "seat:userMuted", {
+      userId: targetUserId,
+      isMuted: true,
+    });
+
+    return { success: true };
+  },
+);

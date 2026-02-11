@@ -5,7 +5,7 @@
  * Pattern: Follows GiftBuffer lifecycle (start/stop)
  */
 import type { Redis } from "ioredis";
-import type { Logger } from "../../infrastructure/logger.js";
+import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelEvent } from "./types.js";
 
 export class LaravelEventSubscriber {

@@ -160,6 +160,8 @@ export const lockedSeatsSchema = z.array(z.number());
 export const joinRoomSchema = z.object({
   roomId: z.string(),
   ownerId: z.number().optional(), // Owner ID sent from frontend to verify ownership
+  // BL-008: Per-room seat count from frontend (defaults to 15 for backward compat)
+  seatCount: z.number().int().min(1).max(15).default(15),
 });
 
 export const leaveRoomSchema = z.object({
@@ -247,16 +249,18 @@ export const seatInviteSchema = z.object({
   seatIndex: z.number().int().min(0).max(14),
 });
 
-export const seatInviteResponseSchema = z.object({
-  roomId: roomIdSchema,
-  seatIndex: z.number().int().min(0).max(14),
-  accept: z.boolean(),
-});
-
 // Schema for seat:invite:accept and seat:invite:decline
 // seatIndex is optional - if not provided, server looks up the pending invite by userId
 export const seatInviteActionSchema = z.object({
   roomId: roomIdSchema,
   seatIndex: z.number().int().min(0).max(14).optional(),
+});
+
+// ─────────────────────────────────────────────────────────────────
+// User Schemas
+// ─────────────────────────────────────────────────────────────────
+
+export const getUserRoomSchema = z.object({
+  userId: z.number(),
 });
 

@@ -4,14 +4,10 @@
  * Handles user:getRoom for tracking feature
  */
 import type { Socket } from "socket.io";
-import type { AppContext } from "../../context.js";
-import { logger } from "../../infrastructure/logger.js";
-import { z } from "zod";
-
-// Schema for user:getRoom payload
-const getUserRoomSchema = z.object({
-  userId: z.number(),
-});
+import type { AppContext } from "@src/context.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { getUserRoomSchema } from "@src/socket/schemas.js";
+import { Errors } from "@src/shared/errors.js";
 
 export const userHandler = (socket: Socket, context: AppContext) => {
   const { userSocketRepository } = context;
@@ -23,7 +19,7 @@ export const userHandler = (socket: Socket, context: AppContext) => {
   socket.on("user:getRoom", async (rawPayload: unknown, ack) => {
     const parseResult = getUserRoomSchema.safeParse(rawPayload);
     if (!parseResult.success) {
-      if (ack) ack({ roomId: null, error: "Invalid payload" });
+      if (ack) ack({ roomId: null, error: Errors.INVALID_PAYLOAD });
       return;
     }
 
@@ -37,7 +33,7 @@ export const userHandler = (socket: Socket, context: AppContext) => {
       if (ack) ack({ roomId });
     } catch (err) {
       logger.error({ err, userId }, "user:getRoom failed");
-      if (ack) ack({ roomId: null, error: "Internal error" });
+      if (ack) ack({ roomId: null, error: Errors.INTERNAL_ERROR });
     }
   });
 };

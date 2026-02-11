@@ -11,9 +11,9 @@
  */
 import type * as mediasoup from "mediasoup";
 import type { Server as SocketServer } from "socket.io";
-import type { Logger } from "../../infrastructure/logger.js";
+import type { Logger } from "@src/infrastructure/logger.js";
 import type { RoomMediaCluster } from "./roomMediaCluster.js";
-import { config } from "../../config/index.js";
+import { config } from "@src/config/index.js";
 
 interface SpeakerEntry {
   producerId: string;
@@ -62,6 +62,7 @@ export class ActiveSpeakerDetector {
         // Check if the active set actually changed
         const changed = this.hasActiveSetChanged(topNIds);
 
+        // PERF-003 FIX: Only emit when the active speaker set actually changed
         if (changed) {
           this.currentActiveSpeakers = topNIds;
 
@@ -74,14 +75,14 @@ export class ActiveSpeakerDetector {
               );
             });
           }
-        }
 
-        // Always emit the dominant speaker for frontend UI
-        this.io.to(this.roomId).emit("speaker:active", {
-          userId,
-          activeSpeakers: topN.map((s) => s.userId),
-          timestamp: Date.now(),
-        });
+          // Emit to frontend only when set changed
+          this.io.to(this.roomId).emit("speaker:active", {
+            userId,
+            activeSpeakers: topN.map((s) => s.userId),
+            timestamp: Date.now(),
+          });
+        }
       },
     );
   }
@@ -98,6 +99,7 @@ export class ActiveSpeakerDetector {
 
   /**
    * Compute the top N most recently active speakers.
+   * PERF-002 FIX: Single-pass top-N selection O(k*N) instead of full sort O(N*logN)
    * Evicts stale entries older than 10 seconds.
    */
   private computeTopN(): SpeakerEntry[] {
@@ -111,12 +113,24 @@ export class ActiveSpeakerDetector {
       }
     }
 
-    // Sort by lastActiveAt descending (most recent first)
-    const sorted = [...this.recentSpeakers.values()].sort(
-      (a, b) => b.lastActiveAt - a.lastActiveAt,
-    );
+    // Single-pass top-N selection — O(k*N) is faster than sort O(N*logN) for small k
+    const topN: SpeakerEntry[] = [];
+    for (const entry of this.recentSpeakers.values()) {
+      if (topN.length < maxN) {
+        topN.push(entry);
+      } else {
+        // Find the oldest in topN and replace if this entry is newer
+        let minIdx = 0;
+        for (let i = 1; i < topN.length; i++) {
+          if (topN[i]!.lastActiveAt < topN[minIdx]!.lastActiveAt) minIdx = i;
+        }
+        if (entry.lastActiveAt > topN[minIdx]!.lastActiveAt) {
+          topN[minIdx] = entry;
+        }
+      }
+    }
 
-    return sorted.slice(0, maxN);
+    return topN;
   }
 
   /** Check if the active speaker set has changed */

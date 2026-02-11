@@ -3,8 +3,8 @@
  * Manages room inactivity detection and automatic room closure
  */
 import type { Redis } from "ioredis";
-import { config } from "../../../config/index.js";
-import { logger } from "../../../infrastructure/logger.js";
+import { config } from "@src/config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 const ACTIVITY_KEY = (roomId: string) => `room:${roomId}:activity`;
 const STATE_KEY = (roomId: string) => `room:state:${roomId}`;
@@ -75,22 +75,36 @@ export class AutoCloseService {
    */
   async getInactiveRoomIds(): Promise<string[]> {
     try {
-      // Get all room state keys
-      const roomStateKeys = await this.redis.keys("room:state:*");
-      const inactiveRooms: string[] = [];
+      // BL-004 FIX: Use SCAN instead of KEYS to avoid blocking Redis
+      const roomStateKeys: string[] = [];
+      let cursor = "0";
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          "MATCH",
+          "room:state:*",
+          "COUNT",
+          100,
+        );
+        cursor = nextCursor;
+        roomStateKeys.push(...keys);
+      } while (cursor !== "0");
 
-      for (const key of roomStateKeys) {
-        const roomId = key.replace("room:state:", "");
-        const hasActivity = await this.hasActivity(roomId);
-        const participantCount = await this.getParticipantCount(roomId);
+      // Parallel check activity + participant count for all rooms
+      const roomIds = roomStateKeys.map((key) =>
+        key.replace("room:state:", ""),
+      );
+      const checks = await Promise.all(
+        roomIds.map(async (roomId) => {
+          const [hasAct, count] = await Promise.all([
+            this.hasActivity(roomId),
+            this.getParticipantCount(roomId),
+          ]);
+          return { roomId, inactive: !hasAct && count === 0 };
+        }),
+      );
 
-        // Only close if no activity AND no participants
-        if (!hasActivity && participantCount === 0) {
-          inactiveRooms.push(roomId);
-        }
-      }
-
-      return inactiveRooms;
+      return checks.filter((c) => c.inactive).map((c) => c.roomId);
     } catch (err) {
       logger.error({ err }, "Failed to get inactive rooms");
       return [];

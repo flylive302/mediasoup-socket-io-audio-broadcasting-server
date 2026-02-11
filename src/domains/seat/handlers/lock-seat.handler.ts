@@ -1,139 +1,77 @@
 /**
  * seat:lock - Owner/Admin locks a seat (kicks user if occupied)
  */
-import type { Socket } from "socket.io";
-import type { AppContext } from "../../../context.js";
-import { logger } from "../../../infrastructure/logger.js";
-import { seatLockSchema } from "../seat.requests.js";
-import { verifyRoomManager } from "../seat.owner.js";
+import { seatLockSchema } from "@src/socket/schemas.js";
+import { createHandler } from "@src/shared/handler.utils.js";
+import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
+import { emitToRoom } from "@src/shared/socket.utils.js";
 
-export function lockSeatHandler(socket: Socket, context: AppContext) {
-  const userId = String(socket.data.user.id);
+export const lockSeatHandler = createHandler(
+  "seat:lock",
+  seatLockSchema,
+  async (payload, socket, context) => {
+    const userId = String(socket.data.user.id);
+    const { roomId, seatIndex } = payload;
 
-  return async (
-    rawPayload: unknown,
-    callback?: (response: { success: boolean; error?: string }) => void,
-  ) => {
-    const startTime = Date.now();
-    logger.info({ userId, payload: rawPayload }, "seat:lock received");
-
-    try {
-      const parseResult = seatLockSchema.safeParse(rawPayload);
-      if (!parseResult.success) {
-        logger.warn(
-          { userId, error: parseResult.error },
-          "seat:lock invalid payload",
-        );
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
-      }
-
-      const { roomId, seatIndex } = parseResult.data;
-      logger.info(
-        { userId, roomId, seatIndex },
-        "seat:lock verifying manager permissions",
-      );
-
-      const authorization = await verifyRoomManager(roomId, userId, context);
-      const verifyTime = Date.now() - startTime;
-      logger.info(
-        {
-          userId,
-          roomId,
-          seatIndex,
-          allowed: authorization.allowed,
-          verifyTimeMs: verifyTime,
-        },
-        "seat:lock authorization verified",
-      );
-
-      if (!authorization.allowed) {
-        if (callback) callback({ success: false, error: authorization.error });
-        return;
-      }
-
-      // Check if already locked (using Redis)
-      const alreadyLocked = await context.seatRepository.isSeatLocked(
-        roomId,
-        seatIndex,
-      );
-      if (alreadyLocked) {
-        if (callback)
-          callback({ success: false, error: "Seat is already locked" });
-        return;
-      }
-
-      // Lock the seat (kicks occupant if any)
-      const { kicked } = await context.seatRepository.lockSeat(
-        roomId,
-        seatIndex,
-      );
-
-      // If someone was kicked, notify room and close their producer
-      if (kicked) {
-        socket.to(roomId).emit("seat:cleared", { seatIndex });
-        socket.emit("seat:cleared", { seatIndex });
-
-        // Server-side producer close — don't rely on frontend
-        const kickedClient = context.clientManager
-          .getClientsInRoom(roomId)
-          .find((c) => String(c.userId) === String(kicked));
-
-        if (kickedClient) {
-          const audioProducerId = kickedClient.producers.get("audio");
-          if (audioProducerId) {
-            const room = await context.roomManager.getRoom(roomId);
-            const producer = room?.getProducer(audioProducerId);
-            if (producer && !producer.closed) {
-              producer.close();
-              logger.info(
-                { roomId, producerId: audioProducerId, kickedUserId: kicked },
-                "Producer closed (seat locked)",
-              );
-            }
-            kickedClient.producers.delete("audio");
-            kickedClient.isSpeaker = kickedClient.producers.size > 0;
-          }
-        }
-
-        logger.info(
-          {
-            roomId,
-            userId: kicked,
-            seatIndex,
-            lockedBy: userId,
-          },
-          "User kicked from seat due to lock",
-        );
-      }
-
-      logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
-
-      // Broadcast to all including sender
-      const lockEvent = { seatIndex, isLocked: true };
-      socket.to(roomId).emit("seat:locked", lockEvent);
-      socket.emit("seat:locked", lockEvent);
-
-      const totalTime = Date.now() - startTime;
-      logger.info(
-        { userId, roomId, seatIndex, totalTimeMs: totalTime },
-        "seat:lock success",
-      );
-
-      if (callback) callback({ success: true });
-    } catch (error) {
-      const totalTime = Date.now() - startTime;
-      logger.error(
-        {
-          error,
-          userId,
-          totalTimeMs: totalTime,
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-        "seat:lock handler exception",
-      );
-      if (callback)
-        callback({ success: false, error: "Internal server error" });
+    const authorization = await verifyRoomManager(roomId, userId, context);
+    if (!authorization.allowed) {
+      return { success: false, error: authorization.error };
     }
-  };
-}
+
+    // Check if already locked (using Redis)
+    const alreadyLocked = await context.seatRepository.isSeatLocked(
+      roomId,
+      seatIndex,
+    );
+    if (alreadyLocked) {
+      return { success: false, error: Errors.SEAT_ALREADY_LOCKED };
+    }
+
+    // Lock the seat (kicks occupant if any)
+    const { kicked } = await context.seatRepository.lockSeat(
+      roomId,
+      seatIndex,
+    );
+
+    // If someone was kicked, notify room and close their producer
+    if (kicked) {
+      emitToRoom(socket, roomId, "seat:cleared", { seatIndex });
+
+      // Server-side producer close — don't rely on frontend
+      const kickedClient = context.clientManager
+        .getClientsInRoom(roomId)
+        .find((c) => String(c.userId) === String(kicked));
+
+      if (kickedClient) {
+        const audioProducerId = kickedClient.producers.get("audio");
+        if (audioProducerId) {
+          const room = await context.roomManager.getRoom(roomId);
+          const producer = room?.getProducer(audioProducerId);
+          if (producer && !producer.closed) {
+            producer.close();
+            logger.info(
+              { roomId, producerId: audioProducerId, kickedUserId: kicked },
+              "Producer closed (seat locked)",
+            );
+          }
+          kickedClient.producers.delete("audio");
+          kickedClient.isSpeaker = kickedClient.producers.size > 0;
+        }
+      }
+
+      logger.info(
+        { roomId, userId: kicked, seatIndex, lockedBy: userId },
+        "User kicked from seat due to lock",
+      );
+    }
+
+    logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
+
+    // Broadcast to all including sender
+    emitToRoom(socket, roomId, "seat:locked", { seatIndex, isLocked: true });
+
+    return { success: true };
+  },
+);

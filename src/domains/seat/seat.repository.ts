@@ -9,8 +9,8 @@ import type {
   PendingInvite,
   SeatActionResult,
 } from "./seat.types.js";
-import { Errors } from "../../shared/errors.js";
-import { logger } from "../../infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 // Redis key patterns
 const SEATS_KEY = (roomId: string) => `room:${roomId}:seats`;
@@ -220,25 +220,34 @@ export class SeatRepository {
 
   /**
    * Set mute status for a seated user
+   * BL-003 FIX: Atomic Lua script to prevent TOCTOU race conditions
    */
+  private static readonly SET_MUTE_LUA = `
+    local key = KEYS[1]
+    local seatIndex = ARGV[1]
+    local muted = ARGV[2] == "true"
+    local existing = redis.call('HGET', key, seatIndex)
+    if not existing then return 0 end
+    local data = cjson.decode(existing)
+    data.muted = muted
+    redis.call('HSET', key, seatIndex, cjson.encode(data))
+    return 1
+  `;
+
   async setMute(
     roomId: string,
     seatIndex: number,
     muted: boolean,
   ): Promise<boolean> {
     try {
-      const key = SEATS_KEY(roomId);
-      const existing = await this.redis.hget(key, seatIndex.toString());
-
-      if (!existing) {
-        return false;
-      }
-
-      const data = JSON.parse(existing) as SeatAssignment;
-      data.muted = muted;
-
-      await this.redis.hset(key, seatIndex.toString(), JSON.stringify(data));
-      return true;
+      const result = await this.redis.eval(
+        SeatRepository.SET_MUTE_LUA,
+        1,
+        SEATS_KEY(roomId),
+        seatIndex.toString(),
+        muted.toString(),
+      );
+      return result === 1;
     } catch (err) {
       logger.error({ err, roomId, seatIndex, muted }, "Failed to set mute");
       return false;
@@ -247,28 +256,40 @@ export class SeatRepository {
 
   /**
    * Lock a seat (kicks any occupant)
+   * BL-005 FIX: Atomic Lua script to prevent HGET → HDEL → SADD race
    */
+  private static readonly LOCK_SEAT_LUA = `
+    local seatsKey = KEYS[1]
+    local lockedKey = KEYS[2]
+    local seatIndex = ARGV[1]
+    local kicked = false
+    local existing = redis.call('HGET', seatsKey, seatIndex)
+    if existing then
+      kicked = cjson.decode(existing).userId
+      redis.call('HDEL', seatsKey, seatIndex)
+    end
+    redis.call('SADD', lockedKey, seatIndex)
+    if kicked then
+      return cjson.encode({kicked = kicked})
+    end
+    return cjson.encode({kicked = false})
+  `;
+
   async lockSeat(
     roomId: string,
     seatIndex: number,
   ): Promise<{ kicked: string | null }> {
     try {
-      // Check current occupant
-      const existing = await this.redis.hget(
+      const result = (await this.redis.eval(
+        SeatRepository.LOCK_SEAT_LUA,
+        2,
         SEATS_KEY(roomId),
+        LOCKED_KEY(roomId),
         seatIndex.toString(),
-      );
-      let kicked: string | null = null;
+      )) as string;
 
-      if (existing) {
-        const data = JSON.parse(existing) as SeatAssignment;
-        kicked = data.userId;
-        await this.redis.hdel(SEATS_KEY(roomId), seatIndex.toString());
-      }
-
-      await this.redis.sadd(LOCKED_KEY(roomId), seatIndex.toString());
-
-      return { kicked };
+      const parsed = JSON.parse(result) as { kicked: string | false };
+      return { kicked: parsed.kicked === false ? null : parsed.kicked };
     } catch (err) {
       logger.error({ err, roomId, seatIndex }, "Failed to lock seat");
       return { kicked: null };

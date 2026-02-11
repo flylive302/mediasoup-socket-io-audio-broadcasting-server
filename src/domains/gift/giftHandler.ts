@@ -1,10 +1,10 @@
 import type { Socket, Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { GiftBuffer } from "./giftBuffer.js";
-import { LaravelClient } from "../../integrations/laravelClient.js";
-import { logger } from "../../infrastructure/logger.js";
-import { sendGiftSchema, prepareGiftSchema } from "../../socket/schemas.js";
-import { RateLimiter } from "../../utils/rateLimiter.js";
+import { LaravelClient } from "@src/integrations/laravelClient.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { sendGiftSchema, prepareGiftSchema } from "@src/socket/schemas.js";
+import { RateLimiter } from "@src/utils/rateLimiter.js";
 
 const GIFT_RATE_LIMIT = 30; // 30 gifts per minute
 const GIFT_RATE_WINDOW = 60; // 60 seconds
@@ -60,11 +60,9 @@ export class GiftHandler {
         sender_socket_id: socket.id,
       };
 
-      // 2. Broadcast immediately (Optimistic UI)
+      // BL-007 FIX: Removed senderName/senderAvatar — frontend looks up from participants
       socket.to(payload.roomId).emit("gift:received", {
         senderId: user.id,
-        senderName: user.name,
-        senderAvatar: user.avatar, // Changed from avatar_url per protocol
         ...payload,
       });
 

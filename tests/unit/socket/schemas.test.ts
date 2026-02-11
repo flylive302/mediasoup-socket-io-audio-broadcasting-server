@@ -3,7 +3,7 @@ import {
   chatMessageSchema,
   audioProduceSchema,
   transportCreateSchema,
-} from "./schemas.js";
+} from "@src/socket/schemas.js";
 
 describe("Message Schemas", () => {
   it("validates correct chat message", () => {

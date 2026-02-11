@@ -1,5 +1,5 @@
 import type { Socket } from "socket.io";
-import type { User } from "../auth/types.js";
+import type { User } from "@src/auth/types.js";
 
 export interface ClientData {
   socketId: string;
@@ -17,6 +17,8 @@ export interface ClientData {
 
 export class ClientManager {
   private readonly clients = new Map<string, ClientData>();
+  /** PERF-006: Room-indexed secondary structure for O(1) room lookup */
+  private readonly roomClients = new Map<string, Set<string>>(); // roomId → socketIds
 
   addClient(socket: Socket): void {
     if (!socket.data?.user) {
@@ -37,6 +39,14 @@ export class ClientManager {
   }
 
   removeClient(socketId: string): void {
+    const client = this.clients.get(socketId);
+    if (client?.roomId) {
+      const roomSet = this.roomClients.get(client.roomId);
+      if (roomSet) {
+        roomSet.delete(socketId);
+        if (roomSet.size === 0) this.roomClients.delete(client.roomId);
+      }
+    }
     this.clients.delete(socketId);
   }
 
@@ -45,16 +55,46 @@ export class ClientManager {
   }
 
   /**
-   * Get all clients in a specific room.
-   * Used to send initial state when a user joins.
+   * Update client's room and maintain the room index.
+   * PERF-006: Must be called instead of directly setting client.roomId
    */
-  getClientsInRoom(roomId: string): ClientData[] {
-    const clients: ClientData[] = [];
-    for (const client of this.clients.values()) {
-      if (client.roomId === roomId) {
-        clients.push(client);
+  setClientRoom(socketId: string, roomId: string): void {
+    const client = this.clients.get(socketId);
+    if (!client) return;
+
+    // Remove from old room index
+    if (client.roomId) {
+      const oldSet = this.roomClients.get(client.roomId);
+      if (oldSet) {
+        oldSet.delete(socketId);
+        if (oldSet.size === 0) this.roomClients.delete(client.roomId);
       }
     }
-    return clients;
+
+    // Set new room
+    client.roomId = roomId;
+
+    // Add to new room index
+    let roomSet = this.roomClients.get(roomId);
+    if (!roomSet) {
+      roomSet = new Set();
+      this.roomClients.set(roomId, roomSet);
+    }
+    roomSet.add(socketId);
+  }
+
+  /**
+   * Get all clients in a specific room.
+   * PERF-006: O(roomSize) instead of O(totalClients)
+   */
+  getClientsInRoom(roomId: string): ClientData[] {
+    const socketIds = this.roomClients.get(roomId);
+    if (!socketIds) return [];
+    const result: ClientData[] = [];
+    for (const sid of socketIds) {
+      const client = this.clients.get(sid);
+      if (client) result.push(client);
+    }
+    return result;
   }
 }

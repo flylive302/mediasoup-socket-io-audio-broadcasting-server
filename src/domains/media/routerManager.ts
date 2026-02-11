@@ -1,6 +1,6 @@
 import * as mediasoup from "mediasoup";
-import type { Logger } from "../../infrastructure/logger.js";
-import { mediasoupConfig } from "../../config/mediasoup.js";
+import type { Logger } from "@src/infrastructure/logger.js";
+import { mediasoupConfig } from "@src/config/mediasoup.js";
 
 export class RouterManager {
   public router: mediasoup.types.Router | null = null;

@@ -2,22 +2,22 @@ import Fastify, { FastifyInstance } from "fastify";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import type { Redis } from "ioredis";
-import { config } from "../config/index.js";
+import { config } from "@src/config/index.js";
 
 import { getRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
-import { initializeSocket } from "../socket/index.js";
+import { initializeSocket } from "@src/socket/index.js";
 
 import { logger } from "./logger.js";
 
 import { createMetricsRoutes } from "./metrics.js";
 import fs from "fs";
 
-import type { RoomManager } from "../domains/room/roomManager.js";
+import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
-import type { GiftHandler } from "../domains/gift/giftHandler.js";
-import type { AutoCloseJob } from "../domains/room/auto-close/index.js";
-import type { LaravelEventSubscriber } from "../integrations/laravel/event-subscriber.js";
+import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
+import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
+import type { LaravelEventSubscriber } from "@src/integrations/laravel/event-subscriber.js";
 
 export interface BootstrapResult {
   server: FastifyInstance;

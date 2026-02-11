@@ -8,12 +8,10 @@ export const createHealthRoutes = (
   return async (fastify) => {
     fastify.get("/health", async (_request, reply) => {
       const redis = getRedisClient();
+      // SEC-001 FIX: redis.status check is sufficient — no need for redundant ping
       let redisOk = false;
       try {
-        if (redis.status === "ready") {
-          await redis.ping();
-          redisOk = true;
-        }
+        redisOk = redis.status === "ready";
       } catch {
         // Redis unreachable
       }

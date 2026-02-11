@@ -1,11 +1,12 @@
 import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
-import { logger } from "../../infrastructure/logger.js";
-import type { WorkerManager } from "../../infrastructure/worker.manager.js";
-import { RoomMediaCluster } from "../media/roomMediaCluster.js";
+import { logger } from "@src/infrastructure/logger.js";
+import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
+import { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import { RoomStateRepository } from "./roomState.js";
-import { LaravelClient } from "../../integrations/laravelClient.js";
-import { ActiveSpeakerDetector } from "../media/activeSpeaker.js";
+import { LaravelClient } from "@src/integrations/laravelClient.js";
+import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
+import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -19,6 +20,7 @@ export class RoomManager {
     redis: Redis,
     private readonly io: SocketServer,
     private readonly laravelClient: LaravelClient,
+    private readonly seatRepository?: SeatRepository,
   ) {
     this.stateRepo = new RoomStateRepository(redis);
 
@@ -91,6 +93,7 @@ export class RoomManager {
       id: roomId,
       status: "ACTIVE",
       participantCount: 0,
+      seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       speakers: [],
@@ -108,8 +111,9 @@ export class RoomManager {
   /**
    * Handle worker death: close all rooms that have the dead worker
    * in their cluster (source or distribution).
+   * ARCH-002 FIX: Now async so WorkerManager can await cleanup before re-creating.
    */
-  private handleWorkerDeath(workerPid: number): void {
+  private async handleWorkerDeath(workerPid: number): Promise<void> {
     const orphanedRooms: string[] = [];
 
     for (const [roomId, cluster] of this.rooms) {
@@ -126,13 +130,23 @@ export class RoomManager {
       "Cleaning up rooms from dead worker",
     );
 
-    // Close each orphaned room (fire-and-forget with error handling)
-    for (const roomId of orphanedRooms) {
-      this.closeRoom(roomId, "worker_died").catch((err) => {
-        logger.error({ err, roomId, workerPid }, "Error closing orphaned room");
-        // Even if closeRoom fails, ensure we remove from local map
-        this.rooms.delete(roomId);
-      });
+    // Close all orphaned rooms concurrently and await completion
+    const results = await Promise.allSettled(
+      orphanedRooms.map((roomId) =>
+        this.closeRoom(roomId, "worker_died").catch((err) => {
+          logger.error({ err, roomId, workerPid }, "Error closing orphaned room");
+          // Even if closeRoom fails, ensure we remove from local map
+          this.rooms.delete(roomId);
+        }),
+      ),
+    );
+
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      logger.error(
+        { workerPid, failed, total: orphanedRooms.length },
+        "Some orphaned rooms failed to close",
+      );
     }
   }
 
@@ -152,12 +166,16 @@ export class RoomManager {
       timestamp: Date.now(),
     });
 
-    // 2. Notify Laravel
-    await this.laravelClient.updateRoomStatus(roomId, {
-      is_live: false,
-      participant_count: 0,
-      ended_at: new Date().toISOString(),
-    });
+    // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel)
+    this.laravelClient
+      .updateRoomStatus(roomId, {
+        is_live: false,
+        participant_count: 0,
+        ended_at: new Date().toISOString(),
+      })
+      .catch((err) =>
+        logger.error({ err, roomId }, "Laravel close status update failed"),
+      );
 
     // 3. Cleanup Mediasoup (cluster handles all its routers)
     await cluster.close();
@@ -165,6 +183,11 @@ export class RoomManager {
 
     // 4. Cleanup Redis
     await this.stateRepo.delete(roomId);
+
+    // BL-009 FIX: Cleanup seat data (seats hash, locked set, invite keys)
+    if (this.seatRepository) {
+      await this.seatRepository.clearRoom(roomId);
+    }
   }
 
   async getRoom(roomId: string): Promise<RoomMediaCluster | undefined> {

@@ -5,8 +5,7 @@
 // Handler registration
 export { registerSeatHandlers } from "./seat.handler.js";
 
-// Request schemas
-export * from "./seat.requests.js";
+// Request schemas now consolidated in socket/schemas.ts
 
 // Types
 export type {

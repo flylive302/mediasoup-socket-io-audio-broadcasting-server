@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import { config } from "../config/index.js";
+import { config } from "@src/config/index.js";
 import { logger } from "./logger.js";
 
 let redisInstance: Redis | null = null;

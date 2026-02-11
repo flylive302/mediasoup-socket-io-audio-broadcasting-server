@@ -21,8 +21,11 @@ export const Errors = {
   NOT_SEATED: "You are not seated",
   USER_NOT_SEATED: "User is not seated",
   SEAT_UNAVAILABLE: "Seat is no longer available",
+  MUTE_FAILED: "Failed to mute user",
+  UNMUTE_FAILED: "Failed to unmute user",
 
   // Invite
+  INVITE_CREATE_FAILED: "Failed to create invite",
   INVITE_PENDING: "Invite already pending for this seat",
   NO_INVITE: "No pending invite found",
   CANNOT_INVITE_SELF: "Cannot invite yourself",
@@ -39,6 +42,7 @@ export const Errors = {
   AUTH_REQUIRED: "Authentication required",
   INVALID_CREDENTIALS: "Invalid credentials",
   AUTH_FAILED: "Authentication failed",
+  AUTH_CHECK_FAILED: "Authorization check failed",
 } as const;
 
 export type ErrorCode = (typeof Errors)[keyof typeof Errors];

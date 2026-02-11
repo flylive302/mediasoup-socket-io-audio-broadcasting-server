@@ -5,7 +5,7 @@
  * Pattern: Follows SeatRepository design with Redis Sets for multi-socket support
  */
 import type { Redis } from "ioredis";
-import type { Logger } from "../../infrastructure/logger.js";
+import type { Logger } from "@src/infrastructure/logger.js";
 
 // Redis key patterns
 const USER_SOCKETS_KEY = (userId: number) => `user:${userId}:sockets`;
@@ -27,9 +27,12 @@ export class UserSocketRepository {
   async registerSocket(userId: number, socketId: string): Promise<boolean> {
     try {
       const key = USER_SOCKETS_KEY(userId);
-      await this.redis.sadd(key, socketId);
-      // Refresh TTL on each registration
-      await this.redis.expire(key, SOCKET_TTL_SECONDS);
+      // PERF-004 FIX: Pipeline SADD + EXPIRE in single round-trip
+      await this.redis
+        .multi()
+        .sadd(key, socketId)
+        .expire(key, SOCKET_TTL_SECONDS)
+        .exec();
 
       this.logger.debug({ userId, socketId }, "Socket registered for user");
       return true;
@@ -46,18 +49,17 @@ export class UserSocketRepository {
   async unregisterSocket(userId: number, socketId: string): Promise<boolean> {
     try {
       const key = USER_SOCKETS_KEY(userId);
-      const removed = await this.redis.srem(key, socketId);
+      // PERF-005 FIX: Atomic SREM + conditional DEL in single Lua round-trip
+      const UNREGISTER_LUA = `
+        redis.call('srem', KEYS[1], ARGV[1])
+        if redis.call('scard', KEYS[1]) == 0 then
+          redis.call('del', KEYS[1])
+        end
+        return 1
+      `;
+      await this.redis.eval(UNREGISTER_LUA, 1, key, socketId);
 
-      if (removed > 0) {
-        this.logger.debug({ userId, socketId }, "Socket unregistered for user");
-      }
-
-      // Clean up key if no sockets remain
-      const remaining = await this.redis.scard(key);
-      if (remaining === 0) {
-        await this.redis.del(key);
-      }
-
+      this.logger.debug({ userId, socketId }, "Socket unregistered for user");
       return true;
     } catch (err) {
       this.logger.error({ err, userId, socketId }, "Failed to unregister socket");

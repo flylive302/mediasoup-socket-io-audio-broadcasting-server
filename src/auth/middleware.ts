@@ -1,11 +1,11 @@
 import type { Socket } from "socket.io";
-import { logger } from "../infrastructure/logger.js";
-import { getRedisClient } from "../infrastructure/redis.js";
-import { config } from "../config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { getRedisClient } from "@src/infrastructure/redis.js";
+import { config } from "@src/config/index.js";
 import { verifyJwt } from "./jwtValidator.js";
-import { metrics } from "../infrastructure/metrics.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 import type { AuthSocketData } from "./types.js";
-import { Errors } from "../shared/errors.js";
+import { Errors } from "@src/shared/errors.js";
 
 export async function authMiddleware(
   socket: Socket,

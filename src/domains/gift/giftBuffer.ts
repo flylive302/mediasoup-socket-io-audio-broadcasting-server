@@ -1,10 +1,10 @@
 import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
-import type { Logger } from "../../infrastructure/logger.js";
-import type { LaravelClient } from "../../integrations/laravelClient.js";
-import type { GiftTransaction } from "../../integrations/types.js";
-import { config } from "../../config/index.js";
-import { metrics } from "../../infrastructure/metrics.js";
+import type { Logger } from "@src/infrastructure/logger.js";
+import type { LaravelClient } from "@src/integrations/laravelClient.js";
+import type { GiftTransaction } from "@src/integrations/types.js";
+import { config } from "@src/config/index.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 interface BufferedGift extends GiftTransaction {
   retryCount?: number;
@@ -108,7 +108,8 @@ export class GiftBuffer {
         "Gift batch failed, re-queuing items with retry count",
       );
 
-      // Re-queue items with incremented retry count
+      // BL-006 FIX: Pipeline all re-queues in a single round-trip
+      const pipeline = this.redis.pipeline();
       for (const gift of transactions) {
         const retryCount = (gift.retryCount ?? 0) + 1;
 
@@ -118,7 +119,7 @@ export class GiftBuffer {
             { transactionId: gift.transaction_id, retryCount },
             "Gift exceeded max retries, moving to dead letter queue",
           );
-          await this.redis.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
+          pipeline.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
           metrics.giftsProcessed.inc({ status: "dead_letter" });
 
           // Notify sender of permanent failure
@@ -134,11 +135,12 @@ export class GiftBuffer {
 
         // Re-queue with incremented retry count
         gift.retryCount = retryCount;
-        await this.redis.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+        pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
       }
 
-      // Delete processing key
-      await this.redis.del(processingKey);
+      // Delete processing key in the same pipeline
+      pipeline.del(processingKey);
+      await pipeline.exec();
     }
   }
 }

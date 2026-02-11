@@ -2,8 +2,8 @@
  * Room Auto-Close Job
  * Background job that periodically checks for inactive rooms and closes them
  */
-import { logger } from "../../../infrastructure/logger.js";
-import { config } from "../../../config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { config } from "@src/config/index.js";
 import type { AutoCloseService } from "./auto-close.service.js";
 
 export type RoomCloseCallback = (

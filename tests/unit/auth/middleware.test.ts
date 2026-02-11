@@ -2,22 +2,22 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock dependencies before imports
 const mockVerifyJwt = vi.fn();
-vi.mock("./jwtValidator.js", () => ({
+vi.mock("@src/auth/jwtValidator.js", () => ({
   verifyJwt: (...args: unknown[]) => mockVerifyJwt(...args),
 }));
 
 const mockGetRedisClient = vi.fn();
-vi.mock("../infrastructure/redis.js", () => ({
+vi.mock("@src/infrastructure/redis.js", () => ({
   getRedisClient: () => mockGetRedisClient(),
 }));
 
-vi.mock("../config/index.js", () => ({
+vi.mock("@src/config/index.js", () => ({
   config: {
     CORS_ORIGINS: new Set(["https://flyliveapp.com", "https://www.flyliveapp.com"]),
   },
 }));
 
-vi.mock("../infrastructure/logger.js", () => ({
+vi.mock("@src/infrastructure/logger.js", () => ({
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -26,14 +26,14 @@ vi.mock("../infrastructure/logger.js", () => ({
   },
 }));
 
-vi.mock("../infrastructure/metrics.js", () => ({
+vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: {
     authAttempts: { inc: vi.fn() },
   },
 }));
 
-import { authMiddleware } from "./middleware.js";
-import { metrics } from "../infrastructure/metrics.js";
+import { authMiddleware } from "@src/auth/middleware.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 

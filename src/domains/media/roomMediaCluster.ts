@@ -10,9 +10,9 @@
  *   Pipe Transports — bridge producers from source to distribution routers
  */
 import * as mediasoup from "mediasoup";
-import type { Logger } from "../../infrastructure/logger.js";
-import type { WorkerManager } from "../../infrastructure/worker.manager.js";
-import { config } from "../../config/index.js";
+import type { Logger } from "@src/infrastructure/logger.js";
+import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
+import { config } from "@src/config/index.js";
 import { RouterManager } from "./routerManager.js";
 
 interface DistributionRouter {
@@ -131,6 +131,16 @@ export class RoomMediaCluster {
     );
     this.transportOwnership.set(transport.id, distRouter.routerManager);
     distRouter.listenerCount++;
+
+    // ARCH-001 FIX: Decrement listener count when transport closes
+    transport.observer.on("close", () => {
+      distRouter.listenerCount = Math.max(0, distRouter.listenerCount - 1);
+      this.transportOwnership.delete(transport.id);
+      this.logger.debug(
+        { transportId: transport.id, listenerCount: distRouter.listenerCount },
+        "RoomMediaCluster: listener transport closed, count decremented",
+      );
+    });
 
     this.logger.debug(
       {
@@ -256,17 +266,14 @@ export class RoomMediaCluster {
       appData: { sourceProducerId },
     });
 
-    consumer.on("transportclose", () => consumer.close());
-    consumer.on("producerclose", () => consumer.close());
-
-    // Track consumer → source producer for active speaker forwarding
+    // CQ-002 FIX: Combined cleanup for both close events (was 4 listeners, now 2)
     this.consumerSourceMap.set(consumer.id, sourceProducerId);
-    consumer.on("transportclose", () => {
+    const cleanup = () => {
       this.consumerSourceMap.delete(consumer.id);
-    });
-    consumer.on("producerclose", () => {
-      this.consumerSourceMap.delete(consumer.id);
-    });
+      if (!consumer.closed) consumer.close();
+    };
+    consumer.on("transportclose", cleanup);
+    consumer.on("producerclose", cleanup);
 
     dist.routerManager.registerConsumer(consumer);
 

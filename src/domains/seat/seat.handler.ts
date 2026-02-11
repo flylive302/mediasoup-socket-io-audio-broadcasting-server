@@ -3,8 +3,8 @@
  * Registers all seat-related socket event handlers
  */
 import type { Socket } from "socket.io";
-import type { AppContext } from "../../context.js";
-import { logger } from "../../infrastructure/logger.js";
+import type { AppContext } from "@src/context.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 // Import individual handlers
 import { takeSeatHandler } from "./handlers/take-seat.handler.js";

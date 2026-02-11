@@ -1,5 +1,5 @@
 import { pino } from "pino";
-import { config, isDev } from "../config/index.js";
+import { config, isDev } from "@src/config/index.js";
 
 const devTransport = {
   target: "pino-pretty",

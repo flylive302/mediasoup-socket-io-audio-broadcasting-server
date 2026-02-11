@@ -4,238 +4,143 @@
  *
  * Both handlers are combined since they share most logic
  */
-import type { Socket } from "socket.io";
-import type { AppContext } from "../../../context.js";
-import { logger } from "../../../infrastructure/logger.js";
-import { seatInviteActionSchema } from "../seat.requests.js";
-import { config } from "../../../config/index.js";
+import { seatInviteActionSchema } from "@src/socket/schemas.js";
+import { createHandler } from "@src/shared/handler.utils.js";
+import { config } from "@src/config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
+import { emitToRoom } from "@src/shared/socket.utils.js";
 
-export function inviteAcceptHandler(socket: Socket, context: AppContext) {
-  const userId = String(socket.data.user.id);
+export const inviteAcceptHandler = createHandler(
+  "seat:invite:accept",
+  seatInviteActionSchema,
+  async (payload, socket, context) => {
+    const userId = String(socket.data.user.id);
+    const { roomId } = payload;
+    let { seatIndex } = payload;
 
-  return async (
-    rawPayload: unknown,
-    callback?: (response: { success: boolean; error?: string }) => void,
-  ) => {
-    logger.info({ userId, rawPayload }, "seat:invite:accept received");
-
-    try {
-      const parseResult = seatInviteActionSchema.safeParse(rawPayload);
-      if (!parseResult.success) {
-        logger.warn(
-          { userId, errors: parseResult.error.format() },
-          "seat:invite:accept invalid payload",
-        );
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
+    // If seatIndex not provided, find the invite for this user
+    let invite;
+    if (seatIndex !== undefined) {
+      invite = await context.seatRepository.getInvite(roomId, seatIndex);
+    } else {
+      // Search for user's invite
+      const found = await context.seatRepository.findInviteByUser(roomId, userId);
+      if (found) {
+        invite = found.invite;
+        seatIndex = found.seatIndex;
       }
+    }
 
-      const { roomId } = parseResult.data;
-      let { seatIndex } = parseResult.data;
-
-      // If seatIndex not provided, find the invite for this user
-      let invite;
-      if (seatIndex !== undefined) {
-        invite = await context.seatRepository.getInvite(roomId, seatIndex);
-      } else {
-        // Search for user's invite
-        const found = await context.seatRepository.findInviteByUser(roomId, userId);
-        if (found) {
-          invite = found.invite;
-          seatIndex = found.seatIndex;
-        }
-      }
-
-      logger.info(
-        {
-          roomId,
-          seatIndex,
-          acceptingUserId: userId,
-          inviteTargetUserId: invite?.targetUserId,
-          hasInvite: !!invite,
-        },
-        "seat:invite:accept checking invite",
-      );
-
-      // Verify invite exists and matches user
-      if (!invite || invite.targetUserId !== userId || seatIndex === undefined) {
-        logger.warn(
-          {
-            roomId,
-            seatIndex,
-            userId,
-            inviteTargetUserId: invite?.targetUserId,
-          },
-          "seat:invite:accept - no matching invite found",
-        );
-        if (callback)
-          callback({ success: false, error: "No pending invite found" });
-        return;
-      }
-
-      // Delete the invite from Redis (no clearTimeout needed - Redis TTL handles expiry)
-      await context.seatRepository.deleteInvite(roomId, seatIndex);
-
-      // Notify room that pending status is cleared
-      const clearEvent = { seatIndex, isPending: false };
-      socket.to(roomId).emit("seat:invite:pending", clearEvent);
-      socket.emit("seat:invite:pending", clearEvent);
-
-      // Auto-unlock seat if locked (invited users bypass seat lock)
-      const isLocked = await context.seatRepository.isSeatLocked(roomId, seatIndex);
-      if (isLocked) {
-        await context.seatRepository.unlockSeat(roomId, seatIndex);
-        // Broadcast unlock event
-        const unlockEvent = { seatIndex, isLocked: false };
-        socket.to(roomId).emit("seat:locked", unlockEvent);
-        socket.emit("seat:locked", unlockEvent);
-        logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
-      }
-
-      // User Accepted: Use atomic Redis operation to take seat
-      const result = await context.seatRepository.takeSeat(
+    logger.info(
+      {
         roomId,
-        userId,
         seatIndex,
-        config.DEFAULT_SEAT_COUNT,
-      );
+        acceptingUserId: userId,
+        inviteTargetUserId: invite?.targetUserId,
+        hasInvite: !!invite,
+      },
+      "seat:invite:accept checking invite",
+    );
 
-      if (!result.success) {
-        if (callback) callback({ success: false, error: result.error });
-        return;
+    // Verify invite exists and matches user
+    if (!invite || invite.targetUserId !== userId || seatIndex === undefined) {
+      return { success: false, error: Errors.NO_INVITE };
+    }
+
+    // Delete the invite from Redis (no clearTimeout needed - Redis TTL handles expiry)
+    await context.seatRepository.deleteInvite(roomId, seatIndex);
+
+    // Notify room that pending status is cleared
+    emitToRoom(socket, roomId, "seat:invite:pending", {
+      seatIndex,
+      isPending: false,
+    });
+
+    // Auto-unlock seat if locked (invited users bypass seat lock)
+    const isLocked = await context.seatRepository.isSeatLocked(roomId, seatIndex);
+    if (isLocked) {
+      await context.seatRepository.unlockSeat(roomId, seatIndex);
+      emitToRoom(socket, roomId, "seat:locked", { seatIndex, isLocked: false });
+      logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
+    }
+
+    // User Accepted: Use atomic Redis operation to take seat
+    const result = await context.seatRepository.takeSeat(
+      roomId,
+      userId,
+      seatIndex,
+      config.DEFAULT_SEAT_COUNT,
+    );
+
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    logger.info(
+      { roomId, userId, seatIndex },
+      "User accepted invite and took seat",
+    );
+
+    // BL-007 FIX: userId-only — frontend looks up user from participants
+    emitToRoom(socket, roomId, "seat:updated", {
+      seatIndex,
+      userId: socket.data.user.id,
+      isMuted: false,
+    });
+
+    return { success: true };
+  },
+);
+
+export const inviteDeclineHandler = createHandler(
+  "seat:invite:decline",
+  seatInviteActionSchema,
+  async (payload, socket, context) => {
+    const userId = String(socket.data.user.id);
+    const { roomId } = payload;
+    let { seatIndex } = payload;
+
+    // If seatIndex not provided, find the invite for this user
+    let invite;
+    if (seatIndex !== undefined) {
+      invite = await context.seatRepository.getInvite(roomId, seatIndex);
+    } else {
+      // Search for user's invite
+      const found = await context.seatRepository.findInviteByUser(roomId, userId);
+      if (found) {
+        invite = found.invite;
+        seatIndex = found.seatIndex;
       }
+    }
 
-      logger.info(
-        { roomId, userId, seatIndex },
-        "User accepted invite and took seat",
-      );
-
-      // Broadcast update
-      const user = socket.data.user;
-      const seatUpdate = {
+    logger.info(
+      {
+        roomId,
         seatIndex,
-        user: {
-          id: user.id,
-          name: user.name,
-          avatar: user.avatar,
-          signature: user.signature,
-          frame: user.frame,
-          gender: user.gender,
-          country: user.country,
-          phone: user.phone,
-          email: user.email,
-          date_of_birth: user.date_of_birth,
-          wealth_xp: user.wealth_xp,
-          charm_xp: user.charm_xp,
-        },
-        isMuted: false,
-      };
+        decliningUserId: userId,
+        inviteTargetUserId: invite?.targetUserId,
+        hasInvite: !!invite,
+      },
+      "seat:invite:decline checking invite",
+    );
 
-      socket.to(roomId).emit("seat:updated", seatUpdate);
-      socket.emit("seat:updated", seatUpdate);
-
-      if (callback) callback({ success: true });
-    } catch (error) {
-      logger.error(
-        {
-          error,
-          userId,
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-        "seat:invite:accept handler exception",
-      );
-      if (callback)
-        callback({ success: false, error: "Internal server error" });
+    // Verify invite exists and matches user
+    if (!invite || invite.targetUserId !== userId || seatIndex === undefined) {
+      return { success: false, error: Errors.NO_INVITE };
     }
-  };
-}
 
-export function inviteDeclineHandler(socket: Socket, context: AppContext) {
-  const userId = String(socket.data.user.id);
+    // Delete the invite from Redis
+    await context.seatRepository.deleteInvite(roomId, seatIndex);
 
-  return async (
-    rawPayload: unknown,
-    callback?: (response: { success: boolean; error?: string }) => void,
-  ) => {
-    logger.info({ userId, rawPayload }, "seat:invite:decline received");
+    // Notify room that pending status is cleared
+    emitToRoom(socket, roomId, "seat:invite:pending", {
+      seatIndex,
+      isPending: false,
+    });
 
-    try {
-      const parseResult = seatInviteActionSchema.safeParse(rawPayload);
-      if (!parseResult.success) {
-        logger.warn(
-          { userId, errors: parseResult.error.format() },
-          "seat:invite:decline invalid payload",
-        );
-        if (callback) callback({ success: false, error: "Invalid payload" });
-        return;
-      }
+    logger.info({ roomId, userId, seatIndex }, "User declined seat invite");
 
-      const { roomId } = parseResult.data;
-      let { seatIndex } = parseResult.data;
-
-      // If seatIndex not provided, find the invite for this user
-      let invite;
-      if (seatIndex !== undefined) {
-        invite = await context.seatRepository.getInvite(roomId, seatIndex);
-      } else {
-        // Search for user's invite
-        const found = await context.seatRepository.findInviteByUser(roomId, userId);
-        if (found) {
-          invite = found.invite;
-          seatIndex = found.seatIndex;
-        }
-      }
-
-      logger.info(
-        {
-          roomId,
-          seatIndex,
-          decliningUserId: userId,
-          inviteTargetUserId: invite?.targetUserId,
-          hasInvite: !!invite,
-        },
-        "seat:invite:decline checking invite",
-      );
-
-      // Verify invite exists and matches user
-      if (!invite || invite.targetUserId !== userId || seatIndex === undefined) {
-        logger.warn(
-          {
-            roomId,
-            seatIndex,
-            userId,
-            inviteTargetUserId: invite?.targetUserId,
-          },
-          "seat:invite:decline - no matching invite found",
-        );
-        if (callback)
-          callback({ success: false, error: "No pending invite found" });
-        return;
-      }
-
-      // Delete the invite from Redis
-      await context.seatRepository.deleteInvite(roomId, seatIndex);
-
-      // Notify room that pending status is cleared
-      const clearEvent = { seatIndex, isPending: false };
-      socket.to(roomId).emit("seat:invite:pending", clearEvent);
-      socket.emit("seat:invite:pending", clearEvent);
-
-      logger.info({ roomId, userId, seatIndex }, "User declined seat invite");
-
-      if (callback) callback({ success: true });
-    } catch (error) {
-      logger.error(
-        {
-          error,
-          userId,
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-        "seat:invite:decline handler exception",
-      );
-      if (callback)
-        callback({ success: false, error: "Internal server error" });
-    }
-  };
-}
-
+    return { success: true };
+  },
+);

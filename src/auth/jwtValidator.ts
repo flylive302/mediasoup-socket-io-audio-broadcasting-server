@@ -11,11 +11,11 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Redis } from "ioredis";
-import { config } from "../config/index.js";
+import { config } from "@src/config/index.js";
 import { UserSchema } from "./types.js";
 import type { User } from "./types.js";
-import type { Logger } from "../infrastructure/logger.js";
-import { hashToken } from "../shared/crypto.js";
+import type { Logger } from "@src/infrastructure/logger.js";
+import { hashToken } from "@src/shared/crypto.js";
 
 /**
  * Base64URL decode (RFC 7515)

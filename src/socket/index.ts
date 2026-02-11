@@ -1,33 +1,33 @@
 import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
-import { logger } from "../infrastructure/logger.js";
-import { authMiddleware } from "../auth/middleware.js";
-import { WorkerManager } from "../infrastructure/worker.manager.js";
-import { RoomManager } from "../domains/room/roomManager.js";
-import { ClientManager } from "../client/clientManager.js";
-import { config } from "../config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
+import { authMiddleware } from "@src/auth/middleware.js";
+import { WorkerManager } from "@src/infrastructure/worker.manager.js";
+import { RoomManager } from "@src/domains/room/roomManager.js";
+import { ClientManager } from "@src/client/clientManager.js";
+import { config } from "@src/config/index.js";
 
 // Handlers
-import { GiftHandler } from "../domains/gift/giftHandler.js";
-import { LaravelClient } from "../integrations/laravelClient.js";
-import { RateLimiter } from "../utils/rateLimiter.js";
-import type { AppContext } from "../context.js";
+import { GiftHandler } from "@src/domains/gift/giftHandler.js";
+import { LaravelClient } from "@src/integrations/laravelClient.js";
+import { RateLimiter } from "@src/utils/rateLimiter.js";
+import type { AppContext } from "@src/context.js";
 
 // Domain Registry - registers all domain handlers
-import { registerAllDomains } from "../domains/index.js";
+import { registerAllDomains } from "@src/domains/index.js";
 
 // Domain modules
-import { SeatRepository } from "../domains/seat/seat.repository.js";
+import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 
 // Auto-close system
-import { AutoCloseService, AutoCloseJob } from "../domains/room/auto-close/index.js";
+import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 
 // Events module (Laravel pub/sub integration)
 import {
   UserSocketRepository,
   LaravelEventSubscriber,
   EventRouter,
-} from "../integrations/laravel/index.js";
+} from "@src/integrations/laravel/index.js";
 
 export async function initializeSocket(
   io: Server,
@@ -43,12 +43,12 @@ export async function initializeSocket(
   // or we can instantiate one singleton here.
   const laravelClient = new LaravelClient(logger);
 
-  const roomManager = new RoomManager(workerManager, redis, io, laravelClient);
-  const giftHandler = new GiftHandler(redis, io, laravelClient);
-  const rateLimiter = new RateLimiter(redis);
-
   // Initialize seat repository (Redis-backed for horizontal scaling)
   const seatRepository = new SeatRepository(redis);
+
+  const roomManager = new RoomManager(workerManager, redis, io, laravelClient, seatRepository);
+  const giftHandler = new GiftHandler(redis, io, laravelClient);
+  const rateLimiter = new RateLimiter(redis);
 
   // Initialize auto-close system
   const autoCloseService = new AutoCloseService(redis);
@@ -165,50 +165,56 @@ async function handleDisconnect(
 
   const client = clientManager.getClient(socket.id);
 
-  // Parallel: unregister socket + clear room tracking (independent Redis ops)
-  if (client?.userId) {
-    await Promise.allSettled([
-      userSocketRepository.unregisterSocket(client.userId, socket.id),
-      userSocketRepository.clearUserRoom(client.userId),
-    ]);
-  }
-
   if (client?.roomId) {
+    const roomId = client.roomId;
     const roomUserId = String(client.userId);
 
-    // Clear user's seat if seated
-    const result = await seatRepository.leaveSeat(client.roomId, roomUserId);
-    if (result.success && result.seatIndex !== undefined) {
+    // RT-002 FIX: Close all transports synchronously (mediasoup close() is sync)
+    // Single room lookup instead of per-transport
+    const cluster = await roomManager.getRoom(roomId);
+    if (cluster) {
+      for (const [transportId] of client.transports) {
+        try {
+          const transport = cluster.getTransport(transportId);
+          if (transport && !transport.closed) {
+            transport.close();
+          }
+        } catch {
+          // Worker may already be dead
+        }
+      }
+    }
+
+    // RT-002 FIX: Parallel Redis cleanup — don't await sequentially
+    const [seatResult] = await Promise.allSettled([
+      seatRepository.leaveSeat(roomId, roomUserId),
+      userSocketRepository.unregisterSocket(client.userId, socket.id),
+      userSocketRepository.clearUserRoom(client.userId),
+      roomManager.state.adjustParticipantCount(roomId, -1),
+    ]);
+
+    // Emit seat:cleared if user was seated
+    if (
+      seatResult.status === "fulfilled" &&
+      seatResult.value.success &&
+      seatResult.value.seatIndex !== undefined
+    ) {
       socket
-        .to(client.roomId)
-        .emit("seat:cleared", { seatIndex: result.seatIndex });
+        .to(roomId)
+        .emit("seat:cleared", { seatIndex: seatResult.value.seatIndex });
       log.debug(
-        { roomId: client.roomId, userId: roomUserId, seatIndex: result.seatIndex },
+        { roomId, userId: roomUserId, seatIndex: seatResult.value.seatIndex },
         "User seat cleared on disconnect",
       );
     }
 
-    // Cleanup transports
-    for (const [transportId] of client.transports) {
-      try {
-        const cluster = await roomManager.getRoom(client.roomId);
-        if (cluster) {
-          const transport = cluster.getTransport(transportId);
-          if (transport && !transport.closed) {
-            await transport.close();
-          }
-        }
-      } catch (err) {
-        log.warn(
-          { err, transportId },
-          "Error closing transport on disconnect",
-        );
-      }
-    }
-
-    socket
-      .to(client.roomId)
-      .emit("room:userLeft", { userId: client.userId });
+    socket.to(roomId).emit("room:userLeft", { userId: client.userId });
+  } else if (client?.userId) {
+    // No room but has userId — just clean up socket registration
+    await Promise.allSettled([
+      userSocketRepository.unregisterSocket(client.userId, socket.id),
+      userSocketRepository.clearUserRoom(client.userId),
+    ]);
   }
 
   clientManager.removeClient(socket.id);

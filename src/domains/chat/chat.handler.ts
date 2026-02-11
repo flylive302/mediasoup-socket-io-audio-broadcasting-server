@@ -1,26 +1,16 @@
 import type { Socket } from "socket.io";
 import { randomUUID } from "node:crypto";
-import { chatMessageSchema } from "../../socket/schemas.js";
-import type { AppContext } from "../../context.js";
-import { config } from "../../config/index.js";
-import { logger } from "../../infrastructure/logger.js";
+import { chatMessageSchema } from "@src/socket/schemas.js";
+import { Errors } from "@src/shared/errors.js";
+import type { AppContext } from "@src/context.js";
+import { config } from "@src/config/index.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 export const chatHandler = (socket: Socket, context: AppContext) => {
   const { rateLimiter } = context;
 
   socket.on("chat:message", async (rawPayload: unknown) => {
-    // Validation
-    const payloadResult = chatMessageSchema.safeParse(rawPayload);
-    if (!payloadResult.success) {
-      socket.emit("error", {
-        message: "Invalid payload",
-        errors: payloadResult.error.format(),
-      });
-      return;
-    }
-    const payload = payloadResult.data;
-
-    // Rate limit check
+    // Rate limit check FIRST (cheap Redis op should run before Zod parsing)
     const userId = socket.data.user.id;
     const allowed = await rateLimiter.isAllowed(
       `chat:${userId}`,
@@ -29,10 +19,20 @@ export const chatHandler = (socket: Socket, context: AppContext) => {
     );
 
     if (!allowed) {
-      // Emit error only to sender
       socket.emit("error", { message: "Too many messages" });
       return;
     }
+
+    // Validation
+    const payloadResult = chatMessageSchema.safeParse(rawPayload);
+    if (!payloadResult.success) {
+      socket.emit("error", {
+        message: Errors.INVALID_PAYLOAD,
+        errors: payloadResult.error.format(),
+      });
+      return;
+    }
+    const payload = payloadResult.data;
 
     // Broadcast to room (excluding sender) or including sender?
     // Usually sender wants ACK, others get event.

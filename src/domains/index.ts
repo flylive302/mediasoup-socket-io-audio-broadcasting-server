@@ -5,7 +5,7 @@
  * To remove a domain: Remove import and entry from array
  */
 import type { Socket } from "socket.io";
-import type { AppContext } from "../context.js";
+import type { AppContext } from "@src/context.js";
 
 // Domain registration function type
 export type DomainRegistration = (socket: Socket, ctx: AppContext) => void;

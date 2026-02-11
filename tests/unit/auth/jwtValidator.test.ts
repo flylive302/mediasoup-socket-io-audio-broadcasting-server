@@ -3,14 +3,14 @@ import { createHmac } from "node:crypto";
 import type { Redis } from "ioredis";
 
 // Mock config before importing modules that use it
-vi.mock("../config/index.js", () => ({
+vi.mock("@src/config/index.js", () => ({
   config: {
     JWT_SECRET: "test-secret-key-that-is-at-least-32-chars",
     JWT_MAX_AGE_SECONDS: 86_400,
   },
 }));
 
-vi.mock("../infrastructure/logger.js", () => ({
+vi.mock("@src/infrastructure/logger.js", () => ({
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock("../infrastructure/logger.js", () => ({
   },
 }));
 
-import { verifyJwt } from "./jwtValidator.js";
+import { verifyJwt } from "@src/auth/jwtValidator.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ describe("JwtValidator", () => {
     const payload = validUserPayload();
     const token = createJwt(payload);
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).not.toBeNull();
     expect(user!.id).toBe(42);
@@ -97,7 +97,7 @@ describe("JwtValidator", () => {
     });
     const token = createJwt(payload);
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
   });
@@ -106,16 +106,16 @@ describe("JwtValidator", () => {
     const payload = validUserPayload();
     const token = createJwt(payload, "wrong-secret-key-that-is-at-least-32-ch");
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
   });
 
   it("returns null for malformed JWT (not 3 parts)", async () => {
-    const user = await verifyJwt("not.a.valid.jwt.token", mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt("not.a.valid.jwt.token", mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
     expect(user).toBeNull();
 
-    const user2 = await verifyJwt("only-one-part", mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user2 = await verifyJwt("only-one-part", mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
     expect(user2).toBeNull();
   });
 
@@ -123,7 +123,7 @@ describe("JwtValidator", () => {
     const payload = { id: 42, name: "Test", iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 };
     const token = createJwt(payload);
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
   });
@@ -134,7 +134,7 @@ describe("JwtValidator", () => {
     const payload = validUserPayload();
     const token = createJwt(payload);
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
     expect(mockRedis.exists).toHaveBeenCalled();
@@ -146,7 +146,7 @@ describe("JwtValidator", () => {
     const payload = validUserPayload();
     const token = createJwt(payload);
 
-    const user = await verifyJwt(token, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
   });
@@ -159,7 +159,7 @@ describe("JwtValidator", () => {
     delete recentPayload.exp;
     const validToken = createJwt(recentPayload);
 
-    const user = await verifyJwt(validToken, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user = await verifyJwt(validToken, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
     expect(user).not.toBeNull();
 
     // iat is very old, no exp — should fail
@@ -169,7 +169,7 @@ describe("JwtValidator", () => {
     delete oldPayload.exp;
     const expiredToken = createJwt(oldPayload);
 
-    const user2 = await verifyJwt(expiredToken, mockRedis as Redis, (await import("../infrastructure/logger.js")).logger);
+    const user2 = await verifyJwt(expiredToken, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
     expect(user2).toBeNull();
   });
 });

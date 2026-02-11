@@ -9,10 +9,10 @@
  * - both null → broadcast to all
  */
 import type { Server } from "socket.io";
-import type { Logger } from "../../infrastructure/logger.js";
+import type { Logger } from "@src/infrastructure/logger.js";
 import type { UserSocketRepository } from "./user-socket.repository.js";
 import type { LaravelEvent, EventRoutingResult, EventTarget } from "./types.js";
-import { metrics } from "../../infrastructure/metrics.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 export class EventRouter {
   constructor(
