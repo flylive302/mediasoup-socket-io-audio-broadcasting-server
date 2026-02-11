@@ -6,7 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
-import { emitToRoom } from "@src/shared/socket.utils.js";
+
 
 export const lockSeatHandler = createHandler(
   "seat:lock",
@@ -37,7 +37,7 @@ export const lockSeatHandler = createHandler(
 
     // If someone was kicked, notify room and close their producer
     if (kicked) {
-      emitToRoom(socket, roomId, "seat:cleared", { seatIndex });
+      socket.nsp.to(roomId).emit("seat:cleared", { seatIndex });
 
       // Server-side producer close — don't rely on frontend
       const kickedClient = context.clientManager
@@ -70,7 +70,7 @@ export const lockSeatHandler = createHandler(
     logger.info({ roomId, seatIndex, lockedBy: userId }, "Seat locked");
 
     // Broadcast to all including sender
-    emitToRoom(socket, roomId, "seat:locked", { seatIndex, isLocked: true });
+    socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: true });
 
     return { success: true };
   },

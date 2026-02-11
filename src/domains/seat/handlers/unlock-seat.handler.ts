@@ -6,7 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
-import { emitToRoom } from "@src/shared/socket.utils.js";
+
 
 export const unlockSeatHandler = createHandler(
   "seat:unlock",
@@ -35,7 +35,7 @@ export const unlockSeatHandler = createHandler(
     logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
 
     // Broadcast to all including sender
-    emitToRoom(socket, roomId, "seat:locked", { seatIndex, isLocked: false });
+    socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: false });
 
     return { success: true };
   },

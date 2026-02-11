@@ -11,6 +11,7 @@ import { Errors } from "@src/shared/errors.js";
 // ============== Constants ==============
 
 const OWNER_CACHE_TTL_MS = 30_000;
+const OWNER_BOOTSTRAP_TTL_MS = 300_000; // 5 minutes — for owners set at room creation
 const OWNER_FETCH_TIMEOUT_MS = 5_000;
 
 // ============== Owner Cache ==============
@@ -27,7 +28,7 @@ const roomOwnerCache = new Map<
 export function setRoomOwner(roomId: string, ownerId: string): void {
   roomOwnerCache.set(roomId, {
     ownerId,
-    expiresAt: Date.now() + OWNER_CACHE_TTL_MS * 10, // 5 minutes for manually set owners
+    expiresAt: Date.now() + OWNER_BOOTSTRAP_TTL_MS,
   });
 }
 

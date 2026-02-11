@@ -9,7 +9,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
-import { emitToRoom } from "@src/shared/socket.utils.js";
+
 
 export const inviteAcceptHandler = createHandler(
   "seat:invite:accept",
@@ -25,7 +25,7 @@ export const inviteAcceptHandler = createHandler(
       invite = await context.seatRepository.getInvite(roomId, seatIndex);
     } else {
       // Search for user's invite
-      const found = await context.seatRepository.findInviteByUser(roomId, userId);
+      const found = await context.seatRepository.getInviteByUser(roomId, userId);
       if (found) {
         invite = found.invite;
         seatIndex = found.seatIndex;
@@ -52,7 +52,7 @@ export const inviteAcceptHandler = createHandler(
     await context.seatRepository.deleteInvite(roomId, seatIndex);
 
     // Notify room that pending status is cleared
-    emitToRoom(socket, roomId, "seat:invite:pending", {
+    socket.nsp.to(roomId).emit("seat:invite:pending", {
       seatIndex,
       isPending: false,
     });
@@ -61,7 +61,7 @@ export const inviteAcceptHandler = createHandler(
     const isLocked = await context.seatRepository.isSeatLocked(roomId, seatIndex);
     if (isLocked) {
       await context.seatRepository.unlockSeat(roomId, seatIndex);
-      emitToRoom(socket, roomId, "seat:locked", { seatIndex, isLocked: false });
+      socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: false });
       logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
     }
 
@@ -83,7 +83,7 @@ export const inviteAcceptHandler = createHandler(
     );
 
     // BL-007 FIX: userId-only — frontend looks up user from participants
-    emitToRoom(socket, roomId, "seat:updated", {
+    socket.nsp.to(roomId).emit("seat:updated", {
       seatIndex,
       userId: socket.data.user.id,
       isMuted: false,
@@ -107,7 +107,7 @@ export const inviteDeclineHandler = createHandler(
       invite = await context.seatRepository.getInvite(roomId, seatIndex);
     } else {
       // Search for user's invite
-      const found = await context.seatRepository.findInviteByUser(roomId, userId);
+      const found = await context.seatRepository.getInviteByUser(roomId, userId);
       if (found) {
         invite = found.invite;
         seatIndex = found.seatIndex;
@@ -134,7 +134,7 @@ export const inviteDeclineHandler = createHandler(
     await context.seatRepository.deleteInvite(roomId, seatIndex);
 
     // Notify room that pending status is cleared
-    emitToRoom(socket, roomId, "seat:invite:pending", {
+    socket.nsp.to(roomId).emit("seat:invite:pending", {
       seatIndex,
       isPending: false,
     });

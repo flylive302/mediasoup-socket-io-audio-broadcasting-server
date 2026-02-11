@@ -6,7 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
-import { emitToRoom } from "@src/shared/socket.utils.js";
+
 
 // Invite expiry in seconds (30 seconds TTL in Redis)
 const INVITE_EXPIRY_SECONDS = 30;
@@ -67,7 +67,7 @@ export const inviteSeatHandler = createHandler(
     );
 
     // Broadcast pending status to room (so UI can show "Invited...")
-    emitToRoom(socket, roomId, "seat:invite:pending", {
+    socket.nsp.to(roomId).emit("seat:invite:pending", {
       seatIndex,
       isPending: true,
       invitedUserId: targetUserId,

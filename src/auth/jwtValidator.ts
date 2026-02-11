@@ -16,6 +16,7 @@ import { UserSchema } from "./types.js";
 import type { User } from "./types.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { hashToken } from "@src/shared/crypto.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 /**
  * Base64URL decode (RFC 7515)
@@ -129,6 +130,7 @@ async function verifyJwtInternal(
     }
   } catch (err) {
     logger.error({ err }, "JWT: Redis error during revocation check");
+    metrics.authAttempts.inc({ result: "redis_error" });
     // Fail closed for security
     return null;
   }

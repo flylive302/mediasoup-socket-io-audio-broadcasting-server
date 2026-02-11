@@ -1,6 +1,10 @@
 /**
  * Seat Repository - Redis-backed seat management
  * Handles all seat state in Redis for horizontal scaling support
+ *
+ * All Lua scripts are registered via defineCommand() which uses EVALSHA
+ * under the hood — only the SHA hash is sent over the wire after the
+ * first invocation, not the full script text.
  */
 import type { Redis } from "ioredis";
 import type {
@@ -17,9 +21,14 @@ const SEATS_KEY = (roomId: string) => `room:${roomId}:seats`;
 const LOCKED_KEY = (roomId: string) => `room:${roomId}:locked_seats`;
 const INVITE_KEY = (roomId: string, seatIndex: number) =>
   `room:${roomId}:invite:${seatIndex}`;
+const INVITE_USER_KEY = (roomId: string, userId: string) =>
+  `room:${roomId}:invite:user:${userId}`;
 
-// Lua script for atomic seat taking
-const TAKE_SEAT_LUA = `
+// ─────────────────────────────────────────────────────────────────
+// Lua Scripts (registered via defineCommand for auto EVALSHA)
+// ─────────────────────────────────────────────────────────────────
+
+const TAKE_SEAT_SCRIPT = `
   local seatsKey = KEYS[1]
   local lockedKey = KEYS[2]
   local seatIndex = tonumber(ARGV[1])
@@ -59,8 +68,7 @@ const TAKE_SEAT_LUA = `
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 
-// Lua script for atomic seat leaving
-const LEAVE_SEAT_LUA = `
+const LEAVE_SEAT_SCRIPT = `
   local seatsKey = KEYS[1]
   local userId = ARGV[1]
   
@@ -78,8 +86,7 @@ const LEAVE_SEAT_LUA = `
   return cjson.encode({success = false, error = "NOT_SEATED"})
 `;
 
-// Lua script for assigning a user to a specific seat (owner action)
-const ASSIGN_SEAT_LUA = `
+const ASSIGN_SEAT_SCRIPT = `
   local seatsKey = KEYS[1]
   local lockedKey = KEYS[2]
   local seatIndex = tonumber(ARGV[1])
@@ -116,8 +123,67 @@ const ASSIGN_SEAT_LUA = `
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 
+const SET_MUTE_SCRIPT = `
+  local key = KEYS[1]
+  local seatIndex = ARGV[1]
+  local muted = ARGV[2] == "true"
+  local existing = redis.call('HGET', key, seatIndex)
+  if not existing then return 0 end
+  local data = cjson.decode(existing)
+  data.muted = muted
+  redis.call('HSET', key, seatIndex, cjson.encode(data))
+  return 1
+`;
+
+const LOCK_SEAT_SCRIPT = `
+  local seatsKey = KEYS[1]
+  local lockedKey = KEYS[2]
+  local seatIndex = ARGV[1]
+  local kicked = false
+  local existing = redis.call('HGET', seatsKey, seatIndex)
+  if existing then
+    kicked = cjson.decode(existing).userId
+    redis.call('HDEL', seatsKey, seatIndex)
+  end
+  redis.call('SADD', lockedKey, seatIndex)
+  if kicked then
+    return cjson.encode({kicked = kicked})
+  end
+  return cjson.encode({kicked = false})
+`;
+
+/**
+ * Register all Lua scripts as custom commands on the Redis instance.
+ * This enables EVALSHA optimization — full script text is only sent once,
+ * subsequent calls use the 40-byte SHA hash.
+ */
+function registerCommands(redis: Redis): void {
+  redis.defineCommand("seatTake", {
+    numberOfKeys: 2,
+    lua: TAKE_SEAT_SCRIPT,
+  });
+  redis.defineCommand("seatLeave", {
+    numberOfKeys: 1,
+    lua: LEAVE_SEAT_SCRIPT,
+  });
+  redis.defineCommand("seatAssign", {
+    numberOfKeys: 2,
+    lua: ASSIGN_SEAT_SCRIPT,
+  });
+  redis.defineCommand("seatSetMute", {
+    numberOfKeys: 1,
+    lua: SET_MUTE_SCRIPT,
+  });
+  redis.defineCommand("seatLock", {
+    numberOfKeys: 2,
+    lua: LOCK_SEAT_SCRIPT,
+  });
+}
+
 export class SeatRepository {
-  constructor(private readonly redis: Redis) {}
+  constructor(private readonly redis: Redis) {
+    registerCommands(redis);
+  }
 
   /**
    * Atomically take a seat (removes user from any existing seat first)
@@ -129,9 +195,7 @@ export class SeatRepository {
     seatCount: number,
   ): Promise<SeatActionResult> {
     try {
-      const result = (await this.redis.eval(
-        TAKE_SEAT_LUA,
-        2,
+      const result = (await (this.redis as never as RedisWithCommands).seatTake(
         SEATS_KEY(roomId),
         LOCKED_KEY(roomId),
         seatIndex.toString(),
@@ -158,9 +222,7 @@ export class SeatRepository {
    */
   async leaveSeat(roomId: string, userId: string): Promise<SeatActionResult> {
     try {
-      const result = (await this.redis.eval(
-        LEAVE_SEAT_LUA,
-        1,
+      const result = (await (this.redis as never as RedisWithCommands).seatLeave(
         SEATS_KEY(roomId),
         userId,
       )) as string;
@@ -188,9 +250,7 @@ export class SeatRepository {
     seatCount: number,
   ): Promise<SeatActionResult> {
     try {
-      const result = (await this.redis.eval(
-        ASSIGN_SEAT_LUA,
-        2,
+      const result = (await (this.redis as never as RedisWithCommands).seatAssign(
         SEATS_KEY(roomId),
         LOCKED_KEY(roomId),
         seatIndex.toString(),
@@ -222,27 +282,13 @@ export class SeatRepository {
    * Set mute status for a seated user
    * BL-003 FIX: Atomic Lua script to prevent TOCTOU race conditions
    */
-  private static readonly SET_MUTE_LUA = `
-    local key = KEYS[1]
-    local seatIndex = ARGV[1]
-    local muted = ARGV[2] == "true"
-    local existing = redis.call('HGET', key, seatIndex)
-    if not existing then return 0 end
-    local data = cjson.decode(existing)
-    data.muted = muted
-    redis.call('HSET', key, seatIndex, cjson.encode(data))
-    return 1
-  `;
-
   async setMute(
     roomId: string,
     seatIndex: number,
     muted: boolean,
   ): Promise<boolean> {
     try {
-      const result = await this.redis.eval(
-        SeatRepository.SET_MUTE_LUA,
-        1,
+      const result = await (this.redis as never as RedisWithCommands).seatSetMute(
         SEATS_KEY(roomId),
         seatIndex.toString(),
         muted.toString(),
@@ -258,31 +304,12 @@ export class SeatRepository {
    * Lock a seat (kicks any occupant)
    * BL-005 FIX: Atomic Lua script to prevent HGET → HDEL → SADD race
    */
-  private static readonly LOCK_SEAT_LUA = `
-    local seatsKey = KEYS[1]
-    local lockedKey = KEYS[2]
-    local seatIndex = ARGV[1]
-    local kicked = false
-    local existing = redis.call('HGET', seatsKey, seatIndex)
-    if existing then
-      kicked = cjson.decode(existing).userId
-      redis.call('HDEL', seatsKey, seatIndex)
-    end
-    redis.call('SADD', lockedKey, seatIndex)
-    if kicked then
-      return cjson.encode({kicked = kicked})
-    end
-    return cjson.encode({kicked = false})
-  `;
-
   async lockSeat(
     roomId: string,
     seatIndex: number,
   ): Promise<{ kicked: string | null }> {
     try {
-      const result = (await this.redis.eval(
-        SeatRepository.LOCK_SEAT_LUA,
-        2,
+      const result = (await (this.redis as never as RedisWithCommands).seatLock(
         SEATS_KEY(roomId),
         LOCKED_KEY(roomId),
         seatIndex.toString(),
@@ -422,11 +449,12 @@ export class SeatRepository {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Invite Management
+  // Invite Management (with reverse index for O(1) user lookup)
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Create a seat invite with TTL
+   * Create a seat invite with TTL.
+   * Writes both the invite data key and a reverse index for O(1) user lookup.
    */
   async createInvite(
     roomId: string,
@@ -443,11 +471,18 @@ export class SeatRepository {
         createdAt: Date.now(),
       };
 
-      await this.redis.setex(
+      const pipeline = this.redis.pipeline();
+      pipeline.setex(
         INVITE_KEY(roomId, seatIndex),
         ttlSeconds,
         JSON.stringify(invite),
       );
+      pipeline.setex(
+        INVITE_USER_KEY(roomId, targetUserId),
+        ttlSeconds,
+        seatIndex.toString(),
+      );
+      await pipeline.exec();
 
       return true;
     } catch (err) {
@@ -476,11 +511,22 @@ export class SeatRepository {
   }
 
   /**
-   * Delete a pending invite
+   * Delete a pending invite and its reverse index.
+   * Reads the invite first to resolve the targetUserId for reverse index cleanup.
    */
   async deleteInvite(roomId: string, seatIndex: number): Promise<boolean> {
     try {
-      await this.redis.del(INVITE_KEY(roomId, seatIndex));
+      // Read invite to get targetUserId for reverse index cleanup
+      const data = await this.redis.get(INVITE_KEY(roomId, seatIndex));
+      const pipeline = this.redis.pipeline();
+      pipeline.del(INVITE_KEY(roomId, seatIndex));
+
+      if (data) {
+        const invite = JSON.parse(data) as PendingInvite;
+        pipeline.del(INVITE_USER_KEY(roomId, invite.targetUserId));
+      }
+
+      await pipeline.exec();
       return true;
     } catch (err) {
       logger.error({ err, roomId, seatIndex }, "Failed to delete invite");
@@ -489,42 +535,30 @@ export class SeatRepository {
   }
 
   /**
-   * Find invite by target user ID (for backwards compatibility)
-   * Searches all invites for a room to find one matching the user
+   * O(1) invite lookup by target user ID via reverse index.
+   * Returns the invite data and seat index, or null if no invite exists.
    */
-  async findInviteByUser(
+  async getInviteByUser(
     roomId: string,
     targetUserId: string,
   ): Promise<{ invite: PendingInvite; seatIndex: number } | null> {
     try {
-      // Use SCAN to find all invite keys for this room
-      const pattern = `room:${roomId}:invite:*`;
-      let cursor = "0";
-      
-      do {
-        const [nextCursor, keys] = await this.redis.scan(
-          cursor,
-          "MATCH",
-          pattern,
-          "COUNT",
-          100,
-        );
-        cursor = nextCursor;
+      // Reverse index: room:{roomId}:invite:user:{userId} → seatIndex
+      const seatIndexStr = await this.redis.get(
+        INVITE_USER_KEY(roomId, targetUserId),
+      );
+      if (!seatIndexStr) return null;
 
-        for (const key of keys) {
-          const data = await this.redis.get(key);
-          if (data) {
-            const invite = JSON.parse(data) as PendingInvite;
-            if (invite.targetUserId === targetUserId) {
-              return { invite, seatIndex: invite.seatIndex };
-            }
-          }
-        }
-      } while (cursor !== "0");
+      const seatIndex = parseInt(seatIndexStr, 10);
+      const invite = await this.getInvite(roomId, seatIndex);
+      if (!invite || invite.targetUserId !== targetUserId) return null;
 
-      return null;
+      return { invite, seatIndex };
     } catch (err) {
-      logger.error({ err, roomId, targetUserId }, "Failed to find invite by user");
+      logger.error(
+        { err, roomId, targetUserId },
+        "Failed to get invite by user",
+      );
       return null;
     }
   }
@@ -534,14 +568,15 @@ export class SeatRepository {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Clear all seat data for a room
-   * Uses SCAN instead of KEYS to avoid blocking Redis in production
+   * Clear all seat data for a room.
+   * Uses SCAN instead of KEYS to avoid blocking Redis in production.
+   * Cleans up: seats hash, locked set, invite keys, and user reverse index keys.
    */
   async clearRoom(roomId: string): Promise<void> {
     try {
-      // Use SCAN to find all invite keys for this room (non-blocking)
+      // Scan for both invite keys and user reverse index keys
       const pattern = `room:${roomId}:invite:*`;
-      const inviteKeys: string[] = [];
+      const keysToDelete: string[] = [];
       let cursor = "0";
 
       do {
@@ -553,14 +588,14 @@ export class SeatRepository {
           100,
         );
         cursor = nextCursor;
-        inviteKeys.push(...keys);
+        keysToDelete.push(...keys);
       } while (cursor !== "0");
 
       const pipeline = this.redis.pipeline();
       pipeline.del(SEATS_KEY(roomId));
       pipeline.del(LOCKED_KEY(roomId));
 
-      for (const key of inviteKeys) {
+      for (const key of keysToDelete) {
         pipeline.del(key);
       }
 
@@ -588,4 +623,16 @@ export class SeatRepository {
         return Errors.INTERNAL_ERROR;
     }
   }
+}
+
+/**
+ * Type augmentation for custom Lua commands registered via defineCommand.
+ * These methods are dynamically added to the Redis instance at runtime.
+ */
+interface RedisWithCommands {
+  seatTake(...args: string[]): Promise<string>;
+  seatLeave(...args: string[]): Promise<string>;
+  seatAssign(...args: string[]): Promise<string>;
+  seatSetMute(...args: string[]): Promise<number>;
+  seatLock(...args: string[]): Promise<string>;
 }

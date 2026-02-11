@@ -6,7 +6,10 @@ import type {
   RoomStatusUpdate,
 } from "./types.js";
 
+const ROLE_CACHE_TTL_MS = 30_000; // 30 seconds
+
 export class LaravelClient {
+  private readonly roleCache = new Map<string, { role: string; expiresAt: number }>();
   constructor(private readonly logger: Logger) {}
 
   /**
@@ -201,22 +204,31 @@ export class LaravelClient {
   }
 
   /**
-   * Check if user can manage room (is owner or admin)
+   * Check if user can manage room (is owner or admin).
+   * Uses a role cache to avoid redundant HTTP calls.
+   *
+   * Note: Callers typically call verifyRoomOwner first (which has its own cache),
+   * so we only need to check admin role here — no need to re-fetch room data.
    */
   async canManageRoom(roomId: string, userId: string): Promise<boolean> {
-    // First check if owner (fast path)
-    try {
-      const roomData = await this.getRoomData(roomId);
-      if (String(roomData.owner_id) === userId) {
-        return true;
+    const cacheKey = `${roomId}:${userId}`;
+    const cached = this.roleCache.get(cacheKey);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) {
+        return cached.role === "owner" || cached.role === "admin";
       }
-    } catch {
-      // Continue to check member role
+      // Evict stale entry to prevent unbounded Map growth
+      this.roleCache.delete(cacheKey);
     }
 
-    // Check if admin
     const role = await this.getMemberRole(roomId, userId);
-    return role === 'admin';
+    if (role) {
+      this.roleCache.set(cacheKey, {
+        role,
+        expiresAt: Date.now() + ROLE_CACHE_TTL_MS,
+      });
+    }
+    return role === "owner" || role === "admin";
   }
 
   /**

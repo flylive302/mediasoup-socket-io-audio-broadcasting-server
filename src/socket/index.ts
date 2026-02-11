@@ -125,7 +125,7 @@ export async function initializeSocket(
 
     // GiftHandler is a stateful class with lifecycle management (start/stop)
     // so it's registered separately from the domain array
-    giftHandler.handle(socket);
+    giftHandler.handle(socket, appContext);
 
     // Disconnect
     socket.on("disconnect", (reason) =>

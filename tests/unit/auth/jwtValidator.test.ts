@@ -19,6 +19,15 @@ vi.mock("@src/infrastructure/logger.js", () => ({
   },
 }));
 
+const { mockAuthAttempts } = vi.hoisted(() => ({
+  mockAuthAttempts: { inc: vi.fn() },
+}));
+vi.mock("@src/infrastructure/metrics.js", () => ({
+  metrics: {
+    authAttempts: mockAuthAttempts,
+  },
+}));
+
 import { verifyJwt } from "@src/auth/jwtValidator.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -149,6 +158,7 @@ describe("JwtValidator", () => {
     const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
+    expect(mockAuthAttempts.inc).toHaveBeenCalledWith({ result: "redis_error" });
   });
 
   it("uses iat + max age fallback when no exp claim", async () => {

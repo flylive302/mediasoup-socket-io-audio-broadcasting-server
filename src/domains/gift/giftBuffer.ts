@@ -6,6 +6,16 @@ import type { GiftTransaction } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
+// Atomic rename that returns 0 (empty queue) or 1 (renamed)
+// Eliminates fragile string matching on Redis error messages
+const ATOMIC_RENAME_LUA = `
+  if redis.call('exists', KEYS[1]) == 1 then
+    redis.call('rename', KEYS[1], KEYS[2])
+    return 1
+  end
+  return 0
+`;
+
 interface BufferedGift extends GiftTransaction {
   retryCount?: number;
 }
@@ -57,17 +67,14 @@ export class GiftBuffer {
     // This eliminates race condition between exists() and rename()
     const processingKey = `${this.QUEUE_KEY}:processing:${Date.now()}`;
 
-    try {
-      await this.redis.rename(this.QUEUE_KEY, processingKey);
-    } catch (e: unknown) {
-      // Key doesn't exist (empty queue) or other error
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      if (errorMessage.toLowerCase().includes("no such key")) {
-        return;
-      }
-      this.logger.error({ error: e }, "Unexpected error during queue rename");
-      return;
-    }
+    const renamed = await this.redis.eval(
+      ATOMIC_RENAME_LUA,
+      2,
+      this.QUEUE_KEY,
+      processingKey,
+    ) as number;
+
+    if (renamed === 0) return; // Empty queue, nothing to flush
 
     const items = await this.redis.lrange(processingKey, 0, -1);
     if (!items || items.length === 0) {
@@ -94,10 +101,10 @@ export class GiftBuffer {
         metrics.giftsProcessed.inc({ status: "failed" });
       }
 
-      // Count successes
+      // Count successes (batch increment instead of loop)
       const successCount = transactions.length - result.failed.length;
-      for (let i = 0; i < successCount; i++) {
-        metrics.giftsProcessed.inc({ status: "success" });
+      if (successCount > 0) {
+        metrics.giftsProcessed.inc({ status: "success" }, successCount);
       }
 
       // Success! Delete the temporary key

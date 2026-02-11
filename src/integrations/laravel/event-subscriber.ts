@@ -7,10 +7,14 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelEvent } from "./types.js";
+import { metrics } from "@src/infrastructure/metrics.js";
+
+const BACKPRESSURE_THRESHOLD = 50;
 
 export class LaravelEventSubscriber {
   private subscriber: Redis | null = null;
   private isRunning = false;
+  private inFlightCount = 0;
 
   constructor(
     private readonly redis: Redis,
@@ -52,17 +56,37 @@ export class LaravelEventSubscriber {
       
       if (channel !== this.channel) return;
 
+      const startTime = Date.now();
+      metrics.laravelEventsInFlight.inc();
+      this.inFlightCount++;
+
       try {
         const event = this.parseEvent(message);
         if (event) {
           this.logger.debug({ event: event.event, user_id: event.user_id }, "Event parsed, routing...");
           this.onEvent(event);
+
+          const durationSec = (Date.now() - startTime) / 1000;
+          metrics.laravelEventProcessingDuration.observe(
+            { event_type: event.event },
+            durationSec,
+          );
         }
       } catch (err) {
         this.logger.error(
           { err, message: message.substring(0, 200) },
           "Failed to process event message",
         );
+      } finally {
+        metrics.laravelEventsInFlight.dec();
+        this.inFlightCount--;
+
+        if (this.inFlightCount > BACKPRESSURE_THRESHOLD) {
+          this.logger.warn(
+            { inFlight: this.inFlightCount, threshold: BACKPRESSURE_THRESHOLD },
+            "Laravel event subscriber backpressure detected",
+          );
+        }
       }
     });
 

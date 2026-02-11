@@ -115,6 +115,21 @@ export const metrics = {
     labelNames: ["event_type", "delivered"] as const,
     registers: [metricsRegistry],
   }),
+
+  // Laravel Events backpressure
+  laravelEventsInFlight: new Gauge({
+    name: "flylive_laravel_events_in_flight",
+    help: "Number of Laravel events currently being processed",
+    registers: [metricsRegistry],
+  }),
+
+  laravelEventProcessingDuration: new Histogram({
+    name: "flylive_laravel_event_processing_duration_seconds",
+    help: "Time to process a single Laravel event",
+    labelNames: ["event_type"] as const,
+    buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Socket, Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { GiftBuffer } from "./giftBuffer.js";
@@ -5,8 +6,10 @@ import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { sendGiftSchema, prepareGiftSchema } from "@src/socket/schemas.js";
 import { RateLimiter } from "@src/utils/rateLimiter.js";
+import { createHandler } from "@src/shared/handler.utils.js";
+import type { AppContext } from "@src/context.js";
 
-const GIFT_RATE_LIMIT = 30; // 30 gifts per minute
+const GIFT_RATE_LIMIT = 330; // 330 gifts per minute
 const GIFT_RATE_WINDOW = 60; // 60 seconds
 
 export class GiftHandler {
@@ -23,72 +26,61 @@ export class GiftHandler {
     await this.buffer.stop();
   }
 
-  handle(socket: Socket) {
-    socket.on("gift:send", async (rawPayload: unknown) => {
-      const user = socket.data.user;
+  handle(socket: Socket, context: AppContext) {
+    socket.on(
+      "gift:send",
+      createHandler("gift:send", sendGiftSchema, async (payload, sock) => {
+        const user = sock.data.user;
 
-      // Rate limit check
-      const allowed = await this.rateLimiter.isAllowed(
-        `gift:${user.id}`,
-        GIFT_RATE_LIMIT,
-        GIFT_RATE_WINDOW,
-      );
-      if (!allowed) {
-        socket.emit("error", { message: "Too many gifts, please slow down" });
-        return;
-      }
+        // Rate limit check
+        const allowed = await this.rateLimiter.isAllowed(
+          `gift:${user.id}`,
+          GIFT_RATE_LIMIT,
+          GIFT_RATE_WINDOW,
+        );
+        if (!allowed) {
+          return { success: false, error: "Too many gifts, please slow down" };
+        }
 
-      // Validate payload using Zod schema
-      const payloadResult = sendGiftSchema.safeParse(rawPayload);
-      if (!payloadResult.success) {
-        socket.emit("error", {
-          message: "Invalid gift payload",
-          errors: payloadResult.error.format(),
+        const transaction = {
+          transaction_id: randomUUID(),
+          room_id: payload.roomId,
+          sender_id: user.id,
+          recipient_id: payload.recipientId,
+          gift_id: payload.giftId,
+          quantity: payload.quantity || 1,
+          timestamp: Date.now(),
+          sender_socket_id: sock.id,
+        };
+
+        // BL-007 FIX: Removed senderName/senderAvatar — frontend looks up from participants
+        sock.to(payload.roomId).emit("gift:received", {
+          senderId: user.id,
+          ...payload,
         });
-        return;
-      }
-      const payload = payloadResult.data;
 
-      const transaction = {
-        transaction_id: `g_${Date.now()}_${socket.id}_${Math.random().toString(36).substr(2, 5)}`,
-        room_id: payload.roomId,
-        sender_id: user.id,
-        recipient_id: payload.recipientId,
-        gift_id: payload.giftId,
-        quantity: payload.quantity || 1,
-        timestamp: Date.now(),
-        sender_socket_id: socket.id,
-      };
+        // Queue for persistence
+        await this.buffer.enqueue(transaction);
 
-      // BL-007 FIX: Removed senderName/senderAvatar — frontend looks up from participants
-      socket.to(payload.roomId).emit("gift:received", {
-        senderId: user.id,
-        ...payload,
-      });
-
-      // 3. Queue for persistence
-      await this.buffer.enqueue(transaction);
-    });
+        return { success: true };
+      })(socket, context),
+    );
 
     // ─────────────────────────────────────────────────────────────────
     // Gift Prepare (Preload Signaling)
     // Sender signals recipient to preload asset before sending
     // ─────────────────────────────────────────────────────────────────
-    socket.on("gift:prepare", (rawPayload: unknown) => {
-      // Validate payload
-      const payloadResult = prepareGiftSchema.safeParse(rawPayload);
-      if (!payloadResult.success) {
-        // Silent fail - preload is best-effort
-        return;
-      }
-      const payload = payloadResult.data;
+    socket.on(
+      "gift:prepare",
+      createHandler("gift:prepare", prepareGiftSchema, async (payload, sock) => {
+        // Broadcast to room - all members will receive but only recipient should act
+        sock.to(payload.roomId).emit("gift:prepare", {
+          giftId: payload.giftId,
+          recipientId: payload.recipientId,
+        });
 
-      // Broadcast to room - all members will receive but only recipient should act
-      // This is simpler than finding specific socket and still performant
-      socket.to(payload.roomId).emit("gift:prepare", {
-        giftId: payload.giftId,
-        recipientId: payload.recipientId,
-      });
-    });
+        return { success: true };
+      })(socket, context),
+    );
   }
 }

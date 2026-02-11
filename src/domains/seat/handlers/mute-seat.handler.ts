@@ -6,7 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
-import { emitToRoom } from "@src/shared/socket.utils.js";
+
 
 export const muteSeatHandler = createHandler(
   "seat:mute",
@@ -67,7 +67,7 @@ export const muteSeatHandler = createHandler(
       }
     }
 
-    emitToRoom(socket, roomId, "seat:userMuted", {
+    socket.nsp.to(roomId).emit("seat:userMuted", {
       userId: targetUserId,
       isMuted: true,
     });
