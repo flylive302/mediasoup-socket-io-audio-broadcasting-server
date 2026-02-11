@@ -96,7 +96,6 @@ export class RoomManager {
       seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
-      speakers: [],
     });
 
     // 4. Notify Laravel Live
@@ -177,20 +176,20 @@ export class RoomManager {
         logger.error({ err, roomId }, "Laravel close status update failed"),
       );
 
-    // 3. Cleanup Mediasoup (cluster handles all its routers)
-    await cluster.close();
-    this.rooms.delete(roomId);
-
-    // 4. Cleanup Redis
-    await this.stateRepo.delete(roomId);
-
-    // BL-009 FIX: Cleanup seat data (seats hash, locked set, invite keys)
+    // 3. ROOM-ARCH-001 FIX: Parallelize independent cleanup operations
+    const cleanupOps: Promise<void>[] = [
+      cluster.close(),
+      this.stateRepo.delete(roomId),
+    ];
     if (this.seatRepository) {
-      await this.seatRepository.clearRoom(roomId);
+      cleanupOps.push(this.seatRepository.clearRoom(roomId));
     }
+    await Promise.all(cleanupOps);
+    this.rooms.delete(roomId);
   }
 
-  async getRoom(roomId: string): Promise<RoomMediaCluster | undefined> {
+  // ROOM-PERF-002 FIX: Synchronous — Map.get() has no async work
+  getRoom(roomId: string): RoomMediaCluster | undefined {
     return this.rooms.get(roomId);
   }
 }

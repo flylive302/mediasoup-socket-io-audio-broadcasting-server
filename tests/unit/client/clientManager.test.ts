@@ -157,7 +157,34 @@ describe("ClientManager", () => {
     for (let i = 0; i < count / 2; i++) {
       cm.removeClient(`s${i}`);
     }
-
     expect(cm.getClientsInRoom("bigRoom")).toHaveLength(count / 2);
+  });
+
+  // ─── clearClientRoom ─────────────────────────────────────────
+
+  it("clearClientRoom removes client from room index", () => {
+    const cm = new ClientManager();
+    cm.addClient(createMockSocket("s1", 1));
+    cm.setClientRoom("s1", "roomA");
+
+    cm.clearClientRoom("s1");
+    expect(cm.getClientsInRoom("roomA")).toHaveLength(0);
+  });
+
+  it("clearClientRoom sets roomId to undefined", () => {
+    const cm = new ClientManager();
+    cm.addClient(createMockSocket("s1", 1));
+    cm.setClientRoom("s1", "roomA");
+
+    cm.clearClientRoom("s1");
+    expect(cm.getClient("s1")!.roomId).toBeUndefined();
+  });
+
+  it("clearClientRoom is no-op for client without room", () => {
+    const cm = new ClientManager();
+    cm.addClient(createMockSocket("s1", 1));
+    // Should not throw
+    cm.clearClientRoom("s1");
+    expect(cm.getClient("s1")).toBeDefined();
   });
 });

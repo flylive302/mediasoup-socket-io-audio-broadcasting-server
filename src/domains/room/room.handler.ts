@@ -31,6 +31,15 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const cluster = await roomManager.getOrCreateRoom(roomId);
       const rtpCapabilities = cluster.router?.rtpCapabilities;
 
+      // BL-003 FIX: Persist seatCount from frontend if different from default
+      if (seatCount !== 15) {
+        const state = await roomManager.state.get(roomId);
+        if (state && state.seatCount !== seatCount) {
+          state.seatCount = seatCount;
+          await roomManager.state.save(state);
+        }
+      }
+
       // Cache room owner if provided by frontend
       const { ownerId } = payloadResult.data;
       if (ownerId) {
@@ -44,7 +53,6 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
 
       // BL-002 FIX: SINGLE call to getClientsInRoom — build all data structures from it
       const allClients = clientManager.getClientsInRoom(roomId);
-      const clientsByUserId = new Map<string, (typeof allClients)[0]>();
 
       const participants: {
         id: number;
@@ -64,7 +72,6 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const existingProducers: { producerId: string; userId: number }[] = [];
 
       for (const c of allClients) {
-        clientsByUserId.set(String(c.userId), c);
         if (c.socketId === socket.id) continue; // Exclude self
 
         // Verify socket is still connected
@@ -200,10 +207,14 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
 
     socket.leave(roomId);
 
+    // ROOM-BL-002 FIX: Clear client from room index to prevent ghost entries
+    clientManager.clearClientRoom(socket.id);
+
     // BL-001 FIX: Parallelize Redis cleanup and fire-and-forget Laravel
     const [newCount] = await Promise.all([
       roomManager.state.adjustParticipantCount(roomId, -1),
       userSocketRepository.clearUserRoom(socket.data.user.id),
+      autoCloseService.recordActivity(roomId),
     ]);
 
     // Laravel update is fire-and-forget

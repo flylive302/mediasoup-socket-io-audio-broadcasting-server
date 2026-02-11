@@ -84,6 +84,22 @@ export class ClientManager {
   }
 
   /**
+   * Clear client's room assignment and remove from room index.
+   * ROOM-BL-002 FIX: Used on explicit room:leave (client stays connected but leaves room)
+   */
+  clearClientRoom(socketId: string): void {
+    const client = this.clients.get(socketId);
+    if (!client?.roomId) return;
+
+    const roomSet = this.roomClients.get(client.roomId);
+    if (roomSet) {
+      roomSet.delete(socketId);
+      if (roomSet.size === 0) this.roomClients.delete(client.roomId);
+    }
+    delete client.roomId;
+  }
+
+  /**
    * Get all clients in a specific room.
    * PERF-006: O(roomSize) instead of O(totalClients)
    */

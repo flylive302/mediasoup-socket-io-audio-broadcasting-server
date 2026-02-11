@@ -34,6 +34,9 @@ export const takeSeatHandler = createHandler(
       isMuted: false,
     });
 
+    // BL-001 FIX: Record room activity to prevent auto-close during seat actions
+    context.autoCloseService.recordActivity(roomId).catch(() => {});
+
     return { success: true };
   },
 );

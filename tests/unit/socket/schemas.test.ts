@@ -3,6 +3,7 @@ import {
   chatMessageSchema,
   audioProduceSchema,
   transportCreateSchema,
+  joinRoomSchema,
 } from "@src/socket/schemas.js";
 
 describe("Message Schemas", () => {
@@ -64,6 +65,20 @@ describe("Audio Schemas", () => {
       rtpParameters: { codecs: [] },
     };
     const result = audioProduceSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("Room Schemas", () => {
+  it("joinRoomSchema rejects empty roomId", () => {
+    const payload = { roomId: "" };
+    const result = joinRoomSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("joinRoomSchema accepts valid roomId", () => {
+    const payload = { roomId: "123" };
+    const result = joinRoomSchema.safeParse(payload);
     expect(result.success).toBe(true);
   });
 });

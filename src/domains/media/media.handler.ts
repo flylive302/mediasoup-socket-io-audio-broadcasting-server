@@ -33,7 +33,7 @@ const transportCreateHandler = createHandler(
       return { success: false, error: "Transport limit reached" };
     }
 
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
       return { success: false, error: "Room not found" };
     }
@@ -63,7 +63,7 @@ const transportConnectHandler = createHandler(
   transportConnectSchema,
   async (payload, _socket, context) => {
     const { roomId, transportId, dtlsParameters } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
@@ -83,7 +83,7 @@ const audioProduceHandler = createHandler(
   audioProduceSchema,
   async (payload, socket, context) => {
     const { roomId, transportId, kind, rtpParameters } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
@@ -146,7 +146,7 @@ const audioConsumeHandler = createHandler(
   audioConsumeSchema,
   async (payload, _socket, context) => {
     const { roomId, transportId, producerId, rtpCapabilities } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
       return { success: false, error: "Room not found" };
     }
@@ -186,7 +186,7 @@ const consumerResumeHandler = createHandler(
   consumerResumeSchema,
   async (payload, _socket, context) => {
     const { roomId, consumerId } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
       return { success: false, error: "Room not found" };
     }
@@ -218,7 +218,7 @@ const selfMuteHandler = createHandler(
   selfMuteSchema,
   async (payload, socket, context) => {
     const { roomId, producerId } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     const producer = cluster?.getProducer(producerId);
 
     if (!producer) {
@@ -253,7 +253,7 @@ const selfUnmuteHandler = createHandler(
   selfMuteSchema,
   async (payload, socket, context) => {
     const { roomId, producerId } = payload;
-    const cluster = await context.roomManager.getRoom(roomId);
+    const cluster = context.roomManager.getRoom(roomId);
     const producer = cluster?.getProducer(producerId);
 
     if (!producer) {

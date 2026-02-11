@@ -59,6 +59,9 @@ export class GiftHandler {
           ...payload,
         });
 
+        // BL-001 FIX: Record room activity to prevent auto-close during active gifting
+        context.autoCloseService.recordActivity(payload.roomId).catch(() => {});
+
         // Queue for persistence
         await this.buffer.enqueue(transaction);
 

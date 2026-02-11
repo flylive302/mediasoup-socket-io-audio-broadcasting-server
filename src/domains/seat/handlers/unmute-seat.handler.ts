@@ -55,7 +55,7 @@ export const unmuteSeatHandler = createHandler(
     if (targetClient) {
       const audioProducerId = targetClient.producers.get("audio");
       if (audioProducerId) {
-        const room = await context.roomManager.getRoom(roomId);
+        const room = context.roomManager.getRoom(roomId);
         const producer = room?.getProducer(audioProducerId);
         if (producer) {
           await producer.resume();

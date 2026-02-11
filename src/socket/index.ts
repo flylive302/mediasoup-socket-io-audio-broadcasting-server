@@ -171,7 +171,7 @@ async function handleDisconnect(
 
     // RT-002 FIX: Close all transports synchronously (mediasoup close() is sync)
     // Single room lookup instead of per-transport
-    const cluster = await roomManager.getRoom(roomId);
+    const cluster = roomManager.getRoom(roomId);
     if (cluster) {
       for (const [transportId] of client.transports) {
         try {

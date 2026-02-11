@@ -47,7 +47,7 @@ export const lockSeatHandler = createHandler(
       if (kickedClient) {
         const audioProducerId = kickedClient.producers.get("audio");
         if (audioProducerId) {
-          const room = await context.roomManager.getRoom(roomId);
+          const room = context.roomManager.getRoom(roomId);
           const producer = room?.getProducer(audioProducerId);
           if (producer && !producer.closed) {
             producer.close();

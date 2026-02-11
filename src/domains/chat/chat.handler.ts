@@ -36,6 +36,9 @@ const handleChatMessage = createHandler(
     // Emit to everyone in room INCLUDING sender (simplifies frontend state sync)
     socket.nsp.to(payload.roomId).emit("chat:message", message);
 
+    // BL-001 FIX: Record room activity to prevent auto-close during active chat
+    context.autoCloseService.recordActivity(payload.roomId).catch(() => {});
+
     logger.debug(
       { roomId: payload.roomId, userId: message.userId },
       "Chat message",

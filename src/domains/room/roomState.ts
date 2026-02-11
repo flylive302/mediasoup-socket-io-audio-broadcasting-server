@@ -4,8 +4,31 @@ import type { RoomState } from "./types.js";
 export class RoomStateRepository {
   private readonly PREFIX = "room:state:";
   private readonly TTL = 86400; // 24 hours
+  private commandDefined = false;
 
   constructor(private readonly redis: Redis) {}
+
+  /**
+   * Register the Lua script once via defineCommand for EVALSHA caching.
+   * ROOM-PERF-001 FIX: Eliminates script recompilation on every call.
+   */
+  private ensureCommand(): void {
+    if (this.commandDefined) return;
+    this.redis.defineCommand("adjustParticipants", {
+      numberOfKeys: 1,
+      lua: `
+        local data = redis.call('GET', KEYS[1])
+        if not data then return nil end
+        local state = cjson.decode(data)
+        state.participantCount = math.max(0, state.participantCount + tonumber(ARGV[1]))
+        state.lastActivityAt = tonumber(ARGV[2])
+        local newState = cjson.encode(state)
+        redis.call('SETEX', KEYS[1], tonumber(ARGV[3]), newState)
+        return state.participantCount
+      `,
+    });
+    this.commandDefined = true;
+  }
 
   async save(state: RoomState): Promise<void> {
     const key = `${this.PREFIX}${state.id}`;
@@ -23,31 +46,16 @@ export class RoomStateRepository {
     await this.redis.del(key);
   }
 
-  /** Atomic increment of participant count */
+  /** Atomic increment of participant count (EVALSHA-cached) */
   async adjustParticipantCount(
     roomId: string,
     delta: number,
   ): Promise<number | null> {
     const key = `${this.PREFIX}${roomId}`;
+    this.ensureCommand();
 
-    // Lua script for atomic increment
-    // Updates participantCount and lastActivityAt, updates TTL
-    const luaScript = `
-      local data = redis.call('GET', KEYS[1])
-      if not data then return nil end
-      
-      local state = cjson.decode(data)
-      state.participantCount = math.max(0, state.participantCount + tonumber(ARGV[1]))
-      state.lastActivityAt = tonumber(ARGV[2])
-      
-      local newState = cjson.encode(state)
-      redis.call('SETEX', KEYS[1], tonumber(ARGV[3]), newState)
-      return state.participantCount
-    `;
-
-    const result = await this.redis.eval(
-      luaScript,
-      1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (this.redis as any).adjustParticipants(
       key,
       delta.toString(),
       Date.now().toString(),

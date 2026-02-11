@@ -26,6 +26,9 @@ export const leaveSeatHandler = createHandler(
     // Broadcast to room
     socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
 
+    // BL-001 FIX: Record room activity to prevent auto-close during seat actions
+    context.autoCloseService.recordActivity(roomId).catch(() => {});
+
     return { success: true };
   },
 );

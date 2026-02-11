@@ -158,7 +158,7 @@ export const audioConsumeSchema = z.object({
 export const lockedSeatsSchema = z.array(z.number());
 
 export const joinRoomSchema = z.object({
-  roomId: z.string(),
+  roomId: roomIdSchema,
   ownerId: z.number().optional(), // Owner ID sent from frontend to verify ownership
   // BL-008: Per-room seat count from frontend (defaults to 15 for backward compat)
   seatCount: z.number().int().min(1).max(15).default(15),
