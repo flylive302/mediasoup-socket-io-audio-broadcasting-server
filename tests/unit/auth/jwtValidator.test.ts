@@ -59,7 +59,7 @@ function validUserPayload(overrides: Record<string, unknown> = {}): Record<strin
     email: "test@example.com",
     avatar: "https://example.com/avatar.jpg",
     frame: "gold",
-    gender: "male",
+    gender: 1,
     date_of_birth: "1990-01-01",
     phone: "+1234567890",
     country: "US",
