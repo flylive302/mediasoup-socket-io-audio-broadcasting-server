@@ -1,117 +1,67 @@
-# `transport:create` Event
+# Event: `transport:create`
 
 > **Domain**: Media  
-> **Direction**: C→S  
-> **Handler**: `src/domains/media/media.handler.ts:17-59`
+> **Direction**: Client → Server  
+> **Transport**: Socket.IO with Acknowledgment  
+> **Related Events**: `transport:connect`, `audio:produce`, `audio:consume`
 
 ---
 
 ## 1. Event Overview
 
-### Event: `transport:create` (C→S)
-
 ### Purpose
 
-Creates a WebRTC transport for either sending (producer) or receiving (consumer) audio. This is the first step in establishing WebRTC media connections.
+Creates a WebRTC transport for either sending (producer) or receiving (consumer) audio. First step in establishing WebRTC media connections.
 
-### Domain
+### Business Context
 
-**Media** - WebRTC transport and audio streaming management
+Each client needs a producer transport (to speak) and/or a consumer transport (to listen). This event creates the server-side transport and returns ICE/DTLS parameters for the client handshake.
 
-### Responsibilities
+### Key Characteristics
 
-- Validate payload via Zod schema
-- Verify room exists
-- Create WebRTC transport via mediasoup RouterManager
-- Track transport in ClientManager for cleanup
-- Return transport parameters for client DTLS handshake
-
-### What It Owns
-
-| Owned                     | Description                                |
-| ------------------------- | ------------------------------------------ |
-| WebRTC Transport          | mediasoup WebRtcTransport instance created |
-| Client transport tracking | ClientManager tracks transport ID and type |
-
-### External Dependencies
-
-| Dependency      | Type    | Purpose                     |
-| --------------- | ------- | --------------------------- |
-| `RoomManager`   | Service | Get RouterManager for room  |
-| `RouterManager` | Service | Create WebRTC transport     |
-| `ClientManager` | Service | Track transport for cleanup |
+| Property                | Value                                                      |
+| ----------------------- | ---------------------------------------------------------- |
+| Requires Authentication | Yes (via middleware)                                       |
+| Has Acknowledgment      | Yes (via createHandler)                                    |
+| Broadcasts              | No                                                         |
+| Transport Limit         | SEC-MED-001: max 2 transports per client (1 send + 1 recv) |
 
 ---
 
 ## 2. Event Contract
 
-### Inbound Event
+### 2.1 Client Payload (Input)
 
-```
-Event: transport:create
-Direction: C→S
-Acknowledgment: ✅ Required (callback)
-```
-
-### Zod Schema
+**Schema**: `transportCreateSchema`  
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-// src/socket/schemas.ts:129-132
 export const transportCreateSchema = z.object({
   type: z.enum(["producer", "consumer"]),
   roomId: roomIdSchema,
 });
 ```
 
-### Payload Schema
+### 2.2 Acknowledgment (Success)
 
-```json
+```typescript
 {
-  "type": "producer" | "consumer",
-  "roomId": "string"
+  success: true,
+  data: {
+    id: string,                  // Transport UUID
+    iceParameters: IceParameters,
+    iceCandidates: IceCandidate[],
+    dtlsParameters: DtlsParameters,
+  }
 }
 ```
 
-### Field Details
+### 2.3 Acknowledgment (Error)
 
-| Field    | Type     | Required | Constraints                  | Example      |
-| -------- | -------- | -------- | ---------------------------- | ------------ |
-| `type`   | `enum`   | ✅       | `"producer"` or `"consumer"` | `"producer"` |
-| `roomId` | `string` | ✅       | min 1 char                   | `"42"`       |
-
-### Acknowledgment Response
-
-```json
-// Success
+```typescript
 {
-  "id": "uuid",                    // Transport ID
-  "iceParameters": {
-    "usernameFragment": "string",
-    "password": "string",
-    "iceLite": true
-  },
-  "iceCandidates": [
-    {
-      "foundation": "string",
-      "priority": 1234567890,
-      "ip": "1.2.3.4",
-      "port": 10000,
-      "type": "host",
-      "protocol": "udp"
-    }
-  ],
-  "dtlsParameters": {
-    "role": "auto",
-    "fingerprints": [
-      { "algorithm": "sha-256", "value": "..." }
-    ]
-  }
-}
-
-// Error
-{
-  "error": "Invalid payload" | "Room not found" | "Server error",
-  "details": { ... }  // Only for validation errors
+  success: false,
+  error: "INVALID_PAYLOAD" | "Transport limit reached" | "Room not found" | "INTERNAL_ERROR"
 }
 ```
 
@@ -121,284 +71,61 @@ export const transportCreateSchema = z.object({
 
 ### 3.1 Entry Point
 
+```typescript
+const transportCreateHandler = createHandler(
+  "transport:create",
+  transportCreateSchema,
+  async (payload, socket, context) => { ... }
+);
 ```
-File: src/domains/media/media.handler.ts:17
+
+### 3.2 Execution
+
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EXECUTION FLOW                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. createHandler validates payload + room membership                        │
+│ 2. SEC-MED-001: Check client.transports.size < 2 (limit reached → error)  │
+│ 3. Look up room cluster via roomManager.getRoom(roomId)                    │
+│ 4. Create WebRTC transport via cluster.createWebRtcTransport(isProducer)    │
+│ 5. Track transport on client (client.transports.set(id, type))             │
+│ 6. Return { success: true, data: { id, ice/dtls params } }                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### SEC-MED-001: Transport Limit
+
+Clients are limited to 2 transports (1 producer + 1 consumer) to prevent resource abuse:
 
 ```typescript
-socket.on("transport:create", async (rawPayload: unknown, callback) => {
-  // Handler logic
-});
-```
-
-### 3.2 Schema Validation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SCHEMA VALIDATION                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:19-27                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const payloadResult = transportCreateSchema.safeParse(rawPayload);      │ │
-│ │ if (!payloadResult.success) {                                           │ │
-│ │   if (callback) callback({                                              │ │
-│ │     error: "Invalid payload",                                           │ │
-│ │     details: payloadResult.error.format(),                              │ │
-│ │   });                                                                   │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.3 Room Lookup
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ GET ROUTER MANAGER                                                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:30-34                              │
-│                                                                             │
-│ Gets existing room (does NOT create if missing, unlike room:join).          │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const routerMgr = await roomManager.getRoom(roomId);                    │ │
-│ │ if (!routerMgr) {                                                       │ │
-│ │   if (callback) callback({ error: "Room not found" });                  │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.4 Transport Creation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ CREATE WEBRTC TRANSPORT                                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:36-45                              │
-│                                                                             │
-│ Creates transport with mediasoup, passing isProducer flag.                  │
-│ Tracks transport in ClientManager for later cleanup.                        │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const transport = await routerMgr.createWebRtcTransport(                │ │
-│ │   type === "producer"                                                   │ │
-│ │ );                                                                      │ │
-│ │                                                                         │ │
-│ │ const client = clientManager.getClient(socket.id);                      │ │
-│ │ if (client) {                                                           │ │
-│ │   client.transports.set(transport.id, type);                            │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.5 Response
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ RETURN TRANSPORT PARAMETERS                                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:47-54                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ if (callback) {                                                         │ │
-│ │   callback({                                                            │ │
-│ │     id: transport.id,                                                   │ │
-│ │     iceParameters: transport.iceParameters,                             │ │
-│ │     iceCandidates: transport.iceCandidates,                             │ │
-│ │     dtlsParameters: transport.dtlsParameters,                           │ │
-│ │   });                                                                   │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+const client = context.clientManager.getClient(socket.id);
+if (client && client.transports.size >= 2) {
+  return { success: false, error: "Transport limit reached" };
+}
 ```
 
 ---
 
-## 4. State Transitions
+## 4. Document Metadata
 
-### ClientManager (In-Memory)
+| Property         | Value                                |
+| ---------------- | ------------------------------------ |
+| **Event**        | `transport:create`                   |
+| **Domain**       | Media                                |
+| **Direction**    | C→S                                  |
+| **Created**      | 2026-02-09                           |
+| **Last Updated** | 2026-02-12                           |
+| **Handler**      | `src/domains/media/media.handler.ts` |
 
-| Property            | Before  | After                          |
-| ------------------- | ------- | ------------------------------ |
-| `client.transports` | `Map()` | `Map({ [transportId]: type })` |
+### Schema Change Log
 
-### RouterManager (In-Memory)
-
-| Property     | Before  | After                                     |
-| ------------ | ------- | ----------------------------------------- |
-| `transports` | `Map()` | `Map({ [transportId]: WebRtcTransport })` |
-
----
-
-## 5. Reusability Matrix
-
-| Component                               | File                    | Used By            | Reusable | Reasoning |
-| --------------------------------------- | ----------------------- | ------------------ | -------- | --------- |
-| `transportCreateSchema`                 | `socket/schemas.ts`     | `transport:create` | ✅       | Reusable  |
-| `RoomManager.getRoom()`                 | `room/roomManager.ts`   | All media events   | ✅       | Shared    |
-| `RouterManager.createWebRtcTransport()` | `room/routerManager.ts` | `transport:create` | ✅       | Core      |
+| Date       | Change                                               |
+| ---------- | ---------------------------------------------------- |
+| 2026-02-12 | Handler migrated to `createHandler` pattern (CQ-001) |
+| 2026-02-12 | Added SEC-MED-001 transport limit (max 2 per client) |
+| 2026-02-12 | ACK response wrapped in `{ success, data }` envelope |
 
 ---
 
-## 6. Error Handling & Edge Cases
-
-### Validation Errors
-
-| Error             | Condition | Response             |
-| ----------------- | --------- | -------------------- |
-| `Invalid payload` | Zod fails | `{ error, details }` |
-
-### Business Logic Errors
-
-| Error            | Condition          | Response    |
-| ---------------- | ------------------ | ----------- |
-| `Room not found` | Room doesn't exist | `{ error }` |
-
-### System Errors
-
-| Error          | Condition           | Response    |
-| -------------- | ------------------- | ----------- |
-| `Server error` | mediasoup exception | `{ error }` |
-
-### Edge Cases
-
-| Scenario                 | Behavior                                |
-| ------------------------ | --------------------------------------- |
-| Room closed mid-creation | Transport fails                         |
-| Multiple transports      | Client can have multiple (one per type) |
-| Worker crashed           | Transport creation fails                |
-
----
-
-## 7. Sequence Diagram (Textual)
-
-```
- CLIENT          SOCKET.IO          HANDLER          ROOM_MGR         ROUTER_MGR
-   │                  │                  │                │                │
-   │  transport:create│                  │                │                │
-   │  {type, roomId}  │                  │                │                │
-   │─────────────────▶│                  │                │                │
-   │                  │ 1. dispatch      │                │                │
-   │                  │─────────────────▶│                │                │
-   │                  │                  │ 2. validate    │                │
-   │                  │                  │                │                │
-   │                  │                  │ 3. getRoom     │                │
-   │                  │                  │───────────────▶│                │
-   │                  │                  │◀───────────────│ routerMgr      │
-   │                  │                  │                │                │
-   │                  │                  │ 4. createWebRtcTransport       │
-   │                  │                  │────────────────────────────────▶│
-   │                  │                  │◀────────────────────────────────│
-   │                  │                  │                │    transport   │
-   │                  │                  │                │                │
-   │                  │                  │ 5. track in ClientManager      │
-   │                  │                  │                │                │
-   │                  │ 6. callback(params)              │                │
-   │◀─────────────────│                  │                │                │
-```
-
----
-
-## 8. Cross-Platform Integration
-
-### Frontend Usage (Nuxt)
-
-```typescript
-// composables/useMediasoup.ts
-const createTransport = async (
-  type: "producer" | "consumer",
-  roomId: string,
-) => {
-  const response = await socket.emitWithAck("transport:create", {
-    type,
-    roomId,
-  });
-
-  if (response.error) throw new Error(response.error);
-
-  // Create mediasoup-client transport
-  const transport =
-    type === "producer"
-      ? device.createSendTransport(response)
-      : device.createRecvTransport(response);
-
-  // Connect on dtlsconnect event
-  transport.on("connect", async ({ dtlsParameters }, callback, errback) => {
-    try {
-      await socket.emitWithAck("transport:connect", {
-        roomId,
-        transportId: transport.id,
-        dtlsParameters,
-      });
-      callback();
-    } catch (err) {
-      errback(err);
-    }
-  });
-
-  return transport;
-};
-```
-
-### Laravel Integration
-
-_This event has no direct Laravel integration._
-
-### Related Events
-
-| Event               | Relationship                                |
-| ------------------- | ------------------------------------------- |
-| `room:join`         | Must be called first to get rtpCapabilities |
-| `transport:connect` | Next step - DTLS handshake                  |
-| `audio:produce`     | After producer transport connected          |
-| `audio:consume`     | After consumer transport connected          |
-
----
-
-## 9. Extension & Maintenance Notes
-
-### ✅ Where to Add New Features
-
-| Feature Type        | Location                                |
-| ------------------- | --------------------------------------- |
-| Transport options   | `routerManager.createWebRtcTransport()` |
-| Additional tracking | After transport creation (L42-45)       |
-
-### ⚠️ What Should NOT Be Modified Casually
-
-| Item             | Reason                                   |
-| ---------------- | ---------------------------------------- |
-| Response format  | mediasoup-client expects exact structure |
-| Type enum values | Breaking change for clients              |
-
-### 📁 File Locations Quick Reference
-
-| Purpose       | File                                       |
-| ------------- | ------------------------------------------ |
-| Handler       | `src/domains/media/media.handler.ts:17-59` |
-| Schema        | `src/socket/schemas.ts:129-132`            |
-| RouterManager | `src/domains/room/routerManager.ts`        |
-
----
-
-## 10. Document Metadata
-
-| Property               | Value                |
-| ---------------------- | -------------------- |
-| **Event**              | `transport:create`   |
-| **Domain**             | Media                |
-| **Direction**          | C→S                  |
-| **Author**             | System Documentation |
-| **Created**            | 2026-02-09           |
-| **Last Updated**       | 2026-02-09           |
-| **Node.js Version**    | ≥22.0.0              |
-| **TypeScript Version** | ^5.7.0               |
-
----
-
-_Documentation generated following [MSAB Documentation Standard](../../DOCUMENTATION_STANDARD.md)_
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

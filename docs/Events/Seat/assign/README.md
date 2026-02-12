@@ -19,12 +19,12 @@ Room owners can manage seating by assigning participants to specific seats, used
 
 ### Key Characteristics
 
-| Property                | Value                  |
-| ----------------------- | ---------------------- |
-| Requires Authentication | Yes (via middleware)   |
-| Has Acknowledgment      | Yes                    |
-| Broadcasts              | `seat:updated` to room |
-| Requires Ownership      | Yes (room owner only)  |
+| Property                | Value                   |
+| ----------------------- | ----------------------- |
+| Requires Authentication | Yes (via middleware)    |
+| Has Acknowledgment      | Yes (via createHandler) |
+| Broadcasts              | `seat:updated` to room  |
+| Requires Ownership      | Yes (room owner only)   |
 
 ---
 
@@ -33,14 +33,14 @@ Room owners can manage seating by assigning participants to specific seats, used
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatAssignSchema`  
-**Source**: `src/domains/seat/seat.requests.ts:22-26`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,          // Room ID
-  userId: number,          // Target user ID (positive integer)
-  seatIndex: number        // Seat index (0-14)
-}
+export const seatAssignSchema = z.object({
+  roomId: roomIdSchema,
+  userId: z.number().int().positive(),
+  seatIndex: z.number().int().min(0).max(99),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -56,18 +56,18 @@ Room owners can manage seating by assigning participants to specific seats, used
 ```typescript
 {
   success: false,
-  error: "Invalid payload" | "Not room owner" | "Seat occupied" | "Internal server error"
+  error: "INVALID_PAYLOAD" | "Not room owner" | "Seat occupied" | "INTERNAL_ERROR"
 }
 ```
 
 ### 2.4 Broadcast Event
 
-**Event**: `seat:updated`
+**Event**: `seat:updated` (BL-007: userId only)
 
 ```typescript
 {
   seatIndex: number,
-  user: { id: number },
+  userId: number,     // Target user ID — frontend resolves from participants
   isMuted: false
 }
 ```
@@ -76,15 +76,28 @@ Room owners can manage seating by assigning participants to specific seats, used
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point
+
+```typescript
+export const assignSeatHandler = createHandler(
+  "seat:assign",
+  seatAssignSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Execution
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatAssignSchema                                   │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Verify room ownership via verifyRoomOwner()                              │
-│ 3. Call seatRepository.assignSeat(roomId, userId, seatIndex)                │
-│ 4. Broadcast seat:updated to room                                           │
-│ 5. Return success                                                           │
+│ 3. SEAT-009: Lookup actual per-room seatCount from room state               │
+│ 4. Call seatRepository.assignSeat(roomId, userId, seatIndex, seatCount)     │
+│ 5. Broadcast seat:updated { seatIndex, userId, isMuted: false } to room    │
+│ 6. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,8 +105,24 @@ Room owners can manage seating by assigning participants to specific seats, used
 
 ## 4. Document Metadata
 
-| Property | Value                                              |
-| -------- | -------------------------------------------------- |
-| Created  | 2026-02-09                                         |
-| Handler  | `src/domains/seat/handlers/assign-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:22-26`          |
+| Property         | Value                                              |
+| ---------------- | -------------------------------------------------- |
+| **Event**        | `seat:assign`                                      |
+| **Domain**       | Seat                                               |
+| **Direction**    | C→S                                                |
+| **Created**      | 2026-02-09                                         |
+| **Last Updated** | 2026-02-12                                         |
+| **Handler**      | `src/domains/seat/handlers/assign-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                   |
+| ---------- | -------------------------------------------------------- |
+| 2026-02-12 | Handler changed to `createHandler` pattern               |
+| 2026-02-12 | `seat:updated` broadcast changed to userId-only (BL-007) |
+| 2026-02-12 | Added SEAT-009 per-room seatCount lookup                 |
+| 2026-02-12 | `seatIndex` max changed from 14 to 99                    |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

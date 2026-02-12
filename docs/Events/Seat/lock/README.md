@@ -22,10 +22,11 @@ Reserved for VIP seats or seats that should remain empty.
 | Property                | Value                                                |
 | ----------------------- | ---------------------------------------------------- |
 | Requires Authentication | Yes (via middleware)                                 |
-| Has Acknowledgment      | Yes                                                  |
+| Has Acknowledgment      | Yes (via createHandler)                              |
 | Broadcasts              | `seat:locked` to room (+ `seat:cleared` if occupied) |
-| Requires Ownership      | Yes (owner or admin)                                 |
+| Requires Ownership      | Yes (owner or admin via `verifyRoomManager`)         |
 | Kicks Occupant          | Yes, if seat was occupied                            |
+| Producer Close          | Yes, server-side close kicked user's audio producer  |
 
 ---
 
@@ -34,13 +35,13 @@ Reserved for VIP seats or seats that should remain empty.
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatLockSchema`  
-**Source**: `src/domains/seat/seat.requests.ts:41-44`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,     // Room ID
-  seatIndex: number   // Seat to lock (0-14)
-}
+export const seatLockSchema = z.object({
+  roomId: roomIdSchema,
+  seatIndex: z.number().int().min(0).max(99),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -51,9 +52,18 @@ Reserved for VIP seats or seats that should remain empty.
 }
 ```
 
-### 2.3 Broadcast Events
+### 2.3 Acknowledgment (Error)
 
-**Event 1**: `seat:cleared` (if user was kicked)
+```typescript
+{
+  success: false,
+  error: "INVALID_PAYLOAD" | "Not room manager" | "Already locked" | "INTERNAL_ERROR"
+}
+```
+
+### 2.4 Broadcast Events
+
+**Event 1**: `seat:cleared` (if user was kicked, via `socket.nsp.to()`)
 
 ```typescript
 {
@@ -61,39 +71,76 @@ Reserved for VIP seats or seats that should remain empty.
 }
 ```
 
-**Event 2**: `seat:locked`
+**Event 2**: `seat:locked` (always, via `socket.nsp.to()`)
 
 ```typescript
-{
-  seatIndex: number,
-  isLocked: true
-}
+{ seatIndex: number, isLocked: true }
 ```
 
 ---
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point
+
+```typescript
+export const lockSeatHandler = createHandler(
+  "seat:lock",
+  seatLockSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Execution
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatLockSchema                                     │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Verify manager permissions via verifyRoomManager()                       │
-│ 3. Check if already locked via seatRepository.isSeatLocked()                │
-│ 4. Lock seat via seatRepository.lockSeat() (kicks occupant if any)          │
-│ 5. If kicked, broadcast seat:cleared                                        │
-│ 6. Broadcast seat:locked to entire room                                     │
-│ 7. Return success                                                           │
+│ 3. SEAT-001: Atomic lock via seatRepository.lockSeat() (no pre-check)      │
+│ 4. If kicked user → broadcast seat:cleared + close audio producer          │
+│ 5. Broadcast seat:locked { seatIndex, isLocked: true } to room            │
+│ 6. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Server-Side Producer Close (on kick)
+
+When a user is kicked from a locked seat, their audio producer is closed server-side:
+
+```typescript
+const producer = room?.getProducer(audioProducerId);
+if (producer && !producer.closed) {
+  producer.close();
+}
+kickedClient.producers.delete("audio");
+kickedClient.isSpeaker = kickedClient.producers.size > 0;
 ```
 
 ---
 
 ## 4. Document Metadata
 
-| Property | Value                                            |
-| -------- | ------------------------------------------------ |
-| Created  | 2026-02-09                                       |
-| Handler  | `src/domains/seat/handlers/lock-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:41-44`        |
+| Property         | Value                                            |
+| ---------------- | ------------------------------------------------ |
+| **Event**        | `seat:lock`                                      |
+| **Domain**       | Seat                                             |
+| **Direction**    | C→S                                              |
+| **Created**      | 2026-02-09                                       |
+| **Last Updated** | 2026-02-12                                       |
+| **Handler**      | `src/domains/seat/handlers/lock-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                        |
+| ---------- | ------------------------------------------------------------- |
+| 2026-02-12 | Handler changed to `createHandler` pattern                    |
+| 2026-02-12 | SEAT-001: Removed `isSeatLocked` pre-check — now fully atomic |
+| 2026-02-12 | Added server-side producer close on kick                      |
+| 2026-02-12 | `seatIndex` max changed from 14 to 99                         |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

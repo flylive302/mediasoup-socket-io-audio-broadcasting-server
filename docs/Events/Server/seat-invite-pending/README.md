@@ -1,4 +1,4 @@
-# Event: `seat:invite:pending`
+# Broadcast Event: `seat:invite:pending`
 
 > **Domain**: Seat  
 > **Direction**: Server → Clients (Broadcast)  
@@ -15,10 +15,11 @@ Notifies room about seat invitation status (pending or cleared).
 
 ### Key Characteristics
 
-| Property     | Value                                                  |
-| ------------ | ------------------------------------------------------ |
-| Target       | All sockets in room                                    |
-| Emitted From | `invite-seat.handler.ts`, `invite-response.handler.ts` |
+| Property     | Value                                                        |
+| ------------ | ------------------------------------------------------------ |
+| Target       | All sockets in room                                          |
+| Emitted From | `invite-seat.handler.ts`, `invite-response.handler.ts`       |
+| Emitted Via  | `socket.to(roomId).emit()` or `socket.nsp.to(roomId).emit()` |
 
 ---
 
@@ -36,7 +37,19 @@ Notifies room about seat invitation status (pending or cleared).
 
 ## 3. Document Metadata
 
-| Property | Value                                                  |
-| -------- | ------------------------------------------------------ |
-| Created  | 2026-02-09                                             |
-| Sources  | `invite-seat.handler.ts`, `invite-response.handler.ts` |
+| Property         | Value                                                  |
+| ---------------- | ------------------------------------------------------ |
+| **Event**        | `seat:invite:pending`                                  |
+| **Created**      | 2026-02-09                                             |
+| **Last Updated** | 2026-02-12                                             |
+| **Sources**      | `invite-seat.handler.ts`, `invite-response.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                    |
+| ---------- | ------------------------- |
+| 2026-02-12 | Updated source references |
+
+---
+
+_Documentation generated following [MSAB Broadcast Template](../../../BROADCAST_TEMPLATE.md)_

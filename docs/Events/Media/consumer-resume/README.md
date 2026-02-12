@@ -15,17 +15,16 @@ Resumes a paused consumer to start receiving media data from a producer.
 
 ### Business Context
 
-Consumers are created in a paused state by `audio:consume` for flow control. Once the client has set up its local media track, it calls `consumer:resume` to begin receiving the audio stream.
+Consumers are created paused by `audio:consume` for flow control. Once the client sets up its local media track, it calls `consumer:resume` to begin receiving audio. Includes an active speaker forwarding optimization that defers resume for inactive speakers.
 
 ### Key Characteristics
 
-| Property                | Value                                |
-| ----------------------- | ------------------------------------ |
-| Requires Authentication | Yes (via middleware)                 |
-| Has Acknowledgment      | Yes                                  |
-| Broadcasts              | No                                   |
-| Modifies State          | Consumer.paused = false              |
-| Prerequisite            | `audio:consume` must be called first |
+| Property                | Value                                         |
+| ----------------------- | --------------------------------------------- |
+| Requires Authentication | Yes (via middleware)                          |
+| Has Acknowledgment      | Yes (via createHandler)                       |
+| Broadcasts              | No                                            |
+| Active Speaker Opt.     | Defers resume if source speaker is not active |
 
 ---
 
@@ -34,31 +33,29 @@ Consumers are created in a paused state by `audio:consume` for flow control. Onc
 ### 2.1 Client Payload (Input)
 
 **Schema**: `consumerResumeSchema`  
-**Source**: `src/socket/schemas.ts:200-203`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,      // Room ID (1-255 chars)
-  consumerId: string   // UUID of consumer from audio:consume
-}
+export const consumerResumeSchema = z.object({
+  roomId: roomIdSchema,
+  consumerId: z.string(),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
 
 ```typescript
-{
-  success: true;
-}
+{ success: true }
+// OR
+{ success: true, data: { deferred: true } }  // Speaker not active — will auto-resume later
 ```
 
 ### 2.3 Acknowledgment (Error)
 
 ```typescript
 {
-  error: "Invalid payload" |
-    "Room not found" |
-    "Consumer not found" |
-    "Resume failed";
+  success: false,
+  error: "INVALID_PAYLOAD" | "Room not found" | "Consumer not found" | "INTERNAL_ERROR"
 }
 ```
 
@@ -68,178 +65,67 @@ Consumers are created in a paused state by `audio:consume` for flow control. Onc
 
 ### 3.1 Entry Point
 
+```typescript
+const consumerResumeHandler = createHandler(
+  "consumer:resume",
+  consumerResumeSchema,
+  async (payload, _socket, context) => { ... }
+);
 ```
-File: src/domains/media/media.handler.ts:211
+
+### 3.2 Execution
+
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EXECUTION FLOW                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. createHandler validates payload + room membership                        │
+│ 2. Look up room cluster + consumer                                          │
+│ 3. ACTIVE SPEAKER CHECK:                                                    │
+│    a. Get sourceProducerId from consumer.appData                            │
+│    b. If source producer is NOT an active speaker:                          │
+│       → Return { success: true, data: { deferred: true } }                 │
+│       → Consumer auto-resumes when speaker becomes active                  │
+│ 4. If active (or no speaker check needed):                                  │
+│    → await consumer.resume()                                                │
+│ 5. Return { success: true }                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Active Speaker Forwarding Optimization
+
+For large rooms, consumers are only resumed when the source speaker is currently active. This reduces bandwidth for silent speakers:
 
 ```typescript
-socket.on("consumer:resume", async (rawPayload: unknown, callback) => {
-  // Handler logic
-});
-```
-
-### 3.2 Schema Validation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SCHEMA VALIDATION                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:212-217                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const payloadResult = consumerResumeSchema.safeParse(rawPayload);       │ │
-│ │ if (!payloadResult.success) {                                           │ │
-│ │   if (callback) callback({ error: "Invalid payload" });                 │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.3 Room & Consumer Lookup
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ FIND CONSUMER                                                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:220-229                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const routerMgr = await roomManager.getRoom(roomId);                    │ │
-│ │ if (!routerMgr) {                                                       │ │
-│ │   if (callback) callback({ error: "Room not found" });                  │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ │                                                                         │ │
-│ │ const consumer = routerMgr.getConsumer(consumerId);                     │ │
-│ │ if (!consumer) {                                                        │ │
-│ │   if (callback) callback({ error: "Consumer not found" });              │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.4 Resume Consumer
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ RESUME MEDIA FLOW                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:232-234                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ await consumer.resume();                                                │ │
-│ │ if (callback) callback({ success: true });                              │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+const sourceProducerId = consumer.appData.sourceProducerId as
+  | string
+  | undefined;
+if (sourceProducerId && !cluster.isActiveSpeaker(sourceProducerId)) {
+  return { success: true, data: { deferred: true } };
+}
 ```
 
 ---
 
-## 4. State Transitions
+## 4. Document Metadata
 
-### Consumer State
+| Property         | Value                                |
+| ---------------- | ------------------------------------ |
+| **Event**        | `consumer:resume`                    |
+| **Domain**       | Media                                |
+| **Direction**    | C→S                                  |
+| **Created**      | 2026-02-09                           |
+| **Last Updated** | 2026-02-12                           |
+| **Handler**      | `src/domains/media/media.handler.ts` |
 
-| Property | Before | After |
-| -------- | ------ | ----- |
-| paused   | true   | false |
+### Schema Change Log
 
-After resume, RTP packets flow from producer → consumer.
-
----
-
-## 5. Reusability Matrix
-
-| Component                 | Used For                        |
-| ------------------------- | ------------------------------- |
-| `consumerResumeSchema`    | Validates room and consumer IDs |
-| `routerMgr.getConsumer()` | Retrieves registered consumer   |
-| `consumer.resume()`       | Starts RTP packet flow          |
-
----
-
-## 6. Error Handling
-
-| Error                | Cause                         | Response     |
-| -------------------- | ----------------------------- | ------------ |
-| `Invalid payload`    | Schema validation fails       | Return error |
-| `Room not found`     | Room doesn't exist            | Return error |
-| `Consumer not found` | Consumer ID invalid or closed | Return error |
-| `Resume failed`      | Internal mediasoup error      | Return error |
+| Date       | Change                                                    |
+| ---------- | --------------------------------------------------------- |
+| 2026-02-12 | Handler migrated to `createHandler` pattern (CQ-001)      |
+| 2026-02-12 | Added active speaker forwarding optimization (deferred)   |
+| 2026-02-12 | ACK can return `{ deferred: true }` for inactive speakers |
 
 ---
 
-## 7. Sequence Diagram
-
-```
-Client                    MSAB                      Mediasoup
-   │                        │                           │
-   │  (audio:consume done)  │                           │
-   │  (local track ready)   │                           │
-   │                        │                           │
-   │──consumer:resume──────▶│                           │
-   │   {roomId, consumerId} │                           │
-   │                        │                           │
-   │                        │──consumer.resume()───────▶│
-   │                        │                           │
-   │                        │◀──RTP packets start───────│
-   │                        │                           │
-   │◀──{success: true}──────│                           │
-   │                        │                           │
-   │◀─────────────────RTP audio data flows─────────────▶│
-```
-
----
-
-## 8. Cross-Platform Integration
-
-### Frontend Usage
-
-```javascript
-// After audio:consume returns consumer parameters
-const consumer = await recvTransport.consume({
-  id: response.id,
-  producerId: response.producerId,
-  kind: "audio",
-  rtpParameters: response.rtpParameters,
-});
-
-// Set up audio element
-const audio = new Audio();
-audio.srcObject = new MediaStream([consumer.track]);
-
-// Resume on server to start receiving
-await socket.emitWithAck("consumer:resume", {
-  roomId,
-  consumerId: consumer.id,
-});
-
-// Now play audio
-audio.play();
-```
-
-### Why Start Paused?
-
-- Gives client time to set up local playback
-- Avoids packet loss during setup
-- Follows mediasoup best practices
-
----
-
-## 9. Extension & Maintenance Notes
-
-- Consumer resume is **idempotent** - calling on already-resumed consumer is safe
-- If producer pauses, consumer continues but receives no data
-- Consider adding `consumer:pause` for mute-at-receiver functionality
-
----
-
-## 10. Document Metadata
-
-| Property | Value                                |
-| -------- | ------------------------------------ |
-| Created  | 2026-02-09                           |
-| Handler  | `src/domains/media/media.handler.ts` |
-| Lines    | 211-243                              |
-| Schema   | `src/socket/schemas.ts:200-203`      |
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

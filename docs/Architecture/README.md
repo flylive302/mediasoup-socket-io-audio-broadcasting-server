@@ -1,7 +1,7 @@
 # MSAB Architecture Overview
 
-> **Version**: 1.1  
-> **Last Updated**: 2026-02-10  
+> **Version**: 2.0  
+> **Last Updated**: 2026-02-12  
 > **Service**: FlyLive Audio Server (MSAB)
 
 ---
@@ -56,6 +56,7 @@
 │   │                    Shared Services                                  │   │
 │   │   WorkerManager  │ RoomManager   │ ClientManager │ SeatRepository  │   │
 │   │   RouterManager  │ GiftBuffer    │ RateLimiter   │ AutoCloseService│   │
+│   │   createHandler  │ Errors        │ UserSocketRepo│ LaravelEventSub │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                    │                              │                         │
 │   ┌────────────────▼─────┐           ┌───────────▼─────────────┐           │
@@ -123,36 +124,52 @@ export const domains: DomainRegistration[] = [
 
 ### Client → Server (C→S)
 
-| Domain | Event                                               | Purpose                         |
-| ------ | --------------------------------------------------- | ------------------------------- |
-| Room   | `room:join`                                         | Join room, get RTP capabilities |
-| Room   | `room:leave`                                        | Leave room                      |
-| Media  | `transport:create`                                  | Create WebRTC transport         |
-| Media  | `transport:connect`                                 | DTLS handshake                  |
-| Media  | `audio:produce`                                     | Start sending audio             |
-| Media  | `audio:consume`                                     | Start receiving audio           |
-| Media  | `consumer:resume`                                   | Unmute consumer                 |
-| Seat   | `seat:take`                                         | Request seat                    |
-| Seat   | `seat:leave`                                        | Leave seat                      |
-| Seat   | `seat:assign/remove/mute/unmute/lock/unlock/invite` | Seat management                 |
-| Chat   | `chat:message`                                      | Send message                    |
-| Gift   | `gift:send`                                         | Send gift                       |
-| Gift   | `gift:prepare`                                      | Preload signal                  |
-| User   | `user:getRoom`                                      | Track user location             |
+| Domain | Event                 | Purpose                         |
+| ------ | --------------------- | ------------------------------- |
+| Room   | `room:join`           | Join room, get RTP capabilities |
+| Room   | `room:leave`          | Leave room                      |
+| Media  | `transport:create`    | Create WebRTC transport         |
+| Media  | `transport:connect`   | DTLS handshake                  |
+| Media  | `audio:produce`       | Start sending audio             |
+| Media  | `audio:consume`       | Start receiving audio           |
+| Media  | `consumer:resume`     | Unmute consumer                 |
+| Seat   | `seat:take`           | Request seat                    |
+| Seat   | `seat:leave`          | Leave seat                      |
+| Seat   | `seat:assign`         | Owner assigns user to seat      |
+| Seat   | `seat:remove`         | Owner removes user from seat    |
+| Seat   | `seat:mute`           | Owner mutes seated user         |
+| Seat   | `seat:unmute`         | Owner unmutes seated user       |
+| Seat   | `seat:lock`           | Owner locks empty seat          |
+| Seat   | `seat:unlock`         | Owner unlocks seat              |
+| Seat   | `seat:invite`         | Owner invites user to seat      |
+| Seat   | `seat:invite:accept`  | User accepts seat invite        |
+| Seat   | `seat:invite:decline` | User declines seat invite       |
+| Media  | `self:mute`           | Mute own producer               |
+| Media  | `self:unmute`         | Unmute own producer             |
+| Chat   | `chat:message`        | Send message                    |
+| Gift   | `gift:send`           | Send gift                       |
+| Gift   | `gift:prepare`        | Preload signal                  |
+| User   | `user:getRoom`        | Track user location             |
 
 ### Server → Client (S→C)
 
-| Domain | Event               | Purpose                  |
-| ------ | ------------------- | ------------------------ |
-| Room   | `room:userJoined`   | User joined notification |
-| Room   | `room:userLeft`     | User left notification   |
-| Room   | `room:closed`       | Room ended               |
-| Media  | `audio:newProducer` | Someone started audio    |
-| Media  | `speaker:active`    | Active speaker changed   |
-| Seat   | `seat:updated`      | Seat state changed       |
-| Seat   | `seat:cleared`      | Seat vacated             |
-| Chat   | `chat:message`      | Message received         |
-| Gift   | `gift:received`     | Gift animation trigger   |
+| Domain | Event                  | Purpose                      |
+| ------ | ---------------------- | ---------------------------- |
+| Room   | `room:userJoined`      | User joined notification     |
+| Room   | `room:userLeft`        | User left notification       |
+| Room   | `room:closed`          | Room ended                   |
+| Media  | `audio:newProducer`    | Someone started audio        |
+| Media  | `speaker:active`       | Active speaker changed       |
+| Seat   | `seat:updated`         | Seat state changed           |
+| Seat   | `seat:cleared`         | Seat vacated                 |
+| Seat   | `seat:locked`          | Seat lock state changed      |
+| Seat   | `seat:userMuted`       | Seated user mute toggled     |
+| Seat   | `seat:invite:pending`  | Invite pending for a seat    |
+| Seat   | `seat:invite:received` | Invite received (to invitee) |
+| Chat   | `chat:message`         | Message received             |
+| Gift   | `gift:received`        | Gift animation trigger       |
+| Gift   | `gift:prepare`         | Preload asset (to recipient) |
+| Gift   | `gift:error`           | Gift processing failed       |
 
 ---
 
@@ -261,5 +278,6 @@ See `src/config/index.ts` for complete schema.
 ## References
 
 - [Event Documentation](../Events/) - Individual event docs
-- [Laravel Integration](../Integration/LARAVEL_API.md) - HTTP API contracts
-- [Frontend Guide](../Integration/NUXT_CLIENT.md) - Client integration
+- [Documentation Standard](../DOCUMENTATION_STANDARD.md) - Event doc standard v2.0
+- [Laravel Integration](../Integrations/LARAVEL.md) - HTTP API contracts
+- [Frontend Guide](../Integrations/NUXT_CLIENT.md) - Client integration

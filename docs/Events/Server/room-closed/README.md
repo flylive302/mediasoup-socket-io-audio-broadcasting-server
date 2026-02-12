@@ -1,9 +1,9 @@
-# Event: `room:closed`
+# Broadcast Event: `room:closed`
 
 > **Domain**: Room  
 > **Direction**: Server → Clients (Broadcast)  
 > **Transport**: Socket.IO  
-> **Triggered By**: Room cleanup (no active participants)
+> **Triggered By**: `RoomManager.closeRoom()` (host left, worker died, auto-close)
 
 ---
 
@@ -11,14 +11,15 @@
 
 ### Purpose
 
-Notifies all room members when a room is being closed.
+Notifies all room members when a room is being closed and cleaned up.
 
 ### Key Characteristics
 
-| Property     | Value                |
-| ------------ | -------------------- |
-| Target       | All sockets in room  |
-| Emitted From | `roomManager.ts:119` |
+| Property     | Value                            |
+| ------------ | -------------------------------- |
+| Target       | All sockets in room              |
+| Emitted From | `roomManager.ts` (`closeRoom()`) |
+| Emitted Via  | `this.io.to(roomId).emit()`      |
 
 ---
 
@@ -26,7 +27,9 @@ Notifies all room members when a room is being closed.
 
 ```typescript
 {
-  reason: string;
+  roomId: string,
+  reason: string,        // "host_left" | "worker_died" | "auto_close"
+  timestamp: number      // Date.now()
 }
 ```
 
@@ -34,7 +37,19 @@ Notifies all room members when a room is being closed.
 
 ## 3. Document Metadata
 
-| Property | Value                                 |
-| -------- | ------------------------------------- |
-| Created  | 2026-02-09                            |
-| Source   | `src/domains/room/roomManager.ts:119` |
+| Property         | Value                             |
+| ---------------- | --------------------------------- |
+| **Event**        | `room:closed`                     |
+| **Created**      | 2026-02-09                        |
+| **Last Updated** | 2026-02-12                        |
+| **Source**       | `src/domains/room/roomManager.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                        |
+| ---------- | ------------------------------------------------------------- |
+| 2026-02-12 | Fixed payload: `{ reason }` → `{ roomId, reason, timestamp }` |
+
+---
+
+_Documentation generated following [MSAB Broadcast Template](../../../BROADCAST_TEMPLATE.md)_

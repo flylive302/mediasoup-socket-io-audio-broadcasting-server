@@ -138,7 +138,8 @@ interface LaravelEvent {
 
 ## 5. Document Metadata
 
-| Property | Value                                                            |
-| -------- | ---------------------------------------------------------------- |
-| Created  | 2026-02-09                                                       |
-| Source   | `src/integrations/laravelClient.ts`, `src/integrations/laravel/` |
+| Property     | Value                                                            |
+| ------------ | ---------------------------------------------------------------- |
+| Created      | 2026-02-09                                                       |
+| Last Updated | 2026-02-12                                                       |
+| Source       | `src/integrations/laravelClient.ts`, `src/integrations/laravel/` |

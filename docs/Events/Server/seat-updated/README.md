@@ -1,4 +1,4 @@
-# Event: `seat:updated`
+# Broadcast Event: `seat:updated`
 
 > **Domain**: Seat  
 > **Direction**: Server → Clients (Broadcast)  
@@ -11,14 +11,15 @@
 
 ### Purpose
 
-Notifies room when a seat is taken by a user (includes user details).
+Notifies room when a seat is taken by a user.
 
 ### Key Characteristics
 
-| Property     | Value               |
-| ------------ | ------------------- |
-| Target       | All sockets in room |
-| Emitted From | Multiple handlers   |
+| Property     | Value                                                                          |
+| ------------ | ------------------------------------------------------------------------------ |
+| Target       | All sockets in room                                                            |
+| Emitted From | `take-seat.handler.ts`, `assign-seat.handler.ts`, `invite-response.handler.ts` |
+| Emitted Via  | `socket.to(roomId).emit()` or `socket.nsp.to(roomId).emit()`                   |
 
 ---
 
@@ -26,27 +27,32 @@ Notifies room when a seat is taken by a user (includes user details).
 
 ```typescript
 {
-  seatIndex: number,
-  user: {
-    id: number,
-    name: string,
-    avatar: string,
-    signature: string,
-    frame: object | null,
-    gender: number,
-    country: string,
-    wealth_xp: number,
-    charm_xp: number
-  },
+  seatIndex: number,    // 0-99
+  userId: number,       // BL-007: userId only — frontend looks up user from participants
   isMuted: boolean
 }
 ```
+
+> [!IMPORTANT]
+> BL-007 change: Previously sent a nested `user` object. Now sends flat `userId` only — frontend resolves from its local participants store.
 
 ---
 
 ## 3. Document Metadata
 
-| Property | Value                                                                          |
-| -------- | ------------------------------------------------------------------------------ |
-| Created  | 2026-02-09                                                                     |
-| Sources  | `take-seat.handler.ts`, `assign-seat.handler.ts`, `invite-response.handler.ts` |
+| Property         | Value                                                                          |
+| ---------------- | ------------------------------------------------------------------------------ |
+| **Event**        | `seat:updated`                                                                 |
+| **Created**      | 2026-02-09                                                                     |
+| **Last Updated** | 2026-02-12                                                                     |
+| **Sources**      | `take-seat.handler.ts`, `assign-seat.handler.ts`, `invite-response.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                            |
+| ---------- | ----------------------------------------------------------------- |
+| 2026-02-12 | BL-007: Payload changed from nested `user` object → flat `userId` |
+
+---
+
+_Documentation generated following [MSAB Broadcast Template](../../../BROADCAST_TEMPLATE.md)_

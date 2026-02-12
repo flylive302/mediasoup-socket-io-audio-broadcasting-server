@@ -19,12 +19,12 @@ Users can take and leave seats freely. When leaving, the seat becomes available 
 
 ### Key Characteristics
 
-| Property                | Value                  |
-| ----------------------- | ---------------------- |
-| Requires Authentication | Yes (via middleware)   |
-| Has Acknowledgment      | Yes                    |
-| Broadcasts              | `seat:cleared` to room |
-| Requires Ownership      | No (own seat only)     |
+| Property                | Value                   |
+| ----------------------- | ----------------------- |
+| Requires Authentication | Yes (via middleware)    |
+| Has Acknowledgment      | Yes (via createHandler) |
+| Broadcasts              | `seat:cleared` to room  |
+| Requires Ownership      | No (own seat only)      |
 
 ---
 
@@ -33,12 +33,12 @@ Users can take and leave seats freely. When leaving, the seat becomes available 
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatLeaveSchema`  
-**Source**: `src/domains/seat/seat.requests.ts:17-19`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string; // Room ID (min 1 char)
-}
+export const seatLeaveSchema = z.object({
+  roomId: roomIdSchema, // z.string().min(1)
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -54,7 +54,7 @@ Users can take and leave seats freely. When leaving, the seat becomes available 
 ```typescript
 {
   success: false,
-  error: "Invalid payload" | "User is not seated" | "Internal server error"
+  error: "INVALID_PAYLOAD" | "User is not seated" | "INTERNAL_ERROR"
 }
 ```
 
@@ -64,23 +64,37 @@ Users can take and leave seats freely. When leaving, the seat becomes available 
 
 ```typescript
 {
-  seatIndex: number; // Index of cleared seat (0-14)
-}
+  seatIndex: number;
+} // Index of the cleared seat
 ```
 
 ---
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point
+
+```typescript
+// Uses createHandler wrapper
+export const leaveSeatHandler = createHandler(
+  "seat:leave",
+  seatLeaveSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Execution
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatLeaveSchema                                    │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Call seatRepository.leaveSeat(roomId, userId)                            │
-│ 3. If not seated, return error                                              │
-│ 4. Broadcast seat:cleared to room                                           │
-│ 5. Return success                                                           │
+│ 3. If not seated → return { success: false, error: result.error }           │
+│ 4. Broadcast seat:cleared { seatIndex } to room                            │
+│ 5. BL-001: autoCloseService.recordActivity(roomId) — fire-and-forget       │
+│ 6. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,8 +102,23 @@ Users can take and leave seats freely. When leaving, the seat becomes available 
 
 ## 4. Document Metadata
 
-| Property | Value                                             |
-| -------- | ------------------------------------------------- |
-| Created  | 2026-02-09                                        |
-| Handler  | `src/domains/seat/handlers/leave-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:17-19`         |
+| Property         | Value                                             |
+| ---------------- | ------------------------------------------------- |
+| **Event**        | `seat:leave`                                      |
+| **Domain**       | Seat                                              |
+| **Direction**    | C→S                                               |
+| **Created**      | 2026-02-09                                        |
+| **Last Updated** | 2026-02-12                                        |
+| **Handler**      | `src/domains/seat/handlers/leave-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                             |
+| ---------- | -------------------------------------------------- |
+| 2026-02-12 | Handler changed to `createHandler` pattern         |
+| 2026-02-12 | Schema source moved to `src/socket/schemas.ts`     |
+| 2026-02-12 | Added `autoCloseService.recordActivity()` (BL-001) |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

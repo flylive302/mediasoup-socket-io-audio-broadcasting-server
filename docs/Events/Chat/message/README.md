@@ -2,7 +2,7 @@
 
 > **Domain**: Chat  
 > **Direction**: C→S  
-> **Handler**: `src/domains/chat/chat.handler.ts`
+> **Handler**: `src/domains/chat/chat.handler.ts:9-60`
 
 ---
 
@@ -20,10 +20,12 @@ Sends a chat message in a room with rate limiting. Broadcasts to all participant
 
 ### Responsibilities
 
-- Validate payload via Zod schema
+- Validate payload via Zod schema (inside `createHandler`)
+- Room membership verification (inside `createHandler`)
 - Enforce rate limiting (Redis-backed)
-- Enrich message with sender data
-- Broadcast to all room participants (including sender)
+- Generate UUID for each message
+- Record auto-close activity
+- Broadcast flat message payload to ALL room members (including sender)
 
 ### What It Owns
 
@@ -47,17 +49,17 @@ Sends a chat message in a room with rate limiting. Broadcasts to all participant
 ```
 Event: chat:message
 Direction: C→S
-Acknowledgment: ❌ Not used
+Acknowledgment: ✅ Via createHandler ({ success: boolean, error?: string })
 ```
 
 ### Zod Schema
 
 ```typescript
-// src/socket/schemas.ts:173-177
+// src/socket/schemas.ts
 export const chatMessageSchema = z.object({
   roomId: roomIdSchema,
   content: z.string().min(1).max(500),
-  type: z.string().optional(),
+  type: z.enum(["text", "emoji", "sticker", "gift", "system"]).default("text"),
 });
 ```
 
@@ -73,11 +75,11 @@ export const chatMessageSchema = z.object({
 
 ### Field Details
 
-| Field     | Type     | Required | Constraints | Example    |
-| --------- | -------- | -------- | ----------- | ---------- |
-| `roomId`  | `string` | ✅       | min 1 char  | `"42"`     |
-| `content` | `string` | ✅       | 1-500 chars | `"Hello!"` |
-| `type`    | `string` | ❌       | Optional    | `"text"`   |
+| Field     | Type     | Required | Constraints                                          | Example    |
+| --------- | -------- | -------- | ---------------------------------------------------- | ---------- |
+| `roomId`  | `string` | ✅       | min 1 char                                           | `"42"`     |
+| `content` | `string` | ✅       | 1-500 chars                                          | `"Hello!"` |
+| `type`    | `enum`   | ❌       | `text\|emoji\|sticker\|gift\|system`, default `text` | `"text"`   |
 
 ### Emitted Events
 
@@ -92,49 +94,44 @@ export const chatMessageSchema = z.object({
 ### 3.1 Entry Point
 
 ```typescript
-socket.on("chat:message", async (rawPayload: unknown) => {
-  // Handler logic - no acknowledgment
-});
+// Uses createHandler wrapper for consistent validation, error handling, and ACK
+const handleChatMessage = createHandler(
+  "chat:message",
+  chatMessageSchema,
+  async (payload, socket, context) => { ... }
+);
 ```
 
-### 3.2 Validation & Rate Limiting
+### 3.2 Rate Limiting
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ VALIDATE & CHECK RATE LIMIT                                                 │
+│ RATE LIMIT CHECK                                                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│ File: chat.handler.ts:14-20                                                 │
 │                                                                             │
-│ 1. Zod schema validation                                                    │
-│ 2. Rate limit check via Redis (tokens per user per room)                    │
-│                                                                             │
-│ Silently drops message if:                                                  │
-│ • Payload invalid                                                           │
-│ • Rate limit exceeded                                                       │
+│ Uses context.rateLimiter.consume() with config.CHAT_RATE_LIMIT              │
+│ Returns { error: Errors.RATE_LIMITED } on failure                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Broadcast
+### 3.3 Build & Broadcast
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ BROADCAST TO ROOM                                                           │
+│ BUILD FLAT MESSAGE + BROADCAST TO ROOM                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│ File: chat.handler.ts:22-49                                                 │
 │                                                                             │
-│ Uses io.to() not socket.to() - includes sender for state consistency.      │
+│ 1. Generate UUID: id = randomUUID()                                        │
+│ 2. Build FLAT message object:                                              │
+│    { id, userId, userName, avatar, content, type, timestamp }              │
+│ 3. Record auto-close activity                                              │
+│ 4. socket.nsp.in(roomId).emit("chat:message", message)                     │
+│    → Uses nsp.in() to include sender                                       │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ io.to(roomId).emit("chat:message", {                                    │ │
-│ │   content,                                                              │ │
-│ │   type,                                                                 │ │
-│ │   user: {                                                               │ │
-│ │     id: socket.data.user.id,                                            │ │
-│ │     name: socket.data.user.name,                                        │ │
-│ │     avatar: socket.data.user.avatar,                                    │ │
-│ │     ...                                                                 │ │
-│ │   },                                                                    │ │
-│ │   timestamp: Date.now(),                                                │ │
-│ │ });                                                                     │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ NOTE: Payload uses flat fields, NOT a nested `user` object.                │
+│ This was changed during the Chat remediation.                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -152,13 +149,13 @@ socket.on("chat:message", async (rawPayload: unknown) => {
 
 ## 5. Error Handling & Edge Cases
 
-| Scenario            | Behavior                                   |
-| ------------------- | ------------------------------------------ |
-| Invalid payload     | Silently ignored                           |
-| Rate limit exceeded | Silently dropped                           |
-| User not in room    | Still broadcasts (user may have re-joined) |
-| Empty content       | Rejected by Zod (min 1)                    |
-| Content > 500 chars | Rejected by Zod                            |
+| Scenario            | Behavior                                            |
+| ------------------- | --------------------------------------------------- |
+| Invalid payload     | `createHandler` returns `{ success: false, error }` |
+| Rate limit exceeded | Returns `{ error: Errors.RATE_LIMITED }`            |
+| Not in room         | `createHandler` checks membership, returns error    |
+| Empty content       | Rejected by Zod (min 1)                             |
+| Content > 500 chars | Rejected by Zod                                     |
 
 ---
 
@@ -188,11 +185,18 @@ socket.on("chat:message", async (rawPayload: unknown) => {
 
 ```typescript
 // composables/useChat.ts
-const sendMessage = (roomId: string, content: string) => {
-  socket.emit("chat:message", { roomId, content });
+const sendMessage = async (roomId: string, content: string) => {
+  const response = await socket.emitWithAck("chat:message", {
+    roomId,
+    content,
+    type: "text",
+  });
+  if (!response.success) console.error(response.error);
 };
 
+// Listen for broadcasts (flat payload)
 socket.on("chat:message", (message) => {
+  // message = { id, userId, userName, avatar, content, type, timestamp }
   messages.value.push(message);
 });
 ```
@@ -201,13 +205,24 @@ socket.on("chat:message", (message) => {
 
 ## 8. Document Metadata
 
-| Property      | Value          |
-| ------------- | -------------- |
-| **Event**     | `chat:message` |
-| **Domain**    | Chat           |
-| **Direction** | C→S            |
-| **Created**   | 2026-02-09     |
+| Property         | Value                              |
+| ---------------- | ---------------------------------- |
+| **Event**        | `chat:message`                     |
+| **Domain**       | Chat                               |
+| **Direction**    | C→S                                |
+| **Created**      | 2026-02-09                         |
+| **Last Updated** | 2026-02-12                         |
+| **Handler**      | `src/domains/chat/chat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------ |
+| 2026-02-12 | `type` changed from `z.string().optional()` → `z.enum(["text","emoji","sticker","gift","system"]).default("text")` |
+| 2026-02-12 | Broadcast payload changed from nested `user` object → flat fields (`userId`, `userName`, `avatar`)                 |
+| 2026-02-12 | Handler changed to `createHandler` pattern (ACK support)                                                           |
+| 2026-02-12 | Added `autoCloseService.recordActivity()` call                                                                     |
 
 ---
 
-_Documentation generated following [MSAB Documentation Standard](../../DOCUMENTATION_STANDARD.md)_
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

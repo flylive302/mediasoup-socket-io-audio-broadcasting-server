@@ -119,6 +119,7 @@ Used for events that return data. The server calls back with a response.
 const response = await socket.emitWithAck("room:join", {
   roomId: "42",
   ownerId: 1234,
+  seatCount: 15, // Optional, defaults to 15
 });
 
 if (response.error) {
@@ -129,28 +130,20 @@ if (response.error) {
 const { rtpCapabilities, participants, seats } = response;
 ```
 
-**Events using this pattern**: `room:join`, `transport:create`, `transport:connect`, `audio:produce`, `audio:consume`, `consumer:resume`, `seat:take`, `seat:assign`, `seat:remove`, `seat:mute`, `seat:unmute`, `seat:lock`, `seat:unlock`, `seat:invite`, `user:getRoom`
+**Events using this pattern**: `room:join`, `transport:create`, `transport:connect`, `audio:produce`, `audio:consume`, `consumer:resume`, `seat:take`, `seat:leave`, `seat:assign`, `seat:remove`, `seat:mute`, `seat:unmute`, `seat:lock`, `seat:unlock`, `seat:invite`, `seat:invite:accept`, `seat:invite:decline`, `chat:message`, `gift:send`, `gift:prepare`, `user:getRoom`
 
 ### Pattern 2: Fire-and-Forget
 
-Used for events that don't need a response. Server processes silently.
+Used for events where the client does not wait for a callback. The server still processes via `createHandler` internally.
 
 ```typescript
 // Emit without waiting for response
-socket.emit("chat:message", {
-  roomId: "42",
-  content: "Hello everyone!",
-});
-
-socket.emit("gift:send", {
-  roomId: "42",
-  giftId: 5,
-  recipientId: 123,
-  quantity: 1,
-});
+socket.emit("room:leave", { roomId: "42" });
 ```
 
-**Events using this pattern**: `chat:message`, `gift:send`, `gift:prepare`, `room:leave`, `seat:leave`
+**Events using this pattern**: `room:leave`
+
+> **Note**: Most events now use `createHandler` internally and support ACK callbacks. Even `chat:message`, `gift:send`, and `seat:leave` return `{ success: boolean, error?: string }` via callback if one is provided.
 
 ### Pattern 3: Listen for Broadcasts
 
@@ -163,7 +156,7 @@ socket.on("room:userJoined", (payload) => {
 });
 
 socket.on("seat:updated", (payload) => {
-  updateSeat(payload.seatIndex, payload.user, payload.isMuted);
+  updateSeat(payload.seatIndex, payload.userId, payload.isMuted);
 });
 
 socket.on("gift:received", (payload) => {
@@ -171,7 +164,7 @@ socket.on("gift:received", (payload) => {
 });
 ```
 
-**All S→C events**: `room:userJoined`, `room:userLeft`, `room:closed`, `audio:newProducer`, `speaker:active`, `seat:updated`, `seat:cleared`, `seat:locked`, `seat:userMuted`, `seat:invite-received`, `seat:invite-pending`, `chat:message`, `gift:received`, `gift:error`
+**All S→C events**: `room:userJoined`, `room:userLeft`, `room:closed`, `audio:newProducer`, `speaker:active`, `seat:updated`, `seat:cleared`, `seat:locked`, `seat:userMuted`, `seat:invite:received`, `seat:invite:pending`, `chat:message`, `gift:received`, `gift:prepare`, `gift:error`
 
 ---
 
@@ -241,8 +234,11 @@ interface MsabUser {
   frame: string;
   gender: number;
   country: string;
-  wealth_xp: number;
-  charm_xp: number;
+  phone: string;
+  email: string;
+  date_of_birth: string;
+  wealth_xp: string; // String from JWT
+  charm_xp: string; // String from JWT
   isSpeaker: boolean;
 }
 ```
@@ -263,10 +259,13 @@ interface RoomJoinResponse {
 ### Seat State
 
 ```typescript
-/** Seat state as received in `room:join` and `seat:updated` */
+/**
+ * Seat state as received in `room:join` and `seat:updated`.
+ * BL-007: Uses userId only — frontend resolves full user from participants list.
+ */
 interface SeatState {
   seatIndex: number;
-  user: MsabUser;
+  userId: number;
   isMuted: boolean;
 }
 ```
@@ -274,21 +273,14 @@ interface SeatState {
 ### Chat Message
 
 ```typescript
-/** Payload for `chat:message` broadcast */
+/** Payload for `chat:message` broadcast (flat shape, not nested user object) */
 interface ChatMessagePayload {
+  id: string; // UUID
+  userId: number;
+  userName: string;
+  avatar: string;
   content: string;
-  type?: string;
-  user: {
-    id: number;
-    name: string;
-    avatar: string;
-    signature: string;
-    frame: string;
-    gender: number;
-    country: string;
-    wealth_xp: number;
-    charm_xp: number;
-  };
+  type: "text" | "emoji" | "sticker" | "gift" | "system";
   timestamp: number;
 }
 ```
@@ -299,11 +291,9 @@ interface ChatMessagePayload {
 /** Payload for `gift:received` broadcast */
 interface GiftReceivedPayload {
   senderId: number;
-  senderName: string;
-  senderAvatar: string;
   roomId: string;
-  recipientId: number;
   giftId: number;
+  recipientId: number;
   quantity: number;
 }
 ```
@@ -314,40 +304,39 @@ interface GiftReceivedPayload {
 
 ### Error Response Shape
 
-All ACK events return errors in the same shape:
+All events that go through `createHandler` return a consistent shape:
 
 ```typescript
-interface MsabErrorResponse {
-  error: string;
+interface MsabResponse {
+  success: boolean;
+  error?: string;
+  data?: unknown;
 }
 
 // Usage
 const response = await socket.emitWithAck("event:name", payload);
-if ("error" in response) {
+if (!response.success) {
   handleError(response.error);
 }
 ```
 
-### Common Errors
+> **Note**: `room:join` is the only event that does NOT use `createHandler` — it returns either the full room state or `{ error: string }` directly.
 
-| Error Message           | Cause                       | Resolution                       |
-| ----------------------- | --------------------------- | -------------------------------- |
-| `"Invalid credentials"` | JWT expired or malformed    | Refresh JWT from Laravel         |
-| `"Invalid payload"`     | Zod validation failed       | Check payload matches schema     |
-| `"Internal error"`      | Server exception            | Retry or report bug              |
-| `"Not on seat"`         | Seat operation without seat | Check seat state first           |
-| `"Seat occupied"`       | Taking occupied seat        | Choose different seat            |
-| `"Rate limited"`        | Too many messages/gifts     | Wait before retrying             |
-| `"Not authorized"`      | Missing owner permissions   | Only room owner can mutate seats |
+### Common Errors (from `src/shared/errors.ts`)
 
-### Silent Drops
-
-Some events silently drop invalid requests (no error returned):
-
-| Event          | Drop Condition                  |
-| -------------- | ------------------------------- |
-| `chat:message` | Invalid payload or rate limited |
-| `gift:send`    | Invalid payload or rate limited |
+| Error Message                    | Cause                       | Resolution                       |
+| -------------------------------- | --------------------------- | -------------------------------- |
+| `"Invalid credentials"`          | JWT expired or malformed    | Refresh JWT from Laravel         |
+| `"Invalid payload"`              | Zod validation failed       | Check payload matches schema     |
+| `"Internal server error"`        | Server exception            | Retry or report bug              |
+| `"Not in room"`                  | Event sent for wrong room   | Verify room membership           |
+| `"You are not seated"`           | Seat operation without seat | Check seat state first           |
+| `"Seat is already taken"`        | Taking occupied seat        | Choose different seat            |
+| `"Seat is locked"`               | Taking locked seat          | Choose different seat            |
+| `"Too many requests"`            | Rate limited                | Wait before retrying             |
+| `"Not authorized"`               | Missing owner permissions   | Only room owner can mutate seats |
+| `"Cannot send gift to yourself"` | Self-gifting                | Select a different recipient     |
+| `"Cannot invite yourself"`       | Self-invitation             | Select a different user          |
 
 ---
 

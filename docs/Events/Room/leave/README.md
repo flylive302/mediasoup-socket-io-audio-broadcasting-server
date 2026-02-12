@@ -2,7 +2,7 @@
 
 > **Domain**: Room  
 > **Direction**: C→S  
-> **Handler**: `src/domains/room/room.handler.ts:210-244`
+> **Handler**: `src/domains/room/room.handler.ts:189-234`
 
 ---
 
@@ -34,16 +34,19 @@ Allows a client to leave an audio room, cleaning up their seat, room membership,
 | ----------------------- | --------------------------------- |
 | Room membership removal | Socket leaves Socket.IO room      |
 | Seat cleanup            | Clears Redis seat data            |
+| Client room clearing    | Clears ClientManager room index   |
 | User room tracking      | Clears Redis `user:{id}:room` key |
 
 ### External Dependencies
 
-| Dependency             | Type  | Purpose                    |
-| ---------------------- | ----- | -------------------------- |
-| `SeatRepository`       | Redis | Clear user's seat          |
-| `UserSocketRepository` | Redis | Clear user's room tracking |
-| `RoomManager.state`    | Redis | Adjust participant count   |
-| `LaravelClient`        | HTTP  | Update room status         |
+| Dependency             | Type      | Purpose                    |
+| ---------------------- | --------- | -------------------------- |
+| `SeatRepository`       | Redis     | Clear user's seat          |
+| `ClientManager`        | In-Memory | Clear room index           |
+| `UserSocketRepository` | Redis     | Clear user's room tracking |
+| `RoomManager.state`    | Redis     | Adjust participant count   |
+| `AutoCloseService`     | Redis     | Record room activity       |
+| `LaravelClient`        | HTTP      | Update room status         |
 
 ---
 
@@ -60,7 +63,7 @@ Acknowledgment: ❌ Not used
 ### Zod Schema
 
 ```typescript
-// src/socket/schemas.ts:165-167
+// src/socket/schemas.ts:167-169
 export const leaveRoomSchema = z.object({
   roomId: roomIdSchema,
 });
@@ -94,7 +97,8 @@ export const leaveRoomSchema = z.object({
 ### 3.1 Entry Point
 
 ```
-File: src/domains/room/room.handler.ts:210
+File: src/domains/room/room.handler.ts:190
+Pattern: Raw socket.on() — does NOT use createHandler
 ```
 
 ```typescript
@@ -109,7 +113,7 @@ socket.on("room:leave", async (rawPayload: unknown) => {
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ SCHEMA VALIDATION                                                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:211-215                              │
+│ File: src/domains/room/room.handler.ts:191-195                              │
 │                                                                             │
 │ Validates payload with Zod. Silently ignores invalid requests.              │
 │                                                                             │
@@ -128,7 +132,7 @@ socket.on("room:leave", async (rawPayload: unknown) => {
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ CLEAR USER'S SEAT                                                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:218-226                              │
+│ File: src/domains/room/room.handler.ts:199-206                              │
 │                                                                             │
 │ Uses Redis-backed SeatRepository to remove user from any seat.              │
 │ Broadcasts seat:cleared if user was seated.                                 │
@@ -144,53 +148,49 @@ socket.on("room:leave", async (rawPayload: unknown) => {
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.4 Socket.IO Room Leave
+### 3.4 Leave Room + Clear Client Index
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ LEAVE SOCKET.IO ROOM                                                        │
+│ LEAVE SOCKET.IO ROOM + CLEAR CLIENT ROOM INDEX                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:228                                  │
+│ File: src/domains/room/room.handler.ts:208-211                              │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ socket.leave(roomId);                                                   │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ socket.leave(roomId);                                                       │
+│ clientManager.clearClientRoom(socket.id);  // ROOM-BL-002 fix              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.5 Redis Cleanup
+### 3.5 Parallelized Redis Cleanup
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ CLEAR USER ROOM TRACKING                                                    │
+│ PARALLEL REDIS OPS (BL-001 FIX)                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:230-231                              │
+│ File: src/domains/room/room.handler.ts:214-218                              │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ await userSocketRepository.clearUserRoom(socket.data.user.id);          │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ const [newCount] = await Promise.all([                                      │
+│   roomManager.state.adjustParticipantCount(roomId, -1),                     │
+│   userSocketRepository.clearUserRoom(socket.data.user.id),                  │
+│   autoCloseService.recordActivity(roomId),                                  │
+│ ]);                                                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.6 Laravel Notification
+### 3.6 Fire-and-Forget Laravel Notification
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ UPDATE PARTICIPANT COUNT                                                    │
+│ FIRE-AND-FORGET LARAVEL UPDATE                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:233-240                              │
+│ File: src/domains/room/room.handler.ts:220-230                              │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const newCount = await roomManager.state.adjustParticipantCount(        │ │
-│ │   roomId, -1                                                            │ │
-│ │ );                                                                      │ │
-│ │ if (newCount !== null) {                                                │ │
-│ │   await laravelClient.updateRoomStatus(roomId, {                        │ │
-│ │     is_live: newCount > 0,                                              │ │
-│ │     participant_count: newCount,                                        │ │
-│ │   });                                                                   │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ if (newCount !== null) {                                                    │
+│   laravelClient.updateRoomStatus(roomId, {                                  │
+│     is_live: newCount > 0,                                                  │
+│     participant_count: newCount,                                            │
+│   }).catch(err => logger.error(...));   // Fire-and-forget with .catch()    │
+│ }                                                                           │
 │                                                                             │
 │ Note: is_live is set to false when participant count reaches 0.             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -202,7 +202,7 @@ socket.on("room:leave", async (rawPayload: unknown) => {
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ NOTIFY REMAINING PARTICIPANTS                                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:242-243                              │
+│ File: src/domains/room/room.handler.ts:233                                  │
 │                                                                             │
 │ ┌─────────────────────────────────────────────────────────────────────────┐ │
 │ │ socket.to(roomId).emit("room:userLeft", {                               │ │
@@ -291,14 +291,15 @@ socket.on("room:leave", async (rawPayload: unknown) => {
    │                  │ [if seated] seat:cleared (to room)│            │          │
    │                  │                  │                │            │          │
    │                  │                  │ 4. socket.leave│            │          │
+   │                  │                  │ 5. clearClientRoom          │          │
    │                  │                  │                │            │          │
-   │                  │                  │ 5. clearUserRoom            │          │
+   │                  │                  │ 6. Promise.all [            │          │
+   │                  │                  │   adjustParticipantCount,   │          │
+   │                  │                  │   clearUserRoom,            │          │
+   │                  │                  │   recordActivity ]          │          │
    │                  │                  │──────────────────────────────▶          │
    │                  │                  │                │            │          │
-   │                  │                  │ 6. adjustParticipantCount   │          │
-   │                  │                  │──────────────────────────────▶          │
-   │                  │                  │                │            │          │
-   │                  │                  │ 7. updateRoomStatus         │          │
+   │                  │                  │ 7. fire&forget Laravel      │          │
    │                  │                  │─────────────────────────────────────────▶
    │                  │                  │                │            │          │
    │                  │ 8. room:userLeft (to room)        │            │          │
@@ -352,7 +353,7 @@ const leaveRoom = (roomId: string) => {
 
 ```typescript
 // To add cleanup of additional resources:
-// Add before socket.leave(roomId) at line 228
+// Add before socket.leave(roomId) at line ~208
 
 // Example: Clear user's transports
 const client = clientManager.getClient(socket.id);
@@ -382,25 +383,33 @@ if (client) {
 
 | Purpose        | File                                       |
 | -------------- | ------------------------------------------ |
-| Handler        | `src/domains/room/room.handler.ts:210-244` |
-| Schema         | `src/socket/schemas.ts:165-167`            |
+| Handler        | `src/domains/room/room.handler.ts:189-234` |
+| Schema         | `src/socket/schemas.ts:167-169`            |
 | SeatRepository | `src/domains/seat/seat.repository.ts`      |
 
 ---
 
 ## 10. Document Metadata
 
-| Property               | Value                |
-| ---------------------- | -------------------- |
-| **Event**              | `room:leave`         |
-| **Domain**             | Room                 |
-| **Direction**          | C→S                  |
-| **Author**             | System Documentation |
-| **Created**            | 2026-02-09           |
-| **Last Updated**       | 2026-02-09           |
-| **Node.js Version**    | ≥22.0.0              |
-| **TypeScript Version** | ^5.7.0               |
+| Property         | Value                              |
+| ---------------- | ---------------------------------- |
+| **Event**        | `room:leave`                       |
+| **Domain**       | Room                               |
+| **Direction**    | C→S                                |
+| **Created**      | 2026-02-09                         |
+| **Last Updated** | 2026-02-12                         |
+| **Handler**      | `src/domains/room/room.handler.ts` |
+| **Schema**       | `src/socket/schemas.ts` (L167-169) |
+
+### Schema Change Log
+
+| Date       | Change                                                |
+| ---------- | ----------------------------------------------------- |
+| 2026-02-12 | Added `clientManager.clearClientRoom()` (ROOM-BL-002) |
+| 2026-02-12 | Redis ops parallelized via `Promise.all` (BL-001)     |
+| 2026-02-12 | Laravel update changed to fire-and-forget             |
+| 2026-02-12 | `autoCloseService.recordActivity()` added to cleanup  |
 
 ---
 
-_Documentation generated following [MSAB Documentation Standard](../../DOCUMENTATION_STANDARD.md)_
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

@@ -3,7 +3,7 @@
 > **Domain**: Seat  
 > **Direction**: Client → Server  
 > **Transport**: Socket.IO with Acknowledgment  
-> **Related Events**: `seat:lock`, `seat:unlocked` (broadcast)
+> **Related Events**: `seat:lock`, `seat:locked` (broadcast — same event, `isLocked: false`)
 
 ---
 
@@ -22,9 +22,11 @@ Opens up reserved seats for general use.
 | Property                | Value                   |
 | ----------------------- | ----------------------- |
 | Requires Authentication | Yes (via middleware)    |
-| Has Acknowledgment      | Yes                     |
-| Broadcasts              | `seat:unlocked` to room |
+| Has Acknowledgment      | Yes (via createHandler) |
+| Broadcasts              | `seat:locked` to room   |
 | Requires Ownership      | Yes (owner or admin)    |
+
+> **Note**: The broadcast event is `seat:locked` with `isLocked: false` — not a separate `seat:unlocked` event.
 
 ---
 
@@ -33,13 +35,13 @@ Opens up reserved seats for general use.
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatLockSchema` (same as lock)  
-**Source**: `src/domains/seat/seat.requests.ts:41-44`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,     // Room ID
-  seatIndex: number   // Seat to unlock (0-14)
-}
+export const seatLockSchema = z.object({
+  roomId: roomIdSchema,
+  seatIndex: z.number().int().min(0).max(99),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -50,31 +52,48 @@ Opens up reserved seats for general use.
 }
 ```
 
-### 2.3 Broadcast Event
-
-**Event**: `seat:unlocked`
+### 2.3 Acknowledgment (Error)
 
 ```typescript
 {
-  seatIndex: number,
-  isLocked: false
+  success: false,
+  error: "INVALID_PAYLOAD" | "Not room manager" | "Not locked" | "INTERNAL_ERROR"
 }
+```
+
+### 2.4 Broadcast Event
+
+**Event**: `seat:locked` (via `socket.nsp.to()`)
+
+```typescript
+{ seatIndex: number, isLocked: false }
 ```
 
 ---
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point
+
+```typescript
+export const unlockSeatHandler = createHandler(
+  "seat:unlock",
+  seatLockSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Execution
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatLockSchema                                     │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Verify manager permissions via verifyRoomManager()                       │
-│ 3. Check if not locked (return error if already unlocked)                   │
-│ 4. Unlock seat via seatRepository.unlockSeat()                              │
-│ 5. Broadcast seat:unlocked to entire room                                   │
-│ 6. Return success                                                           │
+│ 3. SEAT-002: Atomic unlock via seatRepository.unlockSeat() (no pre-check)  │
+│ 4. Broadcast seat:locked { seatIndex, isLocked: false } to room            │
+│ 5. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,8 +101,24 @@ Opens up reserved seats for general use.
 
 ## 4. Document Metadata
 
-| Property | Value                                              |
-| -------- | -------------------------------------------------- |
-| Created  | 2026-02-09                                         |
-| Handler  | `src/domains/seat/handlers/unlock-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:41-44`          |
+| Property         | Value                                              |
+| ---------------- | -------------------------------------------------- |
+| **Event**        | `seat:unlock`                                      |
+| **Domain**       | Seat                                               |
+| **Direction**    | C→S                                                |
+| **Created**      | 2026-02-09                                         |
+| **Last Updated** | 2026-02-12                                         |
+| **Handler**      | `src/domains/seat/handlers/unlock-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                        |
+| ---------- | ------------------------------------------------------------- |
+| 2026-02-12 | Handler changed to `createHandler` pattern                    |
+| 2026-02-12 | SEAT-002: Removed `isSeatLocked` pre-check — now fully atomic |
+| 2026-02-12 | Broadcast event corrected: `seat:locked` not `seat:unlocked`  |
+| 2026-02-12 | `seatIndex` max changed from 14 to 99                         |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

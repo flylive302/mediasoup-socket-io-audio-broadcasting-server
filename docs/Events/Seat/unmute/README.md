@@ -19,13 +19,14 @@ Restores speaking ability after moderation action.
 
 ### Key Characteristics
 
-| Property                | Value                    |
-| ----------------------- | ------------------------ |
-| Requires Authentication | Yes (via middleware)     |
-| Has Acknowledgment      | Yes                      |
-| Broadcasts              | `seat:userMuted` to room |
-| Requires Ownership      | Yes (owner or admin)     |
-| Server-Side Enforcement | Yes (resumes producer)   |
+| Property                | Value                                |
+| ----------------------- | ------------------------------------ |
+| Requires Authentication | Yes (via middleware)                 |
+| Has Acknowledgment      | Yes (via createHandler)              |
+| Broadcasts              | `seat:userMuted` to room             |
+| Requires Ownership      | Yes (owner or admin)                 |
+| Server-Side Enforcement | Yes (resumes producer)               |
+| Implementation          | SEAT-010: Shared mute/unmute factory |
 
 ---
 
@@ -34,13 +35,13 @@ Restores speaking ability after moderation action.
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatMuteSchema` (same as mute)  
-**Source**: `src/domains/seat/seat.requests.ts:35-38`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,     // Room ID
-  userId: number      // Target user ID to unmute
-}
+export const seatMuteSchema = z.object({
+  roomId: roomIdSchema,
+  userId: z.number().int().positive(),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -51,9 +52,18 @@ Restores speaking ability after moderation action.
 }
 ```
 
-### 2.3 Broadcast Event
+### 2.3 Acknowledgment (Error)
 
-**Event**: `seat:userMuted`
+```typescript
+{
+  success: false,
+  error: "INVALID_PAYLOAD" | "Not room manager" | "USER_NOT_SEATED" | "UNMUTE_FAILED" | "INTERNAL_ERROR"
+}
+```
+
+### 2.4 Broadcast Event
+
+**Event**: `seat:userMuted` (to entire room via `socket.nsp.to()`)
 
 ```typescript
 {
@@ -66,17 +76,32 @@ Restores speaking ability after moderation action.
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point (SEAT-010 Factory)
+
+```typescript
+export const unmuteSeatHandler = createMuteHandler({
+  event: "seat:unmute",
+  muted: false,
+  failError: Errors.UNMUTE_FAILED,
+  producerAction: "resume",
+  logAction: "unmuted",
+  producerLogAction: "resumed (server-side unmute)",
+});
+```
+
+### 3.2 Execution (inherited from factory)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatMuteSchema                                     │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Verify manager permissions via verifyRoomManager()                       │
 │ 3. Find user's seat via seatRepository.getUserSeat()                        │
 │ 4. Update mute status via seatRepository.setMute(roomId, seatIndex, false)  │
-│ 5. Resume user's audio producer (server-side)                               │
-│ 6. Broadcast seat:userMuted with isMuted: false                             │
-│ 7. Return success                                                           │
+│ 5. SERVER-SIDE: Resume user's audio producer — restores mediasoup stream   │
+│ 6. Broadcast seat:userMuted { userId, isMuted: false } to entire room      │
+│ 7. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,8 +109,23 @@ Restores speaking ability after moderation action.
 
 ## 4. Document Metadata
 
-| Property | Value                                              |
-| -------- | -------------------------------------------------- |
-| Created  | 2026-02-09                                         |
-| Handler  | `src/domains/seat/handlers/unmute-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:35-38`          |
+| Property         | Value                                              |
+| ---------------- | -------------------------------------------------- |
+| **Event**        | `seat:unmute`                                      |
+| **Domain**       | Seat                                               |
+| **Direction**    | C→S                                                |
+| **Created**      | 2026-02-09                                         |
+| **Last Updated** | 2026-02-12                                         |
+| **Handler**      | `src/domains/seat/handlers/unmute-seat.handler.ts` |
+| **Factory**      | `src/domains/seat/handlers/mute-unmute.factory.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                           |
+| ---------- | ---------------------------------------------------------------- |
+| 2026-02-12 | Handler refactored to use `createMuteHandler` factory (SEAT-010) |
+| 2026-02-12 | Schema source moved to `src/socket/schemas.ts`                   |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

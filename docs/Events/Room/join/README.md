@@ -2,7 +2,7 @@
 
 > **Domain**: Room  
 > **Direction**: C→S  
-> **Handler**: `src/domains/room/room.handler.ts:21-207`
+> **Handler**: `src/domains/room/room.handler.ts:20-187`
 
 ---
 
@@ -16,40 +16,42 @@ Allows a client to join an audio room, receive mediasoup RTP capabilities, exist
 
 ### Domain
 
-**Room** - Room lifecycle and participant management
+**Room** — Room lifecycle management
 
 ### Responsibilities
 
 - Validate payload via Zod schema
-- Create or retrieve mediasoup router for room
-- Optionally cache room owner from frontend
-- Track client in ClientManager
-- Store user's room in Redis for `user:getRoom` feature
-- Gather existing participants, seats, and producers (excluding self)
-- Add socket to Socket.IO room
-- Record activity to prevent auto-close
-- Update participant count in Redis and notify Laravel
-- Broadcast `room:userJoined` to other participants
-- Return initial state via acknowledgment
+- Create or join a mediasoup router cluster for the room
+- Persist custom seat count if provided (BL-003)
+- Cache room owner from frontend payload
+- Build participant list, existing producers, and seat state
+- Prune stale (disconnected) clients during enumeration
+- Join Socket.IO room
+- Parallelize Redis state updates (participant count, activity, user-socket mapping)
+- Fire-and-forget Laravel room status update
+- Broadcast `room:userJoined` to other room members
+- Acknowledge caller with full room state
 
 ### What It Owns
 
-| Owned             | Description                             |
-| ----------------- | --------------------------------------- |
-| Room membership   | Socket joins Socket.IO room             |
-| Client tracking   | ClientManager entry updated with roomId |
-| User room mapping | Redis key `user:{userId}:room` set      |
+| Owned                  | Description                            |
+| ---------------------- | -------------------------------------- |
+| Room initialization    | Creates router cluster if first joiner |
+| Participant tracking   | Updates ClientManager room index       |
+| State synchronization  | Returns full room snapshot via ACK     |
+| User-socket mapping    | Records userId→roomId in Redis         |
+| Seat count persistence | Saves custom seatCount to room state   |
 
 ### External Dependencies
 
-| Dependency             | Type    | Purpose                       |
-| ---------------------- | ------- | ----------------------------- |
-| `RoomManager`          | Service | Router creation/retrieval     |
-| `ClientManager`        | Service | Track client state            |
-| `SeatRepository`       | Redis   | Get existing seats            |
-| `UserSocketRepository` | Redis   | Track user's current room     |
-| `AutoCloseService`     | Redis   | Prevent room auto-close       |
-| `LaravelClient`        | HTTP    | Update room participant_count |
+| Dependency             | Type      | Purpose                  |
+| ---------------------- | --------- | ------------------------ |
+| `RoomManager`          | Service   | Router cluster lifecycle |
+| `ClientManager`        | In-Memory | Socket↔Room tracking     |
+| `SeatRepository`       | Redis     | Current seat state       |
+| `AutoCloseService`     | Redis     | Record room activity     |
+| `UserSocketRepository` | Redis     | User→Room mapping        |
+| `LaravelClient`        | HTTP      | Room status update       |
 
 ---
 
@@ -60,89 +62,82 @@ Allows a client to join an audio room, receive mediasoup RTP capabilities, exist
 ```
 Event: room:join
 Direction: C→S
-Acknowledgment: ✅ Required (callback)
+Acknowledgment: ✅ Required
 ```
 
 ### Zod Schema
 
 ```typescript
-// src/socket/schemas.ts:160-163
+// src/socket/schemas.ts:160-165
 export const joinRoomSchema = z.object({
-  roomId: z.string(),
-  ownerId: z.number().optional(),
+  roomId: roomIdSchema, // z.string().min(1)
+  ownerId: z.number().optional(), // Owner ID from frontend
+  seatCount: z.number().int().min(1).max(15).default(15), // BL-008
 });
 ```
 
-### Payload Schema
+### TypeScript Interfaces
 
-```json
-{
-  "roomId": "string", // Required, room identifier (numeric ID or UUID)
-  "ownerId": 1234 // Optional, owner ID for permission verification
+```typescript
+/** Inbound payload */
+interface RoomJoinPayload {
+  roomId: string;
+  ownerId?: number;
+  seatCount?: number; // defaults to 15
+}
+
+/** ACK response on success */
+interface RoomJoinResponse {
+  rtpCapabilities: RtpCapabilities;
+  participants: MsabUser[];
+  seats: SeatState[];
+  lockedSeats: number[];
+  existingProducers: { producerId: string; userId: number }[];
+}
+
+/** ACK response on error */
+interface RoomJoinError {
+  error: string; // Errors.INVALID_PAYLOAD | Errors.INTERNAL_ERROR
+}
+
+/** Participant shape */
+interface MsabUser {
+  id: number;
+  name: string;
+  signature: string;
+  avatar: string;
+  frame: string;
+  gender: number;
+  country: string;
+  phone: string;
+  email: string;
+  date_of_birth: string;
+  wealth_xp: string;
+  charm_xp: string;
+  isSpeaker: boolean;
+}
+
+/** BL-007: Seats use userId only — frontend resolves from participants */
+interface SeatState {
+  seatIndex: number;
+  userId: number;
+  isMuted: boolean;
 }
 ```
 
 ### Field Details
 
-| Field     | Type     | Required | Constraints  | Example        |
-| --------- | -------- | -------- | ------------ | -------------- |
-| `roomId`  | `string` | ✅       | min 1 char   | `"42"` or UUID |
-| `ownerId` | `number` | ❌       | positive int | `1234`         |
-
-### Acknowledgment Response
-
-```json
-// Success
-{
-  "rtpCapabilities": {
-    "codecs": [
-      {
-        "kind": "audio",
-        "mimeType": "audio/opus",
-        "clockRate": 48000,
-        "channels": 2
-      }
-    ],
-    "headerExtensions": [...]
-  },
-  "participants": [
-    {
-      "id": 123,
-      "name": "John",
-      "signature": "Hello!",
-      "avatar": "https://...",
-      "frame": "https://...",
-      "gender": 0,
-      "country": "US",
-      "wealth_xp": 1000,
-      "charm_xp": 500,
-      "isSpeaker": false
-    }
-  ],
-  "seats": [
-    {
-      "seatIndex": 0,
-      "user": { "id": 456, "name": "Jane", "avatar": "https://..." },
-      "isMuted": false
-    }
-  ],
-  "lockedSeats": [3, 7],
-  "existingProducers": [
-    { "producerId": "uuid", "userId": 456 }
-  ]
-}
-
-// Error
-{
-  "error": "Invalid payload" | "Internal error"
-}
-```
+| Field       | Type     | Required | Constraints   | Default | Example |
+| ----------- | -------- | -------- | ------------- | ------- | ------- |
+| `roomId`    | `string` | ✅       | min 1 char    | —       | `"42"`  |
+| `ownerId`   | `number` | ❌       | positive int  | —       | `1234`  |
+| `seatCount` | `number` | ❌       | 1-15, integer | `15`    | `8`     |
 
 ### Emitted Events
 
-| Event             | Target                  | When                  |
-| ----------------- | ----------------------- | --------------------- |
-| `room:userJoined` | Room (excluding sender) | After successful join |
+| Event             | Target                  | When                        |
+| ----------------- | ----------------------- | --------------------------- |
+| `room:userJoined` | Room (excluding sender) | After successful join + ACK |
 
 ---
 
@@ -151,179 +146,81 @@ export const joinRoomSchema = z.object({
 ### 3.1 Entry Point
 
 ```
-File: src/domains/room/room.handler.ts:21
+File: src/domains/room/room.handler.ts:20
+Pattern: Raw socket.on() — does NOT use createHandler
 ```
 
-```typescript
-socket.on("room:join", async (rawPayload: unknown, ack) => {
-  // Handler logic
-});
-```
-
-### 3.2 Schema Validation
+### 3.2 Validation
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ SCHEMA VALIDATION                                                           │
+│ VALIDATE PAYLOAD                                                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:22-27                                │
+│ File: room.handler.ts:21-25                                                 │
 │                                                                             │
-│ Validates payload with Zod joinRoomSchema.                                  │
-│ Returns early with error if invalid.                                        │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const payloadResult = joinRoomSchema.safeParse(rawPayload);             │ │
-│ │ if (!payloadResult.success) {                                           │ │
-│ │   if (ack) ack({ error: "Invalid payload" });                           │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ const payloadResult = joinRoomSchema.safeParse(rawPayload);                 │
+│ if (!payloadResult.success) {                                               │
+│   if (ack) ack({ error: Errors.INVALID_PAYLOAD });                         │
+│   return;                                                                   │
+│ }                                                                           │
+│ const { roomId, seatCount } = payloadResult.data;                          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Router Initialization
+### 3.3 Router + Seat Count Persistence
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ ROUTER CREATION/RETRIEVAL                                                   │
+│ CREATE/GET ROUTER CLUSTER + PERSIST SEAT COUNT                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:32-33                                │
+│ File: room.handler.ts:31-41                                                 │
 │                                                                             │
-│ Gets or creates mediasoup router for the room.                              │
-│ If room doesn't exist, allocates least-loaded worker.                       │
+│ 1. roomManager.getOrCreateRoom(roomId) → cluster                           │
+│ 2. Extract rtpCapabilities from cluster.router                             │
+│ 3. BL-003: If seatCount ≠ 15, update room state in Redis                  │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const routerManager = await roomManager.getOrCreateRoom(roomId);        │ │
-│ │ const rtpCapabilities = routerManager.router?.rtpCapabilities;          │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ File: room.handler.ts:43-48                                                 │
+│ 4. Cache ownerId via setRoomOwner() if provided                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.4 Owner Caching
+### 3.4 Build Room Snapshot
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ ROOM OWNER CACHING (Optional)                                               │
+│ BUILD PARTICIPANTS, PRODUCERS, SEATS                                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:35-40                                │
+│ File: room.handler.ts:51-134                                                │
 │                                                                             │
-│ If ownerId provided, cache for permission checks in seat operations.        │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ if (ownerId) {                                                          │ │
-│ │   setRoomOwner(roomId, String(ownerId));                                │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ 1. clientManager.setClientRoom(socketId, roomId)  (PERF-006)               │
+│ 2. BL-002: Single getClientsInRoom() call — iterate once to build:         │
+│    • participants[] (exclude self, prune stale sockets)                     │
+│    • existingProducers[] (audio producers only)                            │
+│ 3. seatRepository.getSeats(roomId, seatCount) → seats + lockedSeats       │
+│ 4. BL-007: Seats contain userId only (not full user object)                │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.5 Client State Updates
+### 3.5 Join + Parallelize + Broadcast
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ CLIENT TRACKING                                                             │
+│ JOIN ROOM + REDIS OPS + BROADCAST                                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:42-48                                │
+│ File: room.handler.ts:136-186                                               │
 │                                                                             │
-│ Updates ClientManager with roomId and Redis with user's current room.       │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const client = clientManager.getClient(socket.id);                      │ │
-│ │ if (client) client.roomId = roomId;                                     │ │
-│ │                                                                         │ │
-│ │ await userSocketRepository.setUserRoom(userId, roomId);                 │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.6 State Gathering
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ GATHER EXISTING STATE                                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:50-158                               │
-│                                                                             │
-│ Gathers current room state BEFORE joining to exclude self:                  │
-│ • participants (verified connected, excludes self)                          │
-│ • seats (from Redis SeatRepository)                                         │
-│ • locked seats                                                              │
-│ • existing producers                                                        │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const participants = await getParticipants(roomId);                     │ │
-│ │ const [roomSeatsData, lockedSeats] = await Promise.all([                │ │
-│ │   seatRepository.getSeats(roomId, config.DEFAULT_SEAT_COUNT),           │ │
-│ │   seatRepository.getLockedSeats(roomId),                                │ │
-│ │ ]);                                                                     │ │
-│ │ const existingProducers = await getProducers(roomId);                   │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-│ **Stale Client Cleanup**: If a client socket is found in ClientManager      │
-│ but not actually connected to Socket.IO, it's removed (L64-68).             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.7 Room Join
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SOCKET.IO ROOM JOIN                                                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:160                                  │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ socket.join(roomId);                                                    │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.8 Activity Recording & Laravel Notification
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ ACTIVITY & LARAVEL UPDATE                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:162-175                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ await autoCloseService.recordActivity(roomId);                          │ │
-│ │                                                                         │ │
-│ │ const newCount = await roomManager.state.adjustParticipantCount(..);    │ │
-│ │ if (newCount !== null) {                                                │ │
-│ │   await laravelClient.updateRoomStatus(roomId, {                        │ │
-│ │     is_live: true,                                                      │ │
-│ │     participant_count: newCount,                                        │ │
-│ │   });                                                                   │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.9 Broadcast & Response
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ BROADCAST TO OTHERS & ACK TO SENDER                                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/room/room.handler.ts:177-202                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ // Notify others                                                        │ │
-│ │ socket.to(roomId).emit("room:userJoined", {                             │ │
-│ │   userId: socket.data.user.id,                                          │ │
-│ │   user: socket.data.user,                                               │ │
-│ │ });                                                                     │ │
-│ │                                                                         │ │
-│ │ // Acknowledge sender with initial state                                │ │
-│ │ if (ack) ack({                                                          │ │
-│ │   rtpCapabilities,                                                      │ │
-│ │   participants,                                                         │ │
-│ │   seats,                                                                │ │
-│ │   lockedSeats,                                                          │ │
-│ │   existingProducers,                                                    │ │
-│ │ });                                                                     │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ 1. socket.join(roomId)                                                      │
+│ 2. BL-001: Promise.all([                                                    │
+│      roomManager.state.adjustParticipantCount(roomId, 1),                  │
+│      autoCloseService.recordActivity(roomId),                              │
+│      userSocketRepository.setUserRoom(userId, roomId)                      │
+│    ])                                                                       │
+│ 3. Fire-and-forget: laravelClient.updateRoomStatus() with .catch()         │
+│ 4. Broadcast: socket.to(roomId).emit("room:userJoined", {                  │
+│      userId, user: socket.data.user                                        │
+│    })                                                                       │
+│ 5. ACK: ack({ rtpCapabilities, participants, seats, lockedSeats,           │
+│      existingProducers })                                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -331,107 +228,78 @@ socket.on("room:join", async (rawPayload: unknown, ack) => {
 
 ## 4. State Transitions
 
-### ClientManager (In-Memory)
-
-| Property        | Before      | After  |
-| --------------- | ----------- | ------ |
-| `client.roomId` | `undefined` | `"42"` |
-
 ### Redis State
 
-| Key Pattern                  | Operation | TTL         |
-| ---------------------------- | --------- | ----------- |
-| `user:{userId}:room`         | SET       | None        |
-| `room:{roomId}:participants` | INCR      | None        |
-| `room:{roomId}:activity`     | SET       | 30s sliding |
+| Key Pattern                     | Before     | After                |
+| ------------------------------- | ---------- | -------------------- |
+| `room:{roomId}:state`           | N or count | participantCount + 1 |
+| `room:{roomId}:state.seatCount` | 15         | payload.seatCount    |
+| `user:{userId}:room`            | null       | roomId               |
+| `room:{roomId}:activity`        | any        | updated timestamp    |
 
-### Socket.IO Rooms
+### In-Memory State
 
-| Room     | Action                |
-| -------- | --------------------- |
-| `roomId` | `socket.join(roomId)` |
+| Component      | Before          | After                  |
+| -------------- | --------------- | ---------------------- |
+| ClientManager  | client.roomId=∅ | client.roomId=roomId   |
+| RoomManager    | may not exist   | router cluster created |
+| Socket.IO room | not joined      | joined                 |
 
 ---
 
 ## 5. Reusability Matrix
 
-| Component                           | File                            | Used By     | Reusable | Reasoning               |
-| ----------------------------------- | ------------------------------- | ----------- | -------- | ----------------------- |
-| `joinRoomSchema`                    | `socket/schemas.ts`             | `room:join` | ✅       | Reusable for validation |
-| `getParticipants()`                 | `room.handler.ts` (inline)      | `room:join` | ❌       | Event-specific helper   |
-| `getProducers()`                    | `room.handler.ts` (inline)      | `room:join` | ❌       | Event-specific helper   |
-| `RoomManager.getOrCreateRoom()`     | `room/roomManager.ts`           | Multiple    | ✅       | Core room lifecycle     |
-| `SeatRepository.getSeats()`         | `seat/seat.repository.ts`       | Multiple    | ✅       | Shared seat state       |
-| `AutoCloseService.recordActivity()` | `room/auto-close/`              | Multiple    | ✅       | Activity tracking       |
-| `LaravelClient.updateRoomStatus()`  | `integrations/laravelClient.ts` | Multiple    | ✅       | Laravel sync            |
+| Component Used         | Also Used By             |
+| ---------------------- | ------------------------ |
+| `roomManager`          | `room:leave`             |
+| `clientManager`        | All domain events        |
+| `seatRepository`       | All seat events          |
+| `autoCloseService`     | `room:leave`, chat, gift |
+| `userSocketRepository` | `room:leave`, gift       |
 
 ---
 
-## 6. Error Handling & Edge Cases
+## 6. Error Handling
 
-### Validation Errors
-
-| Error             | Condition        | Response                       |
-| ----------------- | ---------------- | ------------------------------ |
-| `Invalid payload` | Zod schema fails | `{ error: "Invalid payload" }` |
-
-### System Errors
-
-| Error            | Condition                  | Response                      |
-| ---------------- | -------------------------- | ----------------------------- |
-| `Internal error` | Any exception in try/catch | `{ error: "Internal error" }` |
-
-### Edge Cases
-
-| Scenario              | Behavior                                        |
-| --------------------- | ----------------------------------------------- |
-| Room doesn't exist    | Created on-the-fly via `getOrCreateRoom()`      |
-| Stale clients in room | Removed during `getParticipants()` verification |
-| User already in room  | No special handling (duplicate join allowed)    |
-| ownerId not provided  | No owner caching (may affect seat permissions)  |
-| No ack callback       | Events still processed, just no response        |
+| Error                   | Condition                  | Response                                  |
+| ----------------------- | -------------------------- | ----------------------------------------- |
+| `Invalid payload`       | Zod validation fails       | `ack({ error: "Invalid payload" })`       |
+| `Internal server error` | Any exception in try/catch | `ack({ error: "Internal server error" })` |
 
 ---
 
-## 7. Sequence Diagram (Textual)
+## 7. Sequence Diagram
 
 ```
- CLIENT          SOCKET.IO          HANDLER          ROOM_MANAGER      REDIS     LARAVEL
-   │                  │                  │                  │            │          │
-   │  room:join       │                  │                  │            │          │
-   │  {roomId, ownerId?}                 │                  │            │          │
-   │─────────────────▶│                  │                  │            │          │
-   │                  │ 1. dispatch      │                  │            │          │
-   │                  │─────────────────▶│                  │            │          │
-   │                  │                  │ 2. validate      │            │          │
-   │                  │                  │ (Zod schema)     │            │          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 3. getOrCreate   │            │          │
-   │                  │                  │─────────────────▶│            │          │
-   │                  │                  │◀─────────────────│ router     │          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 4. setUserRoom   │            │          │
-   │                  │                  │───────────────────────────────▶          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 5. getSeats/lockedSeats       │          │
-   │                  │                  │───────────────────────────────▶          │
-   │                  │                  │◀───────────────────────────────          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 6. socket.join   │            │          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 7. recordActivity│            │          │
-   │                  │                  │───────────────────────────────▶          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 8. adjustParticipantCount     │          │
-   │                  │                  │───────────────────────────────▶          │
-   │                  │                  │                  │            │          │
-   │                  │                  │ 9. updateRoomStatus           │          │
-   │                  │                  │──────────────────────────────────────────▶
-   │                  │                  │◀──────────────────────────────────────────
-   │                  │                  │                  │            │          │
-   │                  │ 10. room:userJoined (to room)       │            │          │
-   │                  │ 11. ack(state)   │                  │            │          │
-   │◀─────────────────│                  │                  │            │          │
+ CLIENT          SOCKET.IO          HANDLER          REDIS          LARAVEL
+   │                  │                  │              │              │
+   │  room:join       │                  │              │              │
+   │  {roomId,        │                  │              │              │
+   │   seatCount,     │                  │              │              │
+   │   ownerId?}      │                  │              │              │
+   │─────────────────▶│                  │              │              │
+   │                  │ 1. dispatch      │              │              │
+   │                  │─────────────────▶│              │              │
+   │                  │                  │ 2. validate  │              │
+   │                  │                  │ 3. getOrCreate│             │
+   │                  │                  │──────────────▶│              │
+   │                  │                  │◀──────────────│ cluster     │
+   │                  │                  │ 4. persist    │              │
+   │                  │                  │   seatCount   │              │
+   │                  │                  │──────────────▶│              │
+   │                  │                  │ 5. build      │              │
+   │                  │                  │   snapshot    │              │
+   │                  │                  │──────────────▶│ getSeats    │
+   │                  │                  │◀──────────────│              │
+   │                  │                  │ 6. join room  │              │
+   │                  │                  │ 7. Promise.all│              │
+   │                  │                  │──────────────▶│              │
+   │                  │                  │ 8. fire&forget│              │
+   │                  │                  │─────────────────────────────▶│
+   │                  │ room:userJoined  │              │              │
+   │                  │◀─────────────────│ (to others)  │              │
+   │  ACK (state)     │                  │              │              │
+   │◀─────────────────│                  │              │              │
 ```
 
 ---
@@ -443,111 +311,66 @@ socket.on("room:join", async (rawPayload: unknown, ack) => {
 ```typescript
 // composables/useRoom.ts
 const joinRoom = async (roomId: string, ownerId?: number) => {
-  const response = await socket.emitWithAck("room:join", { roomId, ownerId });
+  const response = await socket.emitWithAck("room:join", {
+    roomId,
+    ownerId,
+    seatCount: roomSeatCount.value, // from room config
+  });
 
-  if (response.error) {
-    throw new Error(response.error);
-  }
+  if ("error" in response) throw new Error(response.error);
 
-  // Store room state
-  rtpCapabilities.value = response.rtpCapabilities;
+  // Hydrate stores from response
   participants.value = response.participants;
-  seats.value = response.seats;
+  seats.value = response.seats; // { seatIndex, userId, isMuted }
   lockedSeats.value = response.lockedSeats;
   existingProducers.value = response.existingProducers;
-
-  return response;
+  rtpCapabilities.value = response.rtpCapabilities;
 };
+
+// Listen for new joiners
+socket.on("room:userJoined", ({ userId, user }) => {
+  participants.value.push(user);
+});
 ```
 
-### Laravel Integration
-
-| Endpoint                           | When Called     | Purpose                                  |
-| ---------------------------------- | --------------- | ---------------------------------------- |
-| `POST /internal/rooms/{id}/status` | After room join | Update `is_live` and `participant_count` |
-
-### Related Events
-
-| Event              | Relationship                  |
-| ------------------ | ----------------------------- |
-| `room:leave`       | Inverse operation             |
-| `room:userJoined`  | Broadcast after this          |
-| `room:userLeft`    | Broadcast when others leave   |
-| `transport:create` | Typically follows join        |
-| `seat:take`        | User takes seat after joining |
+> **Note on BL-007**: Seats in the `room:join` response contain only `userId`. Resolve full user data from the `participants` array by matching `userId`.
 
 ---
 
-## 9. Extension & Maintenance Notes
+## 9. Extension / Maintenance Notes
 
-### ✅ Where to Add New Features
-
-| Feature Type           | Location                                   |
-| ---------------------- | ------------------------------------------ |
-| New join payload field | `src/socket/schemas.ts` → `joinRoomSchema` |
-| New join validation    | Handler before `getOrCreateRoom()`         |
-| New state in response  | Add to `ack()` call (L196-202)             |
-| New broadcast data     | Add to `room:userJoined` emit (L178-181)   |
-
-### 📝 Modification Guide
-
-```typescript
-// To add a new field to join payload:
-// 1. Update src/socket/schemas.ts:
-export const joinRoomSchema = z.object({
-  roomId: z.string(),
-  ownerId: z.number().optional(),
-  newField: z.string().optional(), // Add here
-});
-
-// 2. Use in handler:
-const { roomId, ownerId, newField } = payloadResult.data;
-
-// 3. Process and include in ack if needed
-```
-
-### ⚠️ What Should NOT Be Modified Casually
-
-| Item                     | Reason                                |
-| ------------------------ | ------------------------------------- |
-| `rtpCapabilities` format | mediasoup client expects exact format |
-| `participants` structure | Frontend relies on exact field names  |
-| `seats` structure        | Must match `seat:updated` format      |
-| Schema field names       | Breaking change for clients           |
-
-### 🚨 Common Pitfalls
-
-| Pitfall           | Solution                                             |
-| ----------------- | ---------------------------------------------------- |
-| Stale client data | Handler already cleans up (L64-68)                   |
-| Missing ownerId   | Seat permissions may fail; ensure frontend sends     |
-| Large room state  | Consider pagination for rooms with many participants |
-
-### 📁 File Locations Quick Reference
-
-| Purpose        | File                                      |
-| -------------- | ----------------------------------------- |
-| Handler        | `src/domains/room/room.handler.ts:21-207` |
-| Schema         | `src/socket/schemas.ts:160-163`           |
-| RoomManager    | `src/domains/room/roomManager.ts`         |
-| SeatRepository | `src/domains/seat/seat.repository.ts`     |
-| Types          | `src/domains/room/types.ts`               |
+| Tag      | Note                                                                 |
+| -------- | -------------------------------------------------------------------- |
+| BL-001   | Redis ops parallelized via `Promise.all`, Laravel is fire-and-forget |
+| BL-002   | Single `getClientsInRoom()` call replaces multiple lookups           |
+| BL-003   | `seatCount` persisted to Redis when frontend sends non-default       |
+| BL-007   | Seat response uses `userId` only (not full user object)              |
+| BL-008   | `seatCount` added to Zod schema with default(15)                     |
+| PERF-006 | `setClientRoom()` updates room index atomically                      |
 
 ---
 
 ## 10. Document Metadata
 
-| Property               | Value                |
-| ---------------------- | -------------------- |
-| **Event**              | `room:join`          |
-| **Domain**             | Room                 |
-| **Direction**          | C→S                  |
-| **Author**             | System Documentation |
-| **Created**            | 2026-02-09           |
-| **Last Updated**       | 2026-02-09           |
-| **Node.js Version**    | ≥22.0.0              |
-| **TypeScript Version** | ^5.7.0               |
+| Property         | Value                              |
+| ---------------- | ---------------------------------- |
+| **Event**        | `room:join`                        |
+| **Domain**       | Room                               |
+| **Direction**    | C→S                                |
+| **Created**      | 2026-02-09                         |
+| **Last Updated** | 2026-02-12                         |
+| **Handler**      | `src/domains/room/room.handler.ts` |
+| **Schema**       | `src/socket/schemas.ts` (L160-165) |
+
+### Schema Change Log
+
+| Date       | Change                                                                   |
+| ---------- | ------------------------------------------------------------------------ |
+| 2026-02-11 | Added `seatCount` field (BL-008, default: 15)                            |
+| 2026-02-11 | Seats response changed from `user: MsabUser` → `userId: number` (BL-007) |
+| 2026-02-11 | Participants now include `phone`, `email`, `date_of_birth` fields        |
+| 2026-02-11 | `wealth_xp` / `charm_xp` type changed from `number` → `string`           |
 
 ---
 
-_Documentation generated following [MSAB Documentation Standard](../../DOCUMENTATION_STANDARD.md)_
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

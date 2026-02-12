@@ -19,12 +19,12 @@ Room owners can manage disruptive users by removing them from seats.
 
 ### Key Characteristics
 
-| Property                | Value                  |
-| ----------------------- | ---------------------- |
-| Requires Authentication | Yes (via middleware)   |
-| Has Acknowledgment      | Yes                    |
-| Broadcasts              | `seat:cleared` to room |
-| Requires Ownership      | Yes (room owner only)  |
+| Property                | Value                   |
+| ----------------------- | ----------------------- |
+| Requires Authentication | Yes (via middleware)    |
+| Has Acknowledgment      | Yes (via createHandler) |
+| Broadcasts              | `seat:cleared` to room  |
+| Requires Ownership      | Yes (room owner only)   |
 
 ---
 
@@ -33,13 +33,13 @@ Room owners can manage disruptive users by removing them from seats.
 ### 2.1 Client Payload (Input)
 
 **Schema**: `seatRemoveSchema`  
-**Source**: `src/domains/seat/seat.requests.ts:29-32`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,     // Room ID
-  userId: number      // Target user ID to remove (positive integer)
-}
+export const seatRemoveSchema = z.object({
+  roomId: roomIdSchema,
+  userId: z.number().int().positive(),
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -55,7 +55,7 @@ Room owners can manage disruptive users by removing them from seats.
 ```typescript
 {
   success: false,
-  error: "Invalid payload" | "Not room owner" | "User is not seated" | "Internal server error"
+  error: "INVALID_PAYLOAD" | "Not room owner" | "User is not seated" | "INTERNAL_ERROR"
 }
 ```
 
@@ -65,23 +65,35 @@ Room owners can manage disruptive users by removing them from seats.
 
 ```typescript
 {
-  seatIndex: number; // Index of cleared seat
-}
+  seatIndex: number;
+} // Index of the cleared seat
 ```
 
 ---
 
 ## 3. Event Execution Flow
 
+### 3.1 Entry Point
+
+```typescript
+export const removeSeatHandler = createHandler(
+  "seat:remove",
+  seatRemoveSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Execution
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Validate payload with seatRemoveSchema                                   │
+│ 1. createHandler validates payload + room membership                        │
 │ 2. Verify room ownership via verifyRoomOwner()                              │
 │ 3. Call seatRepository.removeSeat(roomId, userId)                           │
-│ 4. Broadcast seat:cleared to room                                           │
-│ 5. Return success                                                           │
+│ 4. Broadcast seat:cleared { seatIndex: result.seatIndex } to room          │
+│ 5. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,8 +101,22 @@ Room owners can manage disruptive users by removing them from seats.
 
 ## 4. Document Metadata
 
-| Property | Value                                              |
-| -------- | -------------------------------------------------- |
-| Created  | 2026-02-09                                         |
-| Handler  | `src/domains/seat/handlers/remove-seat.handler.ts` |
-| Schema   | `src/domains/seat/seat.requests.ts:29-32`          |
+| Property         | Value                                              |
+| ---------------- | -------------------------------------------------- |
+| **Event**        | `seat:remove`                                      |
+| **Domain**       | Seat                                               |
+| **Direction**    | C→S                                                |
+| **Created**      | 2026-02-09                                         |
+| **Last Updated** | 2026-02-12                                         |
+| **Handler**      | `src/domains/seat/handlers/remove-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                         |
+| ---------- | ---------------------------------------------- |
+| 2026-02-12 | Handler changed to `createHandler` pattern     |
+| 2026-02-12 | Schema source moved to `src/socket/schemas.ts` |
+
+---
+
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

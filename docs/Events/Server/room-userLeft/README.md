@@ -1,9 +1,9 @@
-# Event: `room:userLeft`
+# Broadcast Event: `room:userLeft`
 
 > **Domain**: Room  
 > **Direction**: Server → Clients (Broadcast)  
 > **Transport**: Socket.IO  
-> **Triggered By**: `room:leave`, disconnect
+> **Triggered By**: `room:leave` handler, disconnect cleanup
 
 ---
 
@@ -11,14 +11,15 @@
 
 ### Purpose
 
-Notifies all room members when a user leaves the room.
+Notifies all room members when a user leaves the room (explicitly or via disconnect).
 
 ### Key Characteristics
 
-| Property     | Value                                        |
-| ------------ | -------------------------------------------- |
-| Target       | All sockets in room                          |
-| Emitted From | `room.handler.ts:243`, `socket/index.ts:188` |
+| Property     | Value                                             |
+| ------------ | ------------------------------------------------- |
+| Target       | All sockets in room                               |
+| Emitted From | `room.handler.ts`, `socket/index.ts` (disconnect) |
+| Emitted Via  | `socket.to(roomId).emit()`                        |
 
 ---
 
@@ -34,7 +35,19 @@ Notifies all room members when a user leaves the room.
 
 ## 3. Document Metadata
 
-| Property | Value                                  |
-| -------- | -------------------------------------- |
-| Created  | 2026-02-09                             |
-| Source   | `src/domains/room/room.handler.ts:243` |
+| Property         | Value                                                     |
+| ---------------- | --------------------------------------------------------- |
+| **Event**        | `room:userLeft`                                           |
+| **Created**      | 2026-02-09                                                |
+| **Last Updated** | 2026-02-12                                                |
+| **Sources**      | `src/domains/room/room.handler.ts`, `src/socket/index.ts` |
+
+### Schema Change Log
+
+| Date       | Change                    |
+| ---------- | ------------------------- |
+| 2026-02-12 | Updated source references |
+
+---
+
+_Documentation generated following [MSAB Broadcast Template](../../../BROADCAST_TEMPLATE.md)_

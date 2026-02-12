@@ -15,14 +15,14 @@ Completes the WebRTC transport handshake by connecting a previously created tran
 
 ### Business Context
 
-After creating a transport via `transport:create`, the client must connect it before producing or consuming media. This event exchanges DTLS parameters to establish the secure WebRTC connection.
+After `transport:create`, the client must connect the transport before producing or consuming media. This exchanges DTLS parameters to establish the secure WebRTC connection.
 
 ### Key Characteristics
 
 | Property                | Value                                    |
 | ----------------------- | ---------------------------------------- |
 | Requires Authentication | Yes (via middleware)                     |
-| Has Acknowledgment      | Yes                                      |
+| Has Acknowledgment      | Yes (via createHandler)                  |
 | Broadcasts              | No                                       |
 | Modifies State          | Transport state (connecting → connected) |
 | Prerequisite            | `transport:create` must be called first  |
@@ -34,20 +34,14 @@ After creating a transport via `transport:create`, the client must connect it be
 ### 2.1 Client Payload (Input)
 
 **Schema**: `transportConnectSchema`  
-**Source**: `src/socket/schemas.ts:134-138`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,        // Room ID (1-255 chars, must be joined)
-  transportId: string,   // UUID of transport from transport:create
-  dtlsParameters: {
-    role?: "auto" | "client" | "server",
-    fingerprints: Array<{
-      algorithm: string,  // e.g., "sha-256"
-      value: string
-    }>
-  }
-}
+export const transportConnectSchema = z.object({
+  roomId: roomIdSchema,
+  transportId: z.string(),
+  dtlsParameters: z.any(), // mediasoup DtlsParameters (complex nested object)
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
@@ -62,7 +56,8 @@ After creating a transport via `transport:create`, the client must connect it be
 
 ```typescript
 {
-  error: "Invalid payload" | "Transport not found" | "Connect failed";
+  success: false,
+  error: "INVALID_PAYLOAD" | "Transport not found" | "INTERNAL_ERROR"
 }
 ```
 
@@ -72,159 +67,48 @@ After creating a transport via `transport:create`, the client must connect it be
 
 ### 3.1 Entry Point
 
-```
-File: src/domains/media/media.handler.ts:62
-```
-
 ```typescript
-socket.on("transport:connect", async (rawPayload: unknown, callback) => {
-  // Handler logic
-});
+const transportConnectHandler = createHandler(
+  "transport:connect",
+  transportConnectSchema,
+  async (payload, _socket, context) => { ... }
+);
 ```
 
-### 3.2 Schema Validation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SCHEMA VALIDATION                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:63-67                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const payloadResult = transportConnectSchema.safeParse(rawPayload);     │ │
-│ │ if (!payloadResult.success) {                                           │ │
-│ │   if (callback) callback({ error: "Invalid payload" });                 │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.3 Transport Lookup
+### 3.2 Execution
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ GET TRANSPORT                                                               │
+│ EXECUTION FLOW                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:70-75                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const routerMgr = await roomManager.getRoom(roomId);                    │ │
-│ │ const transport = routerMgr?.getTransport(transportId);                 │ │
-│ │                                                                         │ │
-│ │ if (!transport) {                                                       │ │
-│ │   if (callback) callback({ error: "Transport not found" });             │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.4 Transport Connection
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ CONNECT WITH DTLS                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:78-81                              │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ await transport.connect({                                               │ │
-│ │   dtlsParameters: dtlsParameters as mediasoup.types.DtlsParameters,     │ │
-│ │ });                                                                     │ │
-│ │ if (callback) callback({ success: true });                              │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ 1. createHandler validates payload + room membership                        │
+│ 2. Look up room cluster and transport via cluster.getTransport(transportId)│
+│ 3. If not found → { success: false, error: "Transport not found" }         │
+│ 4. Call transport.connect({ dtlsParameters })                               │
+│ 5. Return { success: true }                                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. State Transitions
+## 4. Document Metadata
 
-### Transport State
+| Property         | Value                                |
+| ---------------- | ------------------------------------ |
+| **Event**        | `transport:connect`                  |
+| **Domain**       | Media                                |
+| **Direction**    | C→S                                  |
+| **Created**      | 2026-02-09                           |
+| **Last Updated** | 2026-02-12                           |
+| **Handler**      | `src/domains/media/media.handler.ts` |
 
-| State           | Before | After                      |
-| --------------- | ------ | -------------------------- |
-| dtlsState       | "new"  | "connecting" → "connected" |
-| connectionState | "new"  | "connected"                |
+### Schema Change Log
 
----
-
-## 5. Reusability Matrix
-
-| Component                  | Used For                                   |
-| -------------------------- | ------------------------------------------ |
-| `transportConnectSchema`   | Validates DTLS parameters and transport ID |
-| `roomManager.getRoom()`    | Retrieves RouterManager by room ID         |
-| `routerMgr.getTransport()` | Retrieves WebRTC transport by ID           |
-
----
-
-## 6. Error Handling
-
-| Error                 | Cause                           | Response                                |
-| --------------------- | ------------------------------- | --------------------------------------- |
-| `Invalid payload`     | Schema validation fails         | Return error, no state change           |
-| `Transport not found` | Room or transport doesn't exist | Return error                            |
-| `Connect failed`      | DTLS handshake error            | Return error, transport may be unusable |
+| Date       | Change                                               |
+| ---------- | ---------------------------------------------------- |
+| 2026-02-12 | Handler migrated to `createHandler` pattern (CQ-001) |
+| 2026-02-12 | ACK response wrapped in `{ success }` envelope       |
 
 ---
 
-## 7. Sequence Diagram
-
-```
-Client                    MSAB                      Mediasoup
-   │                        │                           │
-   │──transport:connect────▶│                           │
-   │   {roomId,             │                           │
-   │    transportId,        │                           │
-   │    dtlsParameters}     │                           │
-   │                        │                           │
-   │                        │──transport.connect()─────▶│
-   │                        │   (DTLS handshake)        │
-   │                        │                           │
-   │                        │◀──connection established──│
-   │                        │                           │
-   │◀──{success: true}──────│                           │
-   │                        │                           │
-```
-
----
-
-## 8. Cross-Platform Integration
-
-### Frontend (Nuxt)
-
-- Call after `transport:create` returns transport parameters
-- Pass DTLS parameters from `device.createSendTransport()` or `device.createRecvTransport()`
-- Must complete before `audio:produce` or `audio:consume`
-
-### WebRTC Flow
-
-```
-1. transport:create → Get server transport params
-2. device.createSendTransport(params) → Local transport
-3. transport.on('connect', ({dtlsParameters}, callback) => {
-     socket.emit('transport:connect', {...}, callback);
-   });
-4. transport.produce() or transport.consume()
-```
-
----
-
-## 9. Extension & Maintenance Notes
-
-- Transport connection is **idempotent** - calling twice on same transport is safe
-- DTLS handshake timeout handled by mediasoup internally
-- Consider adding connection state tracking in ClientManager for debugging
-
----
-
-## 10. Document Metadata
-
-| Property | Value                                |
-| -------- | ------------------------------------ |
-| Created  | 2026-02-09                           |
-| Handler  | `src/domains/media/media.handler.ts` |
-| Lines    | 62-86                                |
-| Schema   | `src/socket/schemas.ts:134-138`      |
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

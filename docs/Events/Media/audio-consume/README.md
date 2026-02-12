@@ -3,7 +3,7 @@
 > **Domain**: Media  
 > **Direction**: Client → Server  
 > **Transport**: Socket.IO with Acknowledgment  
-> **Related Events**: `audio:produce`, `audio:newProducer`, `consumer:resume`
+> **Related Events**: `audio:produce`, `audio:newProducer` (trigger), `consumer:resume` (next step)
 
 ---
 
@@ -15,17 +15,17 @@ Creates a consumer to receive audio from a specific producer, enabling a client 
 
 ### Business Context
 
-When a speaker produces audio via `audio:produce`, listeners need to consume that audio. This event creates a mediasoup consumer that receives the RTP stream and returns the parameters needed for the client to play the audio.
+When a speaker produces audio via `audio:produce`, listeners receive `audio:newProducer` and call this event to create a consumer. The consumer starts **paused** — the client must call `consumer:resume` after setting up local playback.
 
 ### Key Characteristics
 
-| Property                | Value                             |
-| ----------------------- | --------------------------------- |
-| Requires Authentication | Yes (via middleware)              |
-| Has Acknowledgment      | Yes                               |
-| Broadcasts              | No                                |
-| Modifies State          | Creates Consumer in RouterManager |
-| Prerequisite            | Connected consumer transport      |
+| Property                | Value                                      |
+| ----------------------- | ------------------------------------------ |
+| Requires Authentication | Yes (via middleware)                       |
+| Has Acknowledgment      | Yes (via createHandler)                    |
+| Broadcasts              | No                                         |
+| Consumer State          | Created paused (requires consumer:resume)  |
+| Multi-Router            | Uses cluster.consume() for piped producers |
 
 ---
 
@@ -34,32 +34,27 @@ When a speaker produces audio via `audio:produce`, listeners need to consume tha
 ### 2.1 Client Payload (Input)
 
 **Schema**: `audioConsumeSchema`  
-**Source**: `src/socket/schemas.ts:147-152`
+**Source**: `src/socket/schemas.ts`
 
 ```typescript
-{
-  roomId: string,           // Room ID (1-255 chars)
-  transportId: string,      // UUID of consumer transport
-  producerId: string,       // UUID of producer to consume
-  rtpCapabilities: {        // Client's RTP capabilities
-    codecs: RtpCodecCapability[],
-    headerExtensions?: RtpHeaderExtension[]
-  }
-}
+export const audioConsumeSchema = z.object({
+  roomId: roomIdSchema,
+  transportId: z.string(),
+  producerId: z.string(),
+  rtpCapabilities: z.any(), // mediasoup RtpCapabilities
+});
 ```
 
 ### 2.2 Acknowledgment (Success)
 
 ```typescript
 {
-  id: string,               // Consumer UUID
-  producerId: string,       // Producer being consumed
-  kind: "audio",            // Media kind
-  rtpParameters: {          // For client to receive media
-    codecs: RtpCodecParameters[],
-    headerExtensions?: RtpHeaderExtension[],
-    encodings?: RtpEncodingParameters[],
-    rtcp?: RtcpParameters
+  success: true,
+  data: {
+    id: string,              // Consumer UUID
+    producerId: string,      // Producer being consumed
+    kind: "audio",
+    rtpParameters: RtpParameters
   }
 }
 ```
@@ -68,11 +63,8 @@ When a speaker produces audio via `audio:produce`, listeners need to consume tha
 
 ```typescript
 {
-  error: "Invalid payload" |
-    "Room not found" |
-    "Transport not found" |
-    "Cannot consume" |
-    "Consume failed";
+  success: false,
+  error: "INVALID_PAYLOAD" | "Room not found" | "Cannot consume" | "INTERNAL_ERROR"
 }
 ```
 
@@ -82,233 +74,63 @@ When a speaker produces audio via `audio:produce`, listeners need to consume tha
 
 ### 3.1 Entry Point
 
+```typescript
+const audioConsumeHandler = createHandler(
+  "audio:consume",
+  audioConsumeSchema,
+  async (payload, _socket, context) => { ... }
+);
 ```
-File: src/domains/media/media.handler.ts:156
+
+### 3.2 Execution
+
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EXECUTION FLOW                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. createHandler validates payload + room membership                        │
+│ 2. Look up room cluster via roomManager.getRoom(roomId)                    │
+│ 3. Check codec compatibility via cluster.canConsume(producerId, rtpCaps)    │
+│ 4. Create consumer via cluster.consume(transportId, producerId, rtpCaps)   │
+│    → cluster resolves piped producer ID from distribution router            │
+│ 5. Return { success: true, data: { id, producerId, kind, rtpParameters } } │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Multi-Router Cluster Piping
+
+Unlike the old single-router approach, `cluster.consume()` resolves the correct piped producer ID on the distribution router where the consumer transport lives:
 
 ```typescript
-socket.on("audio:consume", async (rawPayload: unknown, callback) => {
-  // Handler logic
-});
-```
-
-### 3.2 Schema Validation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SCHEMA VALIDATION                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:157-162                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const payloadResult = audioConsumeSchema.safeParse(rawPayload);         │ │
-│ │ if (!payloadResult.success) {                                           │ │
-│ │   if (callback) callback({ error: "Invalid payload" });                 │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.3 Room & Transport Lookup
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ VALIDATE ROOM AND TRANSPORT                                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:166-175                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const routerMgr = await roomManager.getRoom(roomId);                    │ │
-│ │ if (!routerMgr || !routerMgr.router) {                                  │ │
-│ │   if (callback) callback({ error: "Room not found" });                  │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ │                                                                         │ │
-│ │ const transport = routerMgr.getTransport(transportId);                  │ │
-│ │ if (!transport) {                                                       │ │
-│ │   if (callback) callback({ error: "Transport not found" });             │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.4 Capability Check
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ CAN CONSUME CHECK                                                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:177-181                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ if (!routerMgr.router.canConsume({                                      │ │
-│ │   producerId,                                                           │ │
-│ │   rtpCapabilities                                                       │ │
-│ │ })) {                                                                   │ │
-│ │   if (callback) callback({ error: "Cannot consume" });                  │ │
-│ │   return;                                                               │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.5 Consumer Creation
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ CREATE CONSUMER (PAUSED)                                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:184-189                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ const consumer = await transport.consume({                              │ │
-│ │   producerId,                                                           │ │
-│ │   rtpCapabilities,                                                      │ │
-│ │   paused: true, // Start paused (recommended)                           │ │
-│ │ });                                                                     │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.6 Event Handlers & Registration
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ SETUP CLEANUP & REGISTER                                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/media/media.handler.ts:191-197                            │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ consumer.on("transportclose", () => consumer.close());                  │ │
-│ │ consumer.on("producerclose", () => consumer.close());                   │ │
-│ │                                                                         │ │
-│ │ if (routerMgr) {                                                        │ │
-│ │   routerMgr.registerConsumer(consumer);                                 │ │
-│ │ }                                                                       │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+const consumer = await cluster.consume(
+  transportId,
+  producerId,
+  rtpCapabilities as mediasoup.types.RtpCapabilities,
+);
 ```
 
 ---
 
-## 4. State Transitions
+## 4. Document Metadata
 
-### RouterManager State
+| Property         | Value                                |
+| ---------------- | ------------------------------------ |
+| **Event**        | `audio:consume`                      |
+| **Domain**       | Media                                |
+| **Direction**    | C→S                                  |
+| **Created**      | 2026-02-09                           |
+| **Last Updated** | 2026-02-12                           |
+| **Handler**      | `src/domains/media/media.handler.ts` |
 
-| Property      | Before   | After               |
-| ------------- | -------- | ------------------- |
-| consumers map | No entry | Consumer registered |
+### Schema Change Log
 
-### Consumer State
-
-| Property | Value            |
-| -------- | ---------------- |
-| paused   | true (initially) |
-| kind     | "audio"          |
-
----
-
-## 5. Reusability Matrix
-
-| Component             | Used For                     |
-| --------------------- | ---------------------------- |
-| `audioConsumeSchema`  | Validates consume request    |
-| `router.canConsume()` | Checks codec compatibility   |
-| `transport.consume()` | Creates mediasoup consumer   |
-| `registerConsumer()`  | Tracks for `consumer:resume` |
+| Date       | Change                                               |
+| ---------- | ---------------------------------------------------- |
+| 2026-02-12 | Handler migrated to `createHandler` pattern (CQ-001) |
+| 2026-02-12 | Consume flow uses `cluster.consume()` (multi-router) |
+| 2026-02-12 | `canConsume()` now called on cluster, not raw router |
+| 2026-02-12 | ACK response wrapped in `{ success, data }` envelope |
 
 ---
 
-## 6. Error Handling
-
-| Error                 | Cause                           | Response     |
-| --------------------- | ------------------------------- | ------------ |
-| `Invalid payload`     | Schema validation fails         | Return error |
-| `Room not found`      | Room doesn't exist or no router | Return error |
-| `Transport not found` | Transport ID invalid            | Return error |
-| `Cannot consume`      | Codec incompatibility           | Return error |
-| `Consume failed`      | Internal mediasoup error        | Return error |
-
----
-
-## 7. Sequence Diagram
-
-```
-Client                    MSAB                      Mediasoup
-   │                        │                           │
-   │                        │◀──audio:newProducer──────│
-   │◀──audio:newProducer────│   (from other client)    │
-   │   {producerId, userId} │                           │
-   │                        │                           │
-   │──audio:consume────────▶│                           │
-   │   {transportId,        │                           │
-   │    producerId,         │                           │
-   │    rtpCapabilities}    │                           │
-   │                        │                           │
-   │                        │──router.canConsume()─────▶│
-   │                        │◀─────────true─────────────│
-   │                        │                           │
-   │                        │──transport.consume()─────▶│
-   │                        │◀──consumer (paused)───────│
-   │                        │                           │
-   │◀──{id, rtpParameters}──│                           │
-   │                        │                           │
-   │──consumer:resume──────▶│                           │
-   │   (to start playback)  │                           │
-```
-
----
-
-## 8. Cross-Platform Integration
-
-### Frontend Flow
-
-```javascript
-// 1. Listen for new producers
-socket.on("audio:newProducer", async ({ producerId, userId }) => {
-  // 2. Create consumer for this producer
-  const { id, rtpParameters } = await socket.emitWithAck("audio:consume", {
-    roomId,
-    transportId: recvTransport.id,
-    producerId,
-    rtpCapabilities: device.rtpCapabilities,
-  });
-
-  // 3. Add track to transport
-  const consumer = await recvTransport.consume({
-    id,
-    producerId,
-    kind: "audio",
-    rtpParameters,
-  });
-
-  // 4. Resume to start receiving
-  await socket.emitWithAck("consumer:resume", { roomId, consumerId: id });
-
-  // 5. Play audio
-  const audioElement = new Audio();
-  audioElement.srcObject = new MediaStream([consumer.track]);
-  audioElement.play();
-});
-```
-
----
-
-## 9. Extension & Maintenance Notes
-
-- Consumer starts **paused** by design - client must call `consumer:resume`
-- `producerclose` event auto-closes consumer when speaker stops
-- Consumer ID needed for `consumer:resume` - client must store it
-
----
-
-## 10. Document Metadata
-
-| Property | Value                                |
-| -------- | ------------------------------------ |
-| Created  | 2026-02-09                           |
-| Handler  | `src/domains/media/media.handler.ts` |
-| Lines    | 156-208                              |
-| Schema   | `src/socket/schemas.ts:147-152`      |
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_

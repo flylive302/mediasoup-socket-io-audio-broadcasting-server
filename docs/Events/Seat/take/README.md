@@ -56,7 +56,7 @@ Acknowledgment: ✅ Required
 // src/domains/seat/seat.requests.ts (mirrors socket/schemas.ts:209-212)
 export const seatTakeSchema = z.object({
   roomId: roomIdSchema,
-  seatIndex: z.number().int().min(0).max(14), // 0-14 for 15 seats
+  seatIndex: z.number().int().min(0).max(99), // Dynamic max validated by seatCount
 });
 ```
 
@@ -74,7 +74,7 @@ export const seatTakeSchema = z.object({
 | Field       | Type     | Required | Constraints | Example |
 | ----------- | -------- | -------- | ----------- | ------- |
 | `roomId`    | `string` | ✅       | min 1 char  | `"42"`  |
-| `seatIndex` | `number` | ✅       | 0-14        | `3`     |
+| `seatIndex` | `number` | ✅       | 0-99        | `3`     |
 
 ### Acknowledgment Response
 
@@ -98,18 +98,24 @@ export const seatTakeSchema = z.object({
 
 ### 3.1 Entry Point
 
-```
-File: src/domains/seat/handlers/take-seat.handler.ts:13
-```
-
-### 3.2 Schema Validation
-
 ```typescript
-const parseResult = seatTakeSchema.safeParse(rawPayload);
-if (!parseResult.success) {
-  if (callback) callback({ success: false, error: "Invalid payload" });
-  return;
-}
+// Uses createHandler wrapper — validation, room membership, and ACK handled automatically
+export const takeSeatHandler = createHandler(
+  "seat:take",
+  seatTakeSchema,
+  async (payload, socket, context) => { ... }
+);
+```
+
+### 3.2 Per-Room Seat Count Lookup
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ SEAT-009: DYNAMIC SEAT COUNT                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Reads actual per-room seatCount from room state (not hardcoded).           │
+│ Falls back to config.DEFAULT_SEAT_COUNT if state unavailable.              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.3 Atomic Seat Claim
@@ -139,21 +145,28 @@ if (!parseResult.success) {
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ BROADCAST SEAT UPDATE                                                       │
+│ BROADCAST SEAT UPDATE (BL-007: userId only)                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ File: src/domains/seat/handlers/take-seat.handler.ts:42-62                  │
+│ File: take-seat.handler.ts:35-39                                            │
 │                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ socket.to(roomId).emit("seat:updated", {                                │ │
-│ │   seatIndex,                                                            │ │
-│ │   user: {                                                               │ │
-│ │     id, name, avatar, signature, frame, gender,                         │ │
-│ │     country, phone, email, date_of_birth,                               │ │
-│ │     wealth_xp, charm_xp                                                 │ │
-│ │   },                                                                    │ │
-│ │   isMuted: false,                                                       │ │
-│ │ });                                                                     │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ socket.to(roomId).emit("seat:updated", {                                    │
+│   seatIndex,                                                                │
+│   userId: socket.data.user.id,                                              │
+│   isMuted: false,                                                           │
+│ });                                                                         │
+│                                                                             │
+│ NOTE: userId only — frontend resolves full user from participants list.    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.5 Record Activity
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ BL-001: RECORD AUTO-CLOSE ACTIVITY                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ context.autoCloseService.recordActivity(roomId).catch(() => {});            │
+│ Fire-and-forget — prevents auto-close during seat actions.                  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -218,13 +231,24 @@ socket.on("seat:updated", (update) => {
 
 ## 8. Document Metadata
 
-| Property      | Value       |
-| ------------- | ----------- |
-| **Event**     | `seat:take` |
-| **Domain**    | Seat        |
-| **Direction** | C→S         |
-| **Created**   | 2026-02-09  |
+| Property         | Value                                            |
+| ---------------- | ------------------------------------------------ |
+| **Event**        | `seat:take`                                      |
+| **Domain**       | Seat                                             |
+| **Direction**    | C→S                                              |
+| **Created**      | 2026-02-09                                       |
+| **Last Updated** | 2026-02-12                                       |
+| **Handler**      | `src/domains/seat/handlers/take-seat.handler.ts` |
+
+### Schema Change Log
+
+| Date       | Change                                                   |
+| ---------- | -------------------------------------------------------- |
+| 2026-02-12 | `seat:updated` broadcast changed to userId-only (BL-007) |
+| 2026-02-12 | Handler changed to `createHandler` pattern               |
+| 2026-02-12 | Per-room seatCount lookup from state (SEAT-009)          |
+| 2026-02-12 | Added `autoCloseService.recordActivity()` (BL-001)       |
 
 ---
 
-_Documentation generated following [MSAB Documentation Standard](../../DOCUMENTATION_STANDARD.md)_
+_Documentation generated following [MSAB Documentation Standard](../../../DOCUMENTATION_STANDARD.md)_
