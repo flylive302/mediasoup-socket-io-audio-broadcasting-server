@@ -175,7 +175,7 @@ export const leaveRoomSchema = z.object({
 export const chatMessageSchema = z.object({
   roomId: roomIdSchema,
   content: z.string().min(1).max(500), // Max length
-  type: z.string().optional(),
+  type: z.enum(["text", "emoji", "sticker", "gift", "system"]).default("text"),
 });
 
 // ─────────────────────────────────────────────────────────────────

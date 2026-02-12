@@ -14,7 +14,7 @@ export type DomainRegistration = (socket: Socket, ctx: AppContext) => void;
 import { registerSeatHandlers } from "./seat/index.js";
 import { roomHandler } from "./room/room.handler.js";
 import { mediaHandler } from "./media/media.handler.js";
-import { chatHandler } from "./chat/chat.handler.js";
+import { chatHandler } from "./chat/index.js";
 import { userHandler } from "./user/user.handler.js";
 
 /**

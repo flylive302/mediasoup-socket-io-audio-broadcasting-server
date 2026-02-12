@@ -12,9 +12,14 @@ const handleChatMessage = createHandler(
   async (payload, socket, context) => {
     const userId = socket.data.user.id;
 
+    // CF-001: Verify sender belongs to this room (O(1) Set lookup, zero Redis cost)
+    if (!socket.rooms.has(payload.roomId)) {
+      return { success: false, error: "Not in room" };
+    }
+
     // Rate limit check FIRST (cheap Redis op should run before handler logic)
     const allowed = await context.rateLimiter.isAllowed(
-      `chat:${userId}`,
+      `chat:${userId}:${payload.roomId}`,
       config.RATE_LIMIT_MESSAGES_PER_MINUTE,
       60,
     );
@@ -25,19 +30,21 @@ const handleChatMessage = createHandler(
 
     const message = {
       id: randomUUID(),
-      userId: socket.data.user.id,
+      userId,
       userName: socket.data.user.name,
       avatar: socket.data.user.avatar,
       content: payload.content,
-      type: payload.type || "text",
+      type: payload.type,
       timestamp: Date.now(),
     };
 
     // Emit to everyone in room INCLUDING sender (simplifies frontend state sync)
-    socket.nsp.to(payload.roomId).emit("chat:message", message);
+    socket.nsp.in(payload.roomId).emit("chat:message", message);
 
     // BL-001 FIX: Record room activity to prevent auto-close during active chat
-    context.autoCloseService.recordActivity(payload.roomId).catch(() => {});
+    context.autoCloseService.recordActivity(payload.roomId).catch((err) => {
+      logger.debug({ err, roomId: payload.roomId }, "recordActivity failed");
+    });
 
     logger.debug(
       { roomId: payload.roomId, userId: message.userId },

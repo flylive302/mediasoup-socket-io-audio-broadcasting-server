@@ -34,6 +34,24 @@ describe("Message Schemas", () => {
     const result = chatMessageSchema.safeParse(payload);
     expect(result.success).toBe(false);
   });
+
+  it("defaults type to 'text' when omitted", () => {
+    const result = chatMessageSchema.safeParse({
+      roomId: "123",
+      content: "hi",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.type).toBe("text");
+  });
+
+  it("rejects invalid chat message type", () => {
+    const result = chatMessageSchema.safeParse({
+      roomId: "123",
+      content: "hi",
+      type: "html",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("Transport Schemas", () => {
