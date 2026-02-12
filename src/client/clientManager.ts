@@ -97,6 +97,14 @@ export class ClientManager {
       if (roomSet.size === 0) this.roomClients.delete(client.roomId);
     }
     delete client.roomId;
+
+    // Reset mediasoup tracking — old transports/producers/consumers belong to
+    // the previous room session. Without this, transport:create rejects with
+    // "Transport limit reached" when the user rejoins.
+    client.transports.clear();
+    client.producers.clear();
+    client.consumers.clear();
+    client.isSpeaker = false;
   }
 
   /**

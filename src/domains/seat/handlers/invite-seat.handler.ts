@@ -27,11 +27,20 @@ export const inviteSeatHandler = createHandler(
       return { success: false, error: authorization.error };
     }
 
-    // Note: Locked seats can now be invited to - will auto-unlock when user accepts
+    const targetUserIdStr = String(targetUserId);
 
-    // Check if seat is occupied (using Redis)
-    const seat = await context.seatRepository.getSeat(roomId, seatIndex);
-    if (seat?.userId) {
+    // SEAT-011: Check if target user is already seated (anywhere in this room)
+    const existingSeat = await context.seatRepository.getUserSeat(
+      roomId,
+      targetUserIdStr,
+    );
+    if (existingSeat !== null) {
+      return { success: false, error: Errors.SEAT_TAKEN };
+    }
+
+    // Check if the target seat itself is occupied (by anyone)
+    const seatData = await context.seatRepository.getSeatOccupant(roomId, seatIndex);
+    if (seatData) {
       return { success: false, error: Errors.SEAT_OCCUPIED };
     }
 
@@ -43,8 +52,6 @@ export const inviteSeatHandler = createHandler(
     if (existingInvite) {
       return { success: false, error: Errors.INVITE_PENDING };
     }
-
-    const targetUserIdStr = String(targetUserId);
 
     // Create invite with TTL in Redis (no setTimeout needed - Redis handles expiry)
     const success = await context.seatRepository.createInvite(

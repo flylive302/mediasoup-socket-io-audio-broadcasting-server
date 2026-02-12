@@ -60,12 +60,13 @@ describe("SeatRepository", () => {
 
   describe("constructor", () => {
     it("registers all Lua scripts via defineCommand", () => {
-      expect(redis.defineCommand).toHaveBeenCalledWith("seatTake", expect.objectContaining({ numberOfKeys: 2 }));
-      expect(redis.defineCommand).toHaveBeenCalledWith("seatLeave", expect.objectContaining({ numberOfKeys: 1 }));
-      expect(redis.defineCommand).toHaveBeenCalledWith("seatAssign", expect.objectContaining({ numberOfKeys: 2 }));
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatTake", expect.objectContaining({ numberOfKeys: 3 }));
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatLeave", expect.objectContaining({ numberOfKeys: 2 }));
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatAssign", expect.objectContaining({ numberOfKeys: 3 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatSetMute", expect.objectContaining({ numberOfKeys: 1 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatLock", expect.objectContaining({ numberOfKeys: 2 }));
-      expect(redis.defineCommand).toHaveBeenCalledTimes(5);
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatUnlock", expect.objectContaining({ numberOfKeys: 1 }));
+      expect(redis.defineCommand).toHaveBeenCalledTimes(6);
     });
   });
 
@@ -93,11 +94,12 @@ describe("SeatRepository", () => {
       await repo.takeSeat("room1", "user42", 3, 15);
 
       expect(redis.seatTake).toHaveBeenCalledWith(
-        "room:room1:seats",        // KEYS[1]
-        "room:room1:locked_seats", // KEYS[2]
-        "3",                       // ARGV[1] seatIndex
-        "user42",                  // ARGV[2] userId
-        "15",                      // ARGV[3] seatCount
+        "room:room1:seats",             // KEYS[1]
+        "room:room1:locked_seats",      // KEYS[2]
+        "room:room1:seat:user:user42",  // KEYS[3] reverse index
+        "3",                            // ARGV[1] seatIndex
+        "user42",                       // ARGV[2] userId
+        "15",                           // ARGV[3] seatCount
       );
     });
 
@@ -200,12 +202,16 @@ describe("SeatRepository", () => {
 
   describe("clearRoom (BL-009)", () => {
     it("deletes seats hash, locked set, invite and reverse index keys via pipeline", async () => {
-      // SCAN returns invite keys and user reverse index keys
+      // SCAN pattern 1: invite keys
       redis.scan
         .mockResolvedValueOnce(["0", [
           "room:room1:invite:0",
           "room:room1:invite:3",
           "room:room1:invite:user:user42",
+        ]])
+        // SCAN pattern 2: seat reverse index keys
+        .mockResolvedValueOnce(["0", [
+          "room:room1:seat:user:user42",
         ]]);
 
       const mockPipeline = {
@@ -216,17 +222,21 @@ describe("SeatRepository", () => {
 
       await repo.clearRoom("room1");
 
-      // Should delete: seats hash, locked set, 2 invite keys, 1 user key = 5 del calls
+      // Should delete: seats hash, locked set, 3 invite keys, 1 seat user key = 6 del calls
       expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:seats");
       expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:locked_seats");
       expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:invite:0");
       expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:invite:3");
       expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:invite:user:user42");
+      expect(mockPipeline.del).toHaveBeenCalledWith("room:room1:seat:user:user42");
       expect(mockPipeline.exec).toHaveBeenCalled();
     });
 
-    it("handles empty invite keys gracefully", async () => {
-      redis.scan.mockResolvedValueOnce(["0", []]);
+    it("handles empty keys gracefully", async () => {
+      // Both SCAN patterns return empty
+      redis.scan
+        .mockResolvedValueOnce(["0", []])
+        .mockResolvedValueOnce(["0", []]);
 
       const mockPipeline = {
         del: vi.fn().mockReturnThis(),

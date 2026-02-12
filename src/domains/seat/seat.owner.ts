@@ -39,6 +39,16 @@ export function clearRoomOwner(roomId: string): void {
   roomOwnerCache.delete(roomId);
 }
 
+// SEAT-004 FIX: Periodic cache pruning — evict expired entries every 60s
+const CACHE_PRUNE_INTERVAL_MS = 60_000;
+const pruneInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [roomId, entry] of roomOwnerCache) {
+    if (entry.expiresAt <= now) roomOwnerCache.delete(roomId);
+  }
+}, CACHE_PRUNE_INTERVAL_MS);
+pruneInterval.unref(); // Don't block process exit
+
 // ============== Owner Verification ==============
 
 /**
@@ -117,9 +127,24 @@ async function withAuthCheck(
 }
 
 // ============== Public Verification Functions ==============
+//
+// SEAT-012: Auth Policy Documentation
+// Two tiers of authorization are intentionally maintained:
+//
+// 1. verifyRoomOwner (strict) — Owner-only actions:
+//    - assign-seat
+//    - These alter the room's seating arrangement and should only be done by the room creator.
+//
+// 2. verifyRoomManager (permissive) — Owner OR Admin actions:
+//    - lock-seat, unlock-seat, mute, unmute, invite, remove-seat
+//    - These are moderation actions that admins should also be able to perform.
+//
+// Do NOT merge these into a single function. The distinction is a deliberate
+// security boundary. If a new handler is added, decide which tier it belongs to.
 
 /**
- * Verify that a user is the room owner
+ * Verify that a user is the room owner (strict tier).
+ * Used for structural actions: lock/unlock/assign seats.
  */
 export function verifyRoomOwner(
   roomId: string,
@@ -138,7 +163,8 @@ export function verifyRoomOwner(
 }
 
 /**
- * Verify that a user can manage the room (owner OR admin)
+ * Verify that a user can manage the room — owner OR admin (permissive tier).
+ * Used for moderation actions: mute/unmute/invite/remove.
  * More permissive than verifyRoomOwner — allows admins to perform actions.
  */
 export function verifyRoomManager(

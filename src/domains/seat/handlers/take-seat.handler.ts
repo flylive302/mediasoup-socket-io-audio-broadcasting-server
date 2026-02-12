@@ -13,12 +13,16 @@ export const takeSeatHandler = createHandler(
     const userId = String(socket.data.user.id);
     const { roomId, seatIndex } = payload;
 
+    // SEAT-009: Use actual per-room seatCount from state
+    const roomState = await context.roomManager.state.get(roomId);
+    const seatCount = roomState?.seatCount ?? config.DEFAULT_SEAT_COUNT;
+
     // Use atomic Redis operation for horizontal scaling safety
     const result = await context.seatRepository.takeSeat(
       roomId,
       userId,
       seatIndex,
-      config.DEFAULT_SEAT_COUNT,
+      seatCount,
     );
 
     if (!result.success) {

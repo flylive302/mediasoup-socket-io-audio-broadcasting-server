@@ -5,7 +5,7 @@ import { seatLockSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
-import { Errors } from "@src/shared/errors.js";
+
 
 
 export const unlockSeatHandler = createHandler(
@@ -20,17 +20,11 @@ export const unlockSeatHandler = createHandler(
       return { success: false, error: authorization.error };
     }
 
-    // Check if not locked (using Redis)
-    const isLocked = await context.seatRepository.isSeatLocked(
-      roomId,
-      seatIndex,
-    );
-    if (!isLocked) {
-      return { success: false, error: Errors.SEAT_NOT_LOCKED };
+    // SEAT-002 FIX: Unlock is now fully atomic — no separate isSeatLocked pre-check
+    const result = await context.seatRepository.unlockSeat(roomId, seatIndex);
+    if (!result.success) {
+      return { success: false, error: result.error };
     }
-
-    // Unlock the seat (using Redis)
-    await context.seatRepository.unlockSeat(roomId, seatIndex);
 
     logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
 

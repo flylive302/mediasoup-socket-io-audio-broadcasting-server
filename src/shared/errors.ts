@@ -20,7 +20,7 @@ export const Errors = {
   SEAT_INVALID: "Invalid seat index",
   NOT_SEATED: "You are not seated",
   USER_NOT_SEATED: "User is not seated",
-  SEAT_UNAVAILABLE: "Seat is no longer available",
+
   MUTE_FAILED: "Failed to mute user",
   UNMUTE_FAILED: "Failed to unmute user",
 

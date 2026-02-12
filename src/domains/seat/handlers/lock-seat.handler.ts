@@ -5,7 +5,7 @@ import { seatLockSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
-import { Errors } from "@src/shared/errors.js";
+
 
 
 export const lockSeatHandler = createHandler(
@@ -20,20 +20,17 @@ export const lockSeatHandler = createHandler(
       return { success: false, error: authorization.error };
     }
 
-    // Check if already locked (using Redis)
-    const alreadyLocked = await context.seatRepository.isSeatLocked(
+    // SEAT-001 FIX: Lock is now fully atomic — no separate isSeatLocked pre-check
+    const lockResult = await context.seatRepository.lockSeat(
       roomId,
       seatIndex,
     );
-    if (alreadyLocked) {
-      return { success: false, error: Errors.SEAT_ALREADY_LOCKED };
+
+    if (!lockResult.success) {
+      return { success: false, error: lockResult.error };
     }
 
-    // Lock the seat (kicks occupant if any)
-    const { kicked } = await context.seatRepository.lockSeat(
-      roomId,
-      seatIndex,
-    );
+    const kicked = lockResult.kicked;
 
     // If someone was kicked, notify room and close their producer
     if (kicked) {

@@ -111,11 +111,11 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         }
       }
 
-      // Get seat state from Redis (parallel)
-      const [roomSeatsData, lockedSeats] = await Promise.all([
-        seatRepository.getSeats(roomId, seatCount),
-        seatRepository.getLockedSeats(roomId),
-      ]);
+      // SEAT-BONUS: getSeats already includes locked status — no separate Redis call needed
+      const roomSeatsData = await seatRepository.getSeats(roomId, seatCount);
+      const lockedSeats = roomSeatsData
+        .filter((s) => s.locked)
+        .map((s) => s.index);
 
       // BL-007 FIX: Send userId only — frontend has full user data in participants
       const seats: {

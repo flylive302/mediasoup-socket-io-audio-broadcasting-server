@@ -1,0 +1,382 @@
+{
+  "meta": {
+    "timestamp": "2026-02-12T04:07:00+05:00",
+    "auditRef": "docs/audits/2026-02-12-0407-seat-domain.md",
+    "commit": "a4db816"
+  },
+  "remediations": [
+    {
+      "issueId": "SEAT-001",
+      "severity": "CRITICAL",
+      "filesTouched": [
+        "src/domains/seat/seat.repository.ts",
+        "src/domains/seat/handlers/lock-seat.handler.ts"
+      ],
+      "patchSketch": "Move SISMEMBER check inside LOCK_SEAT_SCRIPT Lua; remove handler-level isSeatLocked() call",
+      "downstreamCallsites": [
+        "src/domains/seat/handlers/lock-seat.handler.ts:33 — lockSeatHandler"
+      ],
+      "runtimeRisk": "None — Lua SISMEMBER is O(1)",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "AI/Developer",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": [
+        "seat.repository.test.ts — lockSeat returns ALREADY_LOCKED when seat is already locked",
+        "seat.repository.test.ts — lockSeat atomically checks and locks in single EVALSHA"
+      ]
+    },
+    {
+      "issueId": "SEAT-002",
+      "severity": "CRITICAL",
+      "filesTouched": [
+        "src/domains/seat/seat.repository.ts",
+        "src/domains/seat/handlers/unlock-seat.handler.ts"
+      ],
+      "patchSketch": "Create UNLOCK_SEAT_SCRIPT Lua with SISMEMBER + SREM atomic; update unlockSeat() return type",
+      "downstreamCallsites": [
+        "src/domains/seat/handlers/unlock-seat.handler.ts:33 — unlockSeatHandler",
+        "src/domains/seat/handlers/invite-response.handler.ts:63 — inviteAcceptHandler"
+      ],
+      "runtimeRisk": "invite-response.handler.ts also calls unlockSeat() — must handle new return type",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "AI/Developer",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": [
+        "seat.repository.test.ts — unlockSeat returns NOT_LOCKED when seat is not locked",
+        "seat.repository.test.ts — unlockSeat atomically checks and removes in single EVALSHA"
+      ]
+    },
+    {
+      "issueId": "SEAT-003",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/domains/seat/seat.repository.ts",
+        "src/domains/seat/handlers/invite-response.handler.ts"
+      ],
+      "patchSketch": "Create INVITE_ACCEPT_SCRIPT Lua: read+delete invite, auto-unlock, take seat — all one EVALSHA",
+      "downstreamCallsites": [
+        "src/domains/seat/handlers/invite-response.handler.ts:52-74 — inviteAcceptHandler"
+      ],
+      "runtimeRisk": "New Lua script handles 6 operations atomically — must be thoroughly tested",
+      "rollback": "git revert <commit> — old 4-step flow still works",
+      "hours": 2,
+      "owner": "AI/Developer",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": [
+        "seat.repository.test.ts — atomicInviteAccept succeeds with valid invite",
+        "seat.repository.test.ts — atomicInviteAccept returns NO_INVITE when expired",
+        "seat.repository.test.ts — atomicInviteAccept auto-unlocks locked seat",
+        "seat.repository.test.ts — atomicInviteAccept removes user from old seat"
+      ]
+    },
+    {
+      "issueId": "SEAT-004",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/domains/seat/seat.owner.ts",
+        "src/domains/room/roomManager.ts"
+      ],
+      "patchSketch": "Add setInterval cache pruning with .unref(); wire clearRoomOwner() into closeRoom()",
+      "downstreamCallsites": [
+        "src/domains/seat/seat.owner.ts:38 — clearRoomOwner",
+        "src/domains/room/roomManager.ts:180-186 — closeRoom"
+      ],
+      "runtimeRisk": ".unref() prevents blocking process exit",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "AI/Developer",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": [
+        "Unit test — clearRoomOwner removes entry from cache",
+        "Unit test — pruneInterval evicts expired entries"
+      ]
+    },
+    {
+      "issueId": "SEAT-005",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/domains/seat/seat.repository.ts"
+      ],
+      "patchSketch": "Add user→seat reverse index (SET/DEL) in take/leave/assign Lua scripts; rewrite getUserSeat to single GET",
+      "downstreamCallsites": [
+        "src/domains/seat/handlers/mute-seat.handler.ts:26 — muteSeatHandler",
+        "src/domains/seat/handlers/unmute-seat.handler.ts:26 — unmuteSeatHandler"
+      ],
+      "runtimeRisk": "All Lua scripts must maintain reverse index — missing a write = stale index",
+      "rollback": "git revert <commit> — old HGETALL scan still works",
+      "hours": 2,
+      "owner": "AI/Developer",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": [
+        "seat.repository.test.ts — getUserSeat returns seat via O(1) reverse index",
+        "seat.repository.test.ts — takeSeat writes user→seat reverse index",
+        "seat.repository.test.ts — leaveSeat deletes user→seat reverse index"
+      ]
+    },
+    {
+      "issueId": "SEAT-006",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/domains/room/roomManager.ts"
+      ],
+      "patchSketch": "Resolved by SEAT-004 — clearRoomOwner is now called in closeRoom()",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None",
+      "rollback": "N/A",
+      "hours": 0,
+      "owner": "AI/Developer",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SEAT-007",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/shared/errors.ts"
+      ],
+      "patchSketch": "Remove SEAT_UNAVAILABLE from Errors object",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — no references anywhere",
+      "rollback": "Re-add the line",
+      "hours": 0.25,
+      "owner": "AI/Developer",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SEAT-008",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/socket/schemas.ts",
+        "src/config/index.ts"
+      ],
+      "patchSketch": "Extract MAX_SEAT_INDEX const from config; use in all seat schemas",
+      "downstreamCallsites": [
+        "All seat schemas: seatTakeSchema, seatAssignSchema, seatLockSchema, seatInviteSchema, seatInviteActionSchema"
+      ],
+      "runtimeRisk": "If DEFAULT_SEAT_COUNT changes, all schemas auto-adjust",
+      "rollback": "Revert to hardcoded .max(14)",
+      "hours": 0.5,
+      "owner": "AI/Developer",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": [
+        "schemas.test.ts — seatTakeSchema rejects seatIndex >= DEFAULT_SEAT_COUNT"
+      ]
+    },
+    {
+      "issueId": "SEAT-009",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/domains/seat/handlers/take-seat.handler.ts",
+        "src/domains/seat/handlers/assign-seat.handler.ts",
+        "src/domains/seat/handlers/invite-response.handler.ts"
+      ],
+      "patchSketch": "Read seatCount from roomManager.state.get(roomId) instead of config.DEFAULT_SEAT_COUNT",
+      "downstreamCallsites": [
+        "take-seat.handler.ts:21 — takeSeatHandler",
+        "assign-seat.handler.ts:29 — assignSeatHandler",
+        "invite-response.handler.ts:73 — inviteAcceptHandler"
+      ],
+      "runtimeRisk": "Business logic change — rooms with seatCount < 15 will reject higher indices",
+      "rollback": "Revert to config.DEFAULT_SEAT_COUNT",
+      "hours": 1,
+      "owner": "AI/Developer",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": [
+        "Handler test — seat:take rejects seatIndex >= room seatCount",
+        "Handler test — seat:take uses DEFAULT_SEAT_COUNT when state unavailable"
+      ]
+    },
+    {
+      "issueId": "SEAT-010",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/domains/seat/handlers/mute-seat.handler.ts",
+        "src/domains/seat/handlers/unmute-seat.handler.ts"
+      ],
+      "patchSketch": "Extract shared createMuteHandler(muted: boolean) factory; reduce both handlers to one-liners",
+      "downstreamCallsites": [
+        "seat.handler.ts:14-15 — registerSeatHandlers"
+      ],
+      "runtimeRisk": "None — identical behavior",
+      "rollback": "Revert to separate files",
+      "hours": 1,
+      "owner": "AI/Developer",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SEAT-011",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/domains/seat/handlers/invite-seat.handler.ts",
+        "src/shared/errors.ts"
+      ],
+      "patchSketch": "Add getUserSeat check before creating invite; reject if target already seated",
+      "downstreamCallsites": [
+        "invite-seat.handler.ts:50 — inviteSeatHandler"
+      ],
+      "runtimeRisk": "New error code needed. Behavior change — currently allows inviting seated users",
+      "rollback": "Remove the check",
+      "hours": 0.5,
+      "owner": "AI/Developer",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": [
+        "Handler test — seat:invite rejects when target user is already seated"
+      ]
+    },
+    {
+      "issueId": "SEAT-012",
+      "severity": "LOW",
+      "filesTouched": [
+        "src/domains/seat/seat.owner.ts"
+      ],
+      "patchSketch": "Add JSDoc documenting auth policy: verifyRoomOwner for assign/remove, verifyRoomManager for mute/lock/invite",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None",
+      "rollback": "N/A",
+      "hours": 0.25,
+      "owner": "AI/Developer",
+      "priority": "P4",
+      "docsUpdates": [
+        "src/domains/seat/seat.owner.ts — JSDoc on verifyRoomOwner and verifyRoomManager"
+      ],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SEAT-013",
+      "severity": "LOW",
+      "filesTouched": [
+        "src/domains/seat/seat.handler.ts"
+      ],
+      "patchSketch": "Change logger.info to logger.debug for handler registration",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — reduces log noise",
+      "rollback": "Change back to info",
+      "hours": 0.1,
+      "owner": "AI/Developer",
+      "priority": "P4",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "SEAT-014",
+      "severity": "LOW",
+      "filesTouched": [
+        "src/domains/seat/seat.repository.ts"
+      ],
+      "patchSketch": "Create DELETE_INVITE_SCRIPT Lua: GET + DEL invite + DEL reverse index in one EVALSHA",
+      "downstreamCallsites": [
+        "invite-response.handler.ts:52 — inviteAcceptHandler",
+        "invite-response.handler.ts:134 — inviteDeclineHandler"
+      ],
+      "runtimeRisk": "None — same logic, just atomic",
+      "rollback": "Revert to GET + pipeline",
+      "hours": 0.5,
+      "owner": "AI/Developer",
+      "priority": "P4",
+      "docsUpdates": [],
+      "testsRequired": [
+        "seat.repository.test.ts — deleteInvite atomically removes both keys in single EVALSHA"
+      ]
+    },
+    {
+      "issueId": "SEAT-BONUS",
+      "severity": "LOW",
+      "filesTouched": [
+        "src/domains/room/room.handler.ts"
+      ],
+      "patchSketch": "Remove redundant getLockedSeats() call; derive from getSeats() SeatData.locked field",
+      "downstreamCallsites": [
+        "room.handler.ts:115-117 — room:join handler"
+      ],
+      "runtimeRisk": "None — same data, 1 fewer Redis call",
+      "rollback": "Re-add the parallel call",
+      "hours": 0.25,
+      "owner": "AI/Developer",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 1,
+      "title": "fix(seat): atomic lock/unlock + memory leak",
+      "files": [
+        "src/domains/seat/seat.repository.ts",
+        "src/domains/seat/handlers/lock-seat.handler.ts",
+        "src/domains/seat/handlers/unlock-seat.handler.ts",
+        "src/domains/seat/seat.owner.ts",
+        "src/domains/room/roomManager.ts"
+      ],
+      "dependsOn": [],
+      "issues": ["SEAT-001", "SEAT-002", "SEAT-004", "SEAT-006"]
+    },
+    {
+      "prNumber": 2,
+      "title": "perf(seat): invite-accept atomicity + reverse index + seatCount",
+      "files": [
+        "src/domains/seat/seat.repository.ts",
+        "src/domains/seat/handlers/invite-response.handler.ts",
+        "src/domains/seat/handlers/take-seat.handler.ts",
+        "src/domains/seat/handlers/assign-seat.handler.ts",
+        "src/domains/room/room.handler.ts",
+        "tests/unit/domains/seat/seat.repository.test.ts"
+      ],
+      "dependsOn": [1],
+      "issues": ["SEAT-003", "SEAT-005", "SEAT-009", "SEAT-BONUS"]
+    },
+    {
+      "prNumber": 3,
+      "title": "refactor(seat): dead code + schema + duplication cleanup",
+      "files": [
+        "src/shared/errors.ts",
+        "src/socket/schemas.ts",
+        "src/domains/seat/handlers/mute-seat.handler.ts",
+        "src/domains/seat/handlers/unmute-seat.handler.ts",
+        "src/domains/seat/handlers/invite-seat.handler.ts",
+        "src/domains/seat/seat.handler.ts",
+        "src/domains/seat/seat.repository.ts"
+      ],
+      "dependsOn": [2],
+      "issues": ["SEAT-007", "SEAT-008", "SEAT-010", "SEAT-011", "SEAT-013", "SEAT-014"]
+    },
+    {
+      "prNumber": 4,
+      "title": "docs(seat): auth policy documentation",
+      "files": [
+        "src/domains/seat/seat.owner.ts"
+      ],
+      "dependsOn": [],
+      "issues": ["SEAT-012"]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "Critical fixes + Performance",
+      "prs": [1, 2],
+      "hours": 7
+    },
+    {
+      "sprint": 2,
+      "focus": "Cleanup + Docs",
+      "prs": [3, 4],
+      "hours": 4.6
+    }
+  ]
+}

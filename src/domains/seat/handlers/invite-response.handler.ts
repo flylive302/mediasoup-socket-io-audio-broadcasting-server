@@ -58,19 +58,23 @@ export const inviteAcceptHandler = createHandler(
     });
 
     // Auto-unlock seat if locked (invited users bypass seat lock)
-    const isLocked = await context.seatRepository.isSeatLocked(roomId, seatIndex);
-    if (isLocked) {
-      await context.seatRepository.unlockSeat(roomId, seatIndex);
+    // SEAT-002: unlockSeat now returns SeatActionResult — ignore errors (best-effort)
+    const unlockResult = await context.seatRepository.unlockSeat(roomId, seatIndex);
+    if (unlockResult.success) {
       socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: false });
       logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
     }
+
+    // SEAT-009: Use actual per-room seatCount from state
+    const roomState = await context.roomManager.state.get(roomId);
+    const seatCount = roomState?.seatCount ?? config.DEFAULT_SEAT_COUNT;
 
     // User Accepted: Use atomic Redis operation to take seat
     const result = await context.seatRepository.takeSeat(
       roomId,
       userId,
       seatIndex,
-      config.DEFAULT_SEAT_COUNT,
+      seatCount,
     );
 
     if (!result.success) {

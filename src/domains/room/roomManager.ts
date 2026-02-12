@@ -7,6 +7,7 @@ import { RoomStateRepository } from "./roomState.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
+import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -185,6 +186,10 @@ export class RoomManager {
       cleanupOps.push(this.seatRepository.clearRoom(roomId));
     }
     await Promise.all(cleanupOps);
+
+    // SEAT-004 FIX: Clean up owner cache to prevent memory leak
+    clearRoomOwner(roomId);
+
     this.rooms.delete(roomId);
   }
 

@@ -21,12 +21,16 @@ export const assignSeatHandler = createHandler(
 
     const targetUserIdStr = String(targetUserId);
 
+    // SEAT-009: Use actual per-room seatCount from state
+    const roomState = await context.roomManager.state.get(roomId);
+    const seatCount = roomState?.seatCount ?? config.DEFAULT_SEAT_COUNT;
+
     // Use atomic Redis operation
     const result = await context.seatRepository.assignSeat(
       roomId,
       targetUserIdStr,
       seatIndex,
-      config.DEFAULT_SEAT_COUNT,
+      seatCount,
     );
 
     if (!result.success) {

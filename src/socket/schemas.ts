@@ -215,7 +215,7 @@ export const selfMuteSchema = z.object({
 
 export const seatTakeSchema = z.object({
   roomId: roomIdSchema,
-  seatIndex: z.number().int().min(0).max(14), // 0-14 for 15 seats
+  seatIndex: z.number().int().min(0).max(99), // 0-14 for 15 seats
 });
 
 export const seatLeaveSchema = z.object({
@@ -225,7 +225,7 @@ export const seatLeaveSchema = z.object({
 export const seatAssignSchema = z.object({
   roomId: roomIdSchema,
   userId: z.number().int().positive(),
-  seatIndex: z.number().int().min(0).max(14),
+  seatIndex: z.number().int().min(0).max(99),
 });
 
 export const seatRemoveSchema = z.object({
@@ -240,20 +240,20 @@ export const seatMuteSchema = z.object({
 
 export const seatLockSchema = z.object({
   roomId: roomIdSchema,
-  seatIndex: z.number().int().min(0).max(14),
+  seatIndex: z.number().int().min(0).max(99),
 });
 
 export const seatInviteSchema = z.object({
   roomId: roomIdSchema,
   userId: z.number().int().positive(),
-  seatIndex: z.number().int().min(0).max(14),
+  seatIndex: z.number().int().min(0).max(99),
 });
 
 // Schema for seat:invite:accept and seat:invite:decline
 // seatIndex is optional - if not provided, server looks up the pending invite by userId
 export const seatInviteActionSchema = z.object({
   roomId: roomIdSchema,
-  seatIndex: z.number().int().min(0).max(14).optional(),
+  seatIndex: z.number().int().min(0).max(99).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────────
