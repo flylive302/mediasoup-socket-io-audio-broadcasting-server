@@ -20,10 +20,14 @@ interface BufferedGift extends GiftTransaction {
   retryCount?: number;
 }
 
+// GF-006 FIX: Cap dead-letter queue to prevent unbounded Redis memory growth
+const DEAD_LETTER_MAX_LENGTH = 10_000;
+
 export class GiftBuffer {
   private readonly QUEUE_KEY = "gifts:pending";
   private readonly DEAD_LETTER_KEY = "gifts:dead_letter";
   private timer: NodeJS.Timeout | null = null;
+  private flushCount = 0;
 
   constructor(
     private readonly redis: Redis,
@@ -63,9 +67,9 @@ export class GiftBuffer {
 
   /** Flush buffer to Laravel */
   private async flush(): Promise<void> {
-    // Atomically rename queue to processing key
-    // This eliminates race condition between exists() and rename()
-    const processingKey = `${this.QUEUE_KEY}:processing:${Date.now()}`;
+    this.flushCount++;
+    // GF-007 FIX: Include process.pid for instance-unique key in horizontal scaling
+    const processingKey = `${this.QUEUE_KEY}:processing:${process.pid}:${Date.now()}`;
 
     const renamed = await this.redis.eval(
       ATOMIC_RENAME_LUA,
@@ -82,9 +86,36 @@ export class GiftBuffer {
       return;
     }
 
-    const transactions: BufferedGift[] = items.map((item) => JSON.parse(item));
+    // GF-003 FIX: Per-item JSON parsing with error handling
+    // Corrupted entries go to dead-letter instead of poisoning the entire batch
+    const transactions: BufferedGift[] = [];
+    for (const item of items) {
+      try {
+        transactions.push(JSON.parse(item) as BufferedGift);
+      } catch {
+        this.logger.warn(
+          { item: item.slice(0, 200) },
+          "Corrupted gift entry, moving to dead letter",
+        );
+        await this.redis.rpush(this.DEAD_LETTER_KEY, item);
+        metrics.giftsProcessed.inc({ status: "dead_letter" });
+      }
+    }
+
+    if (transactions.length === 0) {
+      await this.redis.del(processingKey);
+      return;
+    }
+
     this.logger.info({ count: transactions.length }, "Flushing gift batch");
     metrics.giftBatchSize.observe(transactions.length);
+
+    // GF-006 FIX: Report dead-letter queue size for alerting
+    // GF-014 FIX: Sample every 10th flush to reduce Redis RTT
+    if (this.flushCount % 10 === 0) {
+      const dlqSize = await this.redis.llen(this.DEAD_LETTER_KEY);
+      metrics.giftDeadLetterSize.set(dlqSize);
+    }
 
     try {
       const result = await this.laravelClient.processGiftBatch(transactions);
@@ -117,6 +148,7 @@ export class GiftBuffer {
 
       // BL-006 FIX: Pipeline all re-queues in a single round-trip
       const pipeline = this.redis.pipeline();
+      let hasDeadLetterEntries = false;
       for (const gift of transactions) {
         const retryCount = (gift.retryCount ?? 0) + 1;
 
@@ -127,6 +159,7 @@ export class GiftBuffer {
             "Gift exceeded max retries, moving to dead letter queue",
           );
           pipeline.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
+          hasDeadLetterEntries = true;
           metrics.giftsProcessed.inc({ status: "dead_letter" });
 
           // Notify sender of permanent failure
@@ -143,6 +176,11 @@ export class GiftBuffer {
         // Re-queue with incremented retry count
         gift.retryCount = retryCount;
         pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+      }
+
+      // GF-006 FIX: Cap dead-letter queue once (not per-item) to prevent unbounded growth
+      if (hasDeadLetterEntries) {
+        pipeline.ltrim(this.DEAD_LETTER_KEY, -DEAD_LETTER_MAX_LENGTH, -1);
       }
 
       // Delete processing key in the same pipeline

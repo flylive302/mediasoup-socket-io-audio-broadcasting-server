@@ -84,6 +84,13 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // GF-006 FIX: Dead-letter queue size for alerting
+  giftDeadLetterSize: new Gauge({
+    name: "flylive_gift_dead_letter_size",
+    help: "Current size of the gift dead-letter queue",
+    registers: [metricsRegistry],
+  }),
+
   // Laravel API calls
   laravelApiCalls: new Counter({
     name: "flylive_laravel_api_calls_total",

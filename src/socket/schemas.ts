@@ -186,7 +186,7 @@ export const sendGiftSchema = z.object({
   roomId: roomIdSchema,
   giftId: z.number().int().positive(),
   recipientId: z.number().int().positive(),
-  quantity: z.number().int().positive().default(1),
+  quantity: z.number().int().positive().max(9999).default(1),
 });
 
 export const prepareGiftSchema = z.object({

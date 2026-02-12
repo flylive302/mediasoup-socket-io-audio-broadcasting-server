@@ -7,8 +7,10 @@ export const Errors = {
   INTERNAL_ERROR: "Internal server error",
   NOT_AUTHORIZED: "Not authorized",
   RATE_LIMITED: "Too many requests",
+  CANNOT_GIFT_SELF: "Cannot send gift to yourself",
 
   // Room
+  NOT_IN_ROOM: "Not in room",
   ROOM_NOT_FOUND: "Room not found",
   ROOM_CLOSED: "Room is closed",
 

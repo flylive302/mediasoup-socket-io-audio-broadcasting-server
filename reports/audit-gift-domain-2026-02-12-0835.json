@@ -1,0 +1,155 @@
+{
+  "meta": {
+    "timestamp": "2026-02-12T08:35:00+05:00",
+    "commit": "407ed04",
+    "branch": "work",
+    "nodeVersion": "v24.12.0",
+    "domain": "gift",
+    "scope": "focused"
+  },
+  "scores": {
+    "performance": 7,
+    "architecture": 6,
+    "realtime": 6,
+    "codeQuality": 5,
+    "security": 5,
+    "readability": 8,
+    "total": 62.5
+  },
+  "findings": [
+    {
+      "id": "GF-001",
+      "severity": "HIGH",
+      "dimension": "Security & Reliability",
+      "file": "src/domains/gift/giftHandler.ts",
+      "function": "GiftHandler.handle (gift:send)",
+      "problem": "No room membership validation — sender not verified to be in target room",
+      "evidence": "sock.to(payload.roomId).emit(...) + this.buffer.enqueue(transaction) without socket.rooms.has() check",
+      "impact": "Malicious client can enqueue gift transactions for rooms they haven't joined; Laravel processes them",
+      "fix": "Add socket.rooms.has(payload.roomId) guard before processing",
+      "complexity": "0.5h"
+    },
+    {
+      "id": "GF-002",
+      "severity": "HIGH",
+      "dimension": "Code Quality",
+      "file": "src/domains/gift/",
+      "function": "GiftHandler, GiftBuffer",
+      "problem": "Zero test coverage for entire Gift domain",
+      "evidence": "No test files found; 10 test files exist for other domains with 99 tests",
+      "impact": "Regression risk on buffer flush, retry, dead-letter, and rate-limiting logic",
+      "fix": "Create giftHandler.test.ts and giftBuffer.test.ts",
+      "complexity": "4h"
+    },
+    {
+      "id": "GF-003",
+      "severity": "MEDIUM",
+      "dimension": "Performance & Efficiency",
+      "file": "src/domains/gift/giftBuffer.ts",
+      "function": "GiftBuffer.flush()",
+      "problem": "JSON.parse applied to all items via .map() without per-item error handling",
+      "evidence": "const transactions: BufferedGift[] = items.map((item) => JSON.parse(item));",
+      "impact": "One corrupted Redis entry poisons entire batch — all items go through retry/dead-letter path",
+      "fix": "Per-item try/catch; move unparseable items to dead-letter queue",
+      "complexity": "1h"
+    },
+    {
+      "id": "GF-004",
+      "severity": "MEDIUM",
+      "dimension": "Security & Reliability",
+      "file": "src/domains/gift/giftHandler.ts",
+      "function": "GiftHandler.handle (gift:prepare)",
+      "problem": "No rate limiting on gift:prepare event",
+      "evidence": "gift:send has rateLimiter.isAllowed() but gift:prepare directly broadcasts",
+      "impact": "Clients can flood room with unlimited preload signals",
+      "fix": "Add rate limiting to gift:prepare",
+      "complexity": "0.5h"
+    },
+    {
+      "id": "GF-005",
+      "severity": "MEDIUM",
+      "dimension": "Performance & Efficiency",
+      "file": "src/domains/gift/giftHandler.ts:80",
+      "function": "GiftHandler.handle (gift:prepare)",
+      "problem": "Preload signal broadcasts to all room members instead of targeted recipient",
+      "evidence": "sock.to(payload.roomId).emit('gift:prepare', ...) — comment says 'only recipient should act'",
+      "impact": "Unnecessary bandwidth on N-2 uninvolved clients per prepare event",
+      "fix": "Look up recipient socketId and emit directly via io.to(recipientSocketId)",
+      "complexity": "1h"
+    },
+    {
+      "id": "GF-006",
+      "severity": "MEDIUM",
+      "dimension": "Performance & Efficiency",
+      "file": "src/domains/gift/giftBuffer.ts",
+      "function": "GiftBuffer.flush()",
+      "problem": "Dead-letter queue (gifts:dead_letter) grows unbounded with no cleanup",
+      "evidence": "pipeline.rpush(this.DEAD_LETTER_KEY, ...) — no LTRIM, no EXPIRE, no alerting",
+      "impact": "Redis memory grows indefinitely during sustained failures",
+      "fix": "Add LTRIM cap, and a Prometheus gauge for dead-letter queue length",
+      "complexity": "0.5h"
+    },
+    {
+      "id": "GF-007",
+      "severity": "MEDIUM",
+      "dimension": "Architecture & Scalability",
+      "file": "src/domains/gift/giftBuffer.ts:68",
+      "function": "GiftBuffer.flush()",
+      "problem": "Processing key uses Date.now() without instance identifier — collision risk in multi-instance",
+      "evidence": "const processingKey = `${this.QUEUE_KEY}:processing:${Date.now()}`",
+      "impact": "Two instances flushing simultaneously could generate same key",
+      "fix": "Include process.pid or randomUUID() slice in processing key",
+      "complexity": "0.25h"
+    },
+    {
+      "id": "GF-008",
+      "severity": "LOW",
+      "dimension": "Code Quality",
+      "file": "src/domains/gift/giftHandler.ts:57-60",
+      "function": "GiftHandler.handle (gift:send)",
+      "problem": "gift:received broadcast uses spread operator, auto-leaking future schema fields",
+      "evidence": "sock.to(payload.roomId).emit('gift:received', { senderId: user.id, ...payload })",
+      "impact": "Schema updates silently expose new data to all room clients",
+      "fix": "Explicitly pick emitted fields",
+      "complexity": "0.25h"
+    },
+    {
+      "id": "GF-009",
+      "severity": "LOW",
+      "dimension": "Architecture & Scalability",
+      "file": "src/domains/gift/giftHandler.ts:21",
+      "function": "GiftHandler constructor",
+      "problem": "Creates own RateLimiter instance while AppContext already has one",
+      "evidence": "this.rateLimiter = new RateLimiter(redis) vs context.rateLimiter",
+      "impact": "Duplicate instance; architecturally inconsistent",
+      "fix": "Use context.rateLimiter or accept as constructor param",
+      "complexity": "0.25h"
+    },
+    {
+      "id": "GF-010",
+      "severity": "INFO",
+      "dimension": "Code Quality",
+      "file": "src/domains/gift/giftHandler.ts:42",
+      "function": "GiftHandler.handle (gift:send)",
+      "problem": "Rate limit error uses plain string instead of Errors enum constant",
+      "evidence": "return { success: false, error: 'Too many gifts, please slow down' }",
+      "impact": "Inconsistent error codes across handlers",
+      "fix": "Use Errors.RATE_LIMITED constant",
+      "complexity": "0.1h"
+    },
+    {
+      "id": "GF-011",
+      "severity": "INFO",
+      "dimension": "Code Quality",
+      "file": "src/domains/gift/index.ts:9",
+      "function": "barrel export",
+      "problem": "GiftBuffer exported from barrel but never imported externally",
+      "evidence": "Only 2 references: class definition and barrel export; no external imports",
+      "impact": "Unnecessary public API surface",
+      "fix": "Remove barrel export",
+      "complexity": "0.1h"
+    }
+  ],
+  "overEngineering": [],
+  "remediationTotalHours": 8.45
+}

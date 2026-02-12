@@ -123,8 +123,10 @@ export async function initializeSocket(
     // Register all domain handlers via domain registry
     registerAllDomains(socket, appContext);
 
-    // GiftHandler is a stateful class with lifecycle management (start/stop)
-    // so it's registered separately from the domain array
+    // GiftHandler manages a GiftBuffer with start/stop lifecycle (setInterval timer).
+    // Unlike stateless domain handlers in registerAllDomains(), it requires constructor
+    // injection of Redis/IO/LaravelClient and its stop() must be called during shutdown.
+    // Future: introduce a DomainWithLifecycle interface to unify registration.
     giftHandler.handle(socket, appContext);
 
     // Disconnect

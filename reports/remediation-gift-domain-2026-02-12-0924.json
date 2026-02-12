@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "timestamp": "2026-02-12T09:24:30+05:00",
+    "auditRef": "reports/audit-gift-domain-2026-02-12-0835.json",
+    "commit": "407ed04"
+  },
+  "remediations": [
+    {
+      "issueId": "GF-001",
+      "severity": "HIGH",
+      "filesTouched": ["src/shared/errors.ts", "src/domains/gift/giftHandler.ts"],
+      "patchSketch": "+ Add NOT_IN_ROOM to Errors\n+ Add sock.rooms.has(roomId) guard in gift:send and gift:prepare",
+      "downstreamCallsites": ["giftHandler.ts:32 — gift:send handler", "giftHandler.ts:78 — gift:prepare handler"],
+      "runtimeRisk": "Users who lost room membership cannot send gifts",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P0",
+      "docsUpdates": ["docs/audits/gift-domain-2026-02-12-0835.md — Mark GF-001 resolved"],
+      "testsRequired": ["tests/unit/domains/gift/giftHandler.test.ts — rejects gift:send when not in room", "tests/unit/domains/gift/giftHandler.test.ts — rejects gift:prepare when not in room"]
+    },
+    {
+      "issueId": "GF-002",
+      "severity": "HIGH",
+      "filesTouched": ["tests/unit/domains/gift/giftHandler.test.ts", "tests/unit/domains/gift/giftBuffer.test.ts"],
+      "patchSketch": "+ Create test suites with vitest mocks for Redis, LaravelClient, Socket.IO",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None",
+      "rollback": "git revert <commit>",
+      "hours": 4,
+      "owner": "Backend",
+      "priority": "P0",
+      "docsUpdates": [],
+      "testsRequired": ["giftHandler.test.ts — 6+ test cases", "giftBuffer.test.ts — 7+ test cases"]
+    },
+    {
+      "issueId": "GF-003",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/gift/giftBuffer.ts"],
+      "patchSketch": "- items.map(JSON.parse)\n+ Per-item try/catch; corrupted → dead-letter",
+      "downstreamCallsites": ["giftBuffer.ts:85 — flush()"],
+      "runtimeRisk": "None (strictly more resilient)",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["giftBuffer.test.ts — handles corrupted JSON entries gracefully"]
+    },
+    {
+      "issueId": "GF-004",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/gift/giftHandler.ts"],
+      "patchSketch": "+ Add rateLimiter.isAllowed(`gift:prepare:${user.id}`, ...) check",
+      "downstreamCallsites": ["giftHandler.ts:78 — gift:prepare handler"],
+      "runtimeRisk": "Rapid legitimate prepare signals could be throttled",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["giftHandler.test.ts — rate-limits gift:prepare"]
+    },
+    {
+      "issueId": "GF-005",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/gift/giftHandler.ts"],
+      "patchSketch": "- sock.to(roomId).emit('gift:prepare')\n+ context.userSocketRepository.getSocketIds() → context.io.to(socketIds).emit()",
+      "downstreamCallsites": ["giftHandler.ts:80 — gift:prepare broadcast"],
+      "runtimeRisk": "Recipient with no active sockets silently misses prepare (acceptable)",
+      "rollback": "git revert <commit>",
+      "hours": 1,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["giftHandler.test.ts — emits gift:prepare only to recipient sockets"]
+    },
+    {
+      "issueId": "GF-006",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/gift/giftBuffer.ts", "src/infrastructure/metrics.ts"],
+      "patchSketch": "+ Add DEAD_LETTER_MAX_LENGTH cap\n+ pipeline.ltrim after rpush\n+ Add giftDeadLetterSize Gauge",
+      "downstreamCallsites": ["giftBuffer.ts:129 — dead-letter rpush"],
+      "runtimeRisk": "Oldest dead-letter entries evicted if > 10k",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["giftBuffer.test.ts — caps dead-letter queue with LTRIM"]
+    },
+    {
+      "issueId": "GF-007",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/domains/gift/giftBuffer.ts"],
+      "patchSketch": "- :processing:${Date.now()}\n+ :processing:${process.pid}:${Date.now()}",
+      "downstreamCallsites": ["giftBuffer.ts:68 — flush()"],
+      "runtimeRisk": "None",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["giftBuffer.test.ts — processing key includes process.pid"]
+    },
+    {
+      "issueId": "GF-008",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/gift/giftHandler.ts"],
+      "patchSketch": "- { senderId, ...payload }\n+ { senderId, roomId, giftId, recipientId, quantity }",
+      "downstreamCallsites": ["giftHandler.ts:57 — gift:send broadcast"],
+      "runtimeRisk": "None (same output, just explicit)",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": ["giftHandler.test.ts — emits only expected fields"]
+    },
+    {
+      "issueId": "GF-009",
+      "severity": "LOW",
+      "filesTouched": ["src/domains/gift/giftHandler.ts"],
+      "patchSketch": "- this.rateLimiter = new RateLimiter(redis)\n+ Use context.rateLimiter",
+      "downstreamCallsites": ["giftHandler.ts:36 — rate limit call"],
+      "runtimeRisk": "None",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": ["giftHandler.test.ts — verify context.rateLimiter is called"]
+    },
+    {
+      "issueId": "GF-010",
+      "severity": "INFO",
+      "filesTouched": ["src/domains/gift/giftHandler.ts"],
+      "patchSketch": "- error: 'Too many gifts...'\n+ error: Errors.RATE_LIMITED",
+      "downstreamCallsites": ["giftHandler.ts:42 — rate limit response"],
+      "runtimeRisk": "Frontend clients matching exact string see different message",
+      "rollback": "git revert <commit>",
+      "hours": 0.1,
+      "owner": "Backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "GF-011",
+      "severity": "INFO",
+      "filesTouched": ["src/domains/gift/index.ts"],
+      "patchSketch": "- export { GiftBuffer } from './giftBuffer.js'",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None",
+      "rollback": "git revert <commit>",
+      "hours": 0.1,
+      "owner": "Backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 1,
+      "title": "fix(gift): room membership validation + security hardening",
+      "findings": ["GF-001", "GF-004", "GF-008", "GF-010"],
+      "files": ["src/shared/errors.ts", "src/domains/gift/giftHandler.ts"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 2,
+      "title": "perf(gift): robust buffer + targeted emit + scaling fixes",
+      "findings": ["GF-003", "GF-005", "GF-006", "GF-007"],
+      "files": ["src/domains/gift/giftBuffer.ts", "src/domains/gift/giftHandler.ts", "src/infrastructure/metrics.ts"],
+      "dependsOn": [1]
+    },
+    {
+      "prNumber": 3,
+      "title": "refactor(gift): architecture cleanup + unit tests",
+      "findings": ["GF-002", "GF-009", "GF-011"],
+      "files": ["src/domains/gift/giftHandler.ts", "src/domains/gift/index.ts", "tests/unit/domains/gift/giftHandler.test.ts", "tests/unit/domains/gift/giftBuffer.test.ts"],
+      "dependsOn": [2]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "Gift domain full remediation",
+      "prs": [1, 2, 3],
+      "hours": 8.45
+    }
+  ]
+}
