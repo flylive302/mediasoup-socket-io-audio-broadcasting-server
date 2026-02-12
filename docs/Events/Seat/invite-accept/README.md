@@ -90,7 +90,7 @@ Completes the invite flow when a user agrees to join a seat.
     avatar: string,
     signature: string,
     frame: object | null,
-    gender: string,
+    gender: number,
     country: string,
     wealth_xp: number,
     charm_xp: number

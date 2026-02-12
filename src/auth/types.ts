@@ -15,7 +15,7 @@ export const UserSchema = z.object({
   email: z.string(),
   avatar: z.string(),
   frame: z.string(),
-  gender: z.coerce.string(),
+  gender: z.number(),
   date_of_birth: z.string(), // ISO date string (YYYY-MM-DD)
   phone: z.string(),
   country: z.string(),

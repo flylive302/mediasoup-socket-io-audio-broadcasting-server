@@ -33,7 +33,7 @@ Notifies room when a seat is taken by a user (includes user details).
     avatar: string,
     signature: string,
     frame: object | null,
-    gender: string,
+    gender: number,
     country: string,
     wealth_xp: number,
     charm_xp: number

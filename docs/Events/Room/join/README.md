@@ -112,7 +112,7 @@ export const joinRoomSchema = z.object({
       "signature": "Hello!",
       "avatar": "https://...",
       "frame": "https://...",
-      "gender": "male",
+      "gender": 0,
       "country": "US",
       "wealth_xp": 1000,
       "charm_xp": 500,

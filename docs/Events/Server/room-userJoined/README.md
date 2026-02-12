@@ -31,7 +31,7 @@ Notifies all room members when a new user joins the room.
   avatar: string,
   signature: string,
   frame: object | null,
-  gender: string,
+  gender: number,
   country: string,
   wealth_xp: number,
   charm_xp: number

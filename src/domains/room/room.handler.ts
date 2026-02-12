@@ -60,7 +60,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         signature: string;
         avatar: string;
         frame: string;
-        gender: string;
+        gender: number;
         country: string;
         phone: string;
         email: string;

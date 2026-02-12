@@ -1,6 +1,7 @@
 # Event Documentation Template
 
-> **Copy this file** when creating documentation for a new Socket.IO event.  
+> **Copy this file** when creating documentation for a new **C→S** (Client to Server) Socket.IO event.  
+> For **S→C** broadcast events, use `BROADCAST_TEMPLATE.md` instead.  
 > Replace all placeholders with actual values.
 > Delete this header section after copying.
 
@@ -14,7 +15,7 @@
 
 ---
 
-## 1. Event Overview
+## 1. Event Overview ✅ REQUIRED
 
 ### Event: `event:name` (DIRECTION)
 
@@ -47,7 +48,7 @@ Brief description of what this event does.
 
 ---
 
-## 2. Event Contract
+## 2. Event Contract ✅ REQUIRED
 
 ### Inbound Event
 
@@ -104,7 +105,7 @@ export const eventNameSchema = z.object({
 
 ---
 
-## 3. Event Execution Flow
+## 3. Event Execution Flow ✅ REQUIRED
 
 ### 3.1 Entry Point
 
@@ -161,7 +162,7 @@ Description of final outputs.
 
 ---
 
-## 4. State Transitions
+## 4. State Transitions ⚡ REQUIRED (if state changes exist)
 
 ### In-Memory State
 
@@ -183,7 +184,7 @@ Description of final outputs.
 
 ---
 
-## 5. Reusability Matrix
+## 5. Reusability Matrix 📋 RECOMMENDED
 
 | Component   | File              | Used By          | Reusable | Reasoning |
 | ----------- | ----------------- | ---------------- | -------- | --------- |
@@ -191,7 +192,7 @@ Description of final outputs.
 
 ---
 
-## 6. Error Handling & Edge Cases
+## 6. Error Handling & Edge Cases ✅ REQUIRED
 
 ### Validation Errors
 
@@ -219,7 +220,11 @@ Description of final outputs.
 
 ---
 
-## 7. Sequence Diagram (Textual)
+## 7. Sequence Diagram ✅ REQUIRED
+
+> **Note**: Use either ASCII or Mermaid format. Pick one, do not mix both.
+
+### Option A: ASCII (default)
 
 ```
  CLIENT           SOCKET.IO          HANDLER            SERVICE          REDIS/MEDIASOUP
@@ -239,9 +244,43 @@ Description of final outputs.
    │                  │                  │                  │                   │
 ```
 
+### Option B: Mermaid (alternative)
+
+```mermaid
+sequenceDiagram
+    Client->>Socket.IO: event:name {payload}
+    Socket.IO->>Handler: dispatch
+    Handler->>Service: validate & process
+    Service->>Redis: state operation
+    Redis-->>Service: result
+    Service-->>Handler: result
+    Handler-->>Socket.IO: ack(response)
+    Socket.IO-->>Client: response
+```
+
 ---
 
-## 8. Cross-Platform Integration
+## 8. Cross-Platform Integration ✅ REQUIRED
+
+### TypeScript Interfaces
+
+```typescript
+// Types for this event — use in frontend composables
+interface EventNamePayload {
+  field1: string;
+  field2: number;
+}
+
+interface EventNameResponse {
+  data: string;
+}
+
+// If this event triggers a broadcast:
+interface EventBroadcastPayload {
+  userId: number;
+  // ...
+}
+```
 
 ### Frontend Usage (Nuxt)
 
@@ -270,7 +309,7 @@ _Or: "This event has no direct Laravel integration."_
 
 ---
 
-## 9. Extension & Maintenance Notes
+## 9. Extension & Maintenance Notes 📋 RECOMMENDED
 
 ### ✅ Where to Add New Features
 
@@ -310,7 +349,7 @@ _Or: "This event has no direct Laravel integration."_
 
 ---
 
-## 10. Document Metadata
+## 10. Document Metadata ✅ REQUIRED
 
 | Property               | Value                |
 | ---------------------- | -------------------- |
@@ -322,6 +361,12 @@ _Or: "This event has no direct Laravel integration."_
 | **Last Updated**       | YYYY-MM-DD           |
 | **Node.js Version**    | ≥22.0.0              |
 | **TypeScript Version** | ^5.7.0               |
+
+### Schema Change Log
+
+| Date       | Change         | Breaking | Migration Notes |
+| ---------- | -------------- | -------- | --------------- |
+| YYYY-MM-DD | Initial schema | —        | —               |
 
 ---
 

@@ -1,7 +1,7 @@
 # MSAB Event Documentation Standard
 
-> **Version**: 1.0  
-> **Last Updated**: 2026-02-09  
+> **Version**: 2.0  
+> **Last Updated**: 2026-02-12  
 > **Maintainer**: FlyLive Platform Team
 
 This document defines the **official standard** for documenting Socket.IO events in the MSAB (MediaSoup Audio Broadcasting) server. All event documentation **MUST** follow this structure to ensure consistency, maintainability, and execution-level clarity.
@@ -51,7 +51,9 @@ This document defines the **official standard** for documenting Socket.IO events
 
 ## Document Structure
 
-Every event documentation **MUST** contain these sections in order:
+### C→S Events (Client to Server)
+
+Every C→S event documentation **MUST** contain these sections in order:
 
 ```
 1.   Event Overview
@@ -60,26 +62,41 @@ Every event documentation **MUST** contain these sections in order:
 4.   State Transitions
 5.   Reusability Matrix
 6.   Error Handling & Edge Cases
-7.   Sequence Diagram (Textual)
-8.   Cross-Platform Integration
+7.   Sequence Diagram (Textual or Mermaid)
+8.   Cross-Platform Integration (with TypeScript interfaces)
 9.   Extension & Maintenance Notes
-10.  Document Metadata
+10.  Document Metadata (with Schema Change Log)
+```
+
+### S→C Events (Server to Client — Broadcasts)
+
+For broadcast-only events, use the **lightweight broadcast template** (`BROADCAST_TEMPLATE.md`):
+
+```
+1.   Event Overview (triggered by, target)
+2.   Event Payload (TypeScript interface + JSON + field table)
+3.   Frontend Integration (listener + types)
+4.   Trigger Source (link to C→S event)
+5.   Error & Edge Cases
+6.   Document Metadata
 ```
 
 ### Section Breakdown
 
-| Section            | Purpose                                            | Required |
-| ------------------ | -------------------------------------------------- | -------- |
-| Event Overview     | Context, responsibilities, domain ownership        | ✅       |
-| Event Contract     | Zod schema, payloads, response format              | ✅       |
-| Execution Flow     | Step-by-step handler code flow with ASCII diagrams | ✅       |
-| State Transitions  | Redis/memory state changes                         | ✅       |
-| Reusability Matrix | Component reuse analysis                           | ✅       |
-| Error Handling     | All possible errors and edge cases                 | ✅       |
-| Sequence Diagram   | Textual sequence showing all actors                | ✅       |
-| Cross-Platform     | Frontend + Laravel integration                     | ✅       |
-| Extension Notes    | How to modify, what not to touch, pitfalls         | ✅       |
-| Metadata           | Version, author, dates                             | ✅       |
+| Section            | Purpose                                            | Level                              |
+| ------------------ | -------------------------------------------------- | ---------------------------------- |
+| Event Overview     | Context, responsibilities, domain ownership        | ✅ REQUIRED                        |
+| Event Contract     | Zod schema, payloads, response format              | ✅ REQUIRED                        |
+| Execution Flow     | Step-by-step handler code flow with ASCII diagrams | ✅ REQUIRED                        |
+| State Transitions  | Redis/memory state changes                         | ⚡ REQUIRED if state changes exist |
+| Reusability Matrix | Component reuse analysis                           | 📋 RECOMMENDED                     |
+| Error Handling     | All possible errors and edge cases                 | ✅ REQUIRED                        |
+| Sequence Diagram   | Textual or Mermaid sequence showing all actors     | ✅ REQUIRED                        |
+| Cross-Platform     | Frontend + Laravel integration + TS interfaces     | ✅ REQUIRED                        |
+| Extension Notes    | How to modify, what not to touch, pitfalls         | 📋 RECOMMENDED                     |
+| Metadata           | Version, author, dates, schema change log          | ✅ REQUIRED                        |
+
+> **Legend**: ✅ REQUIRED = Must be present. ⚡ REQUIRED (conditional) = Must be present when applicable. 📋 RECOMMENDED = Include for complex events, may be omitted for simple fire-and-forget events.
 
 ---
 
@@ -323,7 +340,7 @@ export const joinRoomSchema = z.object({
 
 ---
 
-### 7. Sequence Diagram (Textual)
+### 7. Sequence Diagram (Textual or Mermaid)
 
 **Required actors for MSAB:**
 
@@ -334,7 +351,7 @@ export const joinRoomSchema = z.object({
 - REDIS/MEDIASOUP
 - LARAVEL (if applicable)
 
-**Format:**
+**Format (ASCII — default):**
 
 ```
  CLIENT           SOCKET.IO          HANDLER            SERVICE            REDIS/MEDIASOUP
@@ -349,15 +366,39 @@ export const joinRoomSchema = z.object({
    │                  │                  │                  │────────────────────▶│
 ```
 
+**Format (Mermaid — optional alternative):**
+
+```mermaid
+sequenceDiagram
+    Client->>Socket.IO: event:name {payload}
+    Socket.IO->>Handler: dispatch
+    Handler->>Service: business logic
+    Service->>Redis: state update
+    Redis-->>Service: result
+    Service-->>Handler: result
+    Handler-->>Socket.IO: ack(response)
+    Socket.IO-->>Client: response
+```
+
+> **Note**: Either ASCII or Mermaid is acceptable. ASCII is universally portable; Mermaid renders natively on GitHub. Pick one per document, do not mix both.
+
 ---
 
 ### 8. Cross-Platform Integration
 
 **Required subsections:**
 
-- Frontend Usage (Nuxt/Vue)
+- Frontend Usage (Nuxt/Vue) with **TypeScript interfaces** for payloads
 - Laravel Integration (if any)
 - Related Events
+
+**TypeScript interfaces** should define the exact shape of:
+
+- Inbound payload (what the client sends)
+- ACK response (what the client receives)
+- Broadcast payloads (what listeners receive)
+
+See the [Frontend Integration Guide](Integrations/NUXT_CLIENT.md) for the central reference.
 
 **Example:**
 
@@ -416,8 +457,19 @@ const joinRoom = async (roomId: string) => {
 | **Direction** | C→S / S→C / C↔S |
 | **Author** | Author or "System Documentation" |
 | **Created** | YYYY-MM-DD |
+| **Last Updated** | YYYY-MM-DD |
 | **Node.js Version** | ≥22.0.0 |
 | **TypeScript Version** | ^5.7.0 |
+
+**Schema Change Log (REQUIRED):**
+
+Track all schema changes to communicate breaking/non-breaking changes across teams.
+
+| Date       | Change                           | Breaking | Migration Notes |
+|------------|----------------------------------|----------|-----------------|
+| YYYY-MM-DD | Initial schema                   | —        | —               |
+| YYYY-MM-DD | Added `fieldName` to payload     | No       | Optional field  |
+| YYYY-MM-DD | Changed `fieldName` type         | Yes      | Update clients  |
 
 ---
 
@@ -434,13 +486,14 @@ const joinRoom = async (roomId: string) => {
 ### Visual Elements
 
 1. **ASCII Diagrams**: Use box-drawing characters (┌ ─ ┐ │ └ ┘ ├ ┤ ┬ ┴ ┼)
-2. **Arrows**: Use → for inline, ─▶ for diagrams
-3. **Emojis**: Use sparingly for section icons (✅ ❌ ⚠️ 📝 🔗 📋 🚨 📁)
-4. **Horizontal rules**: Use `---` to separate major sections
+2. **Mermaid Diagrams**: Accepted as alternative to ASCII for sequence diagrams
+3. **Arrows**: Use → for inline, ─▶ for diagrams
+4. **Emojis**: Use sparingly for section icons (✅ ❌ ⚠️ 📝 🔗 📋 🚨 📁)
+5. **Horizontal rules**: Use `---` to separate major sections
 
 ### Code Snippet Rules
 
-1. Include file path and line numbers when possible
+1. Include file path and **function/class names** for traceability (line numbers optional — they drift with code changes)
 2. Show only relevant code, use `// ...` for omissions
 3. Add inline comments explaining key operations
 4. Use proper syntax highlighting (`typescript`, `json`)
@@ -455,13 +508,14 @@ const joinRoom = async (roomId: string) => {
 
 docs/
 ├── DOCUMENTATION_STANDARD.md ← This file
-├── TEMPLATE.md ← Copy-paste template
+├── TEMPLATE.md ← C→S event template
+├── BROADCAST_TEMPLATE.md ← S→C broadcast event template
 │
 ├── Architecture/
 │ └── README.md ← System overview
 │
 ├── Events/
-│ ├── Room/
+│ ├── Room/ ← C→S events
 │ │ ├── join/README.md
 │ │ └── leave/README.md
 │ ├── Media/
@@ -472,21 +526,25 @@ docs/
 │ │ └── consumer-resume/README.md
 │ ├── Seat/
 │ │ ├── take/README.md
-│ │ └── ... (10 total)
+│ │ └── ... (12 total)
 │ ├── Chat/
 │ │ └── message/README.md
 │ ├── Gift/
 │ │ ├── send/README.md
 │ │ └── prepare/README.md
-│ └── User/
-│ └── get-room/README.md
+│ ├── User/
+│ │ └── get-room/README.md
+│ └── Server/ ← S→C broadcast events
+│ ├── room-userJoined/README.md
+│ ├── seat-updated/README.md
+│ ├── gift-received/README.md
+│ └── ... (13 total)
 │
-├── Integration/
-│ ├── LARAVEL_API.md ← Internal API contracts
-│ ├── LARAVEL_EVENTS.md ← Pub/sub event catalog
-│ └── NUXT_CLIENT.md ← Frontend integration
+├── Integrations/
+│ ├── LARAVEL.md ← HTTP API + Pub/Sub contracts
+│ └── NUXT_CLIENT.md ← Frontend integration guide
 │
-└── Old/ ← Legacy docs (reference only)
+└── Old ( Deprecated )/ ← Legacy docs (reference only)
 
 ```
 
@@ -500,17 +558,16 @@ docs/
 
 ---
 
-## Template
+## Templates
 
-A ready-to-use template is available at:
+Two templates are available:
 
-```
+| Template                 | Use For          | Location             |
+|--------------------------|------------------|----------------------|
+| **C→S Event Template**   | Client→Server events | `docs/TEMPLATE.md` |
+| **Broadcast Template**   | Server→Client broadcasts | `docs/BROADCAST_TEMPLATE.md` |
 
-docs/TEMPLATE.md
-
-```
-
-Copy this template when starting new event documentation.
+Copy the appropriate template when starting new event documentation.
 
 ---
 
@@ -553,5 +610,6 @@ Use this checklist when creating new event documentation:
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
+| 2.0 | 2026-02-12 | System | Added Required/Recommended tiers, S→C broadcast template, TypeScript interface requirements, Schema Change Log, Mermaid diagram option, NUXT_CLIENT.md reference |
 | 1.0 | 2026-02-09 | System | Initial standard created |
 ```
