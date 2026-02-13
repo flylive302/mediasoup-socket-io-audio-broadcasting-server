@@ -1,0 +1,205 @@
+{
+  "meta": {
+    "timestamp": "2026-02-13T09:59:18+05:00",
+    "auditRef": "reports/audit-2026-02-13-0918.json",
+    "commit": "28ec11d"
+  },
+  "remediations": [
+    {
+      "issueId": "RL-001",
+      "severity": "HIGH",
+      "filesTouched": ["src/integrations/laravel/event-subscriber.ts"],
+      "patchSketch": "Move backpressure check from finally block (after decrement) to after increment (entry point)",
+      "downstreamCallsites": ["src/socket/index.ts:68 — new LaravelEventSubscriber(...)"],
+      "runtimeRisk": "None — only changes when the warn log fires",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P0",
+      "docsUpdates": ["docs/Events/Relay/README.md — update backpressure section"],
+      "testsRequired": ["tests/unit/integrations/laravel/event-subscriber.test.ts — should warn when inFlightCount exceeds threshold"]
+    },
+    {
+      "issueId": "RL-002",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/user-socket.repository.ts"],
+      "patchSketch": "Remove hasActiveSockets(), clearUser(), getSocketCount() — 3 dead methods (~30 lines)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — methods are never called",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-003",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/user-socket.repository.ts"],
+      "patchSketch": "Hoist UNREGISTER_LUA from method body to module-level const",
+      "downstreamCallsites": [
+        "src/socket/index.ts:193 — userSocketRepository.unregisterSocket(...)",
+        "src/socket/index.ts:217 — userSocketRepository.unregisterSocket(...)"
+      ],
+      "runtimeRisk": "None — same Lua semantics",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": ["tests/unit/integrations/laravel/user-socket.repository.test.ts — should atomically remove socket and delete empty set"]
+    },
+    {
+      "issueId": "RL-004",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/event-router.ts"
+      ],
+      "patchSketch": "Remove duration metric from subscriber (sync-only), add it to EventRouter.route() (includes async routing)",
+      "downstreamCallsites": ["src/socket/index.ts:71 — eventRouter.route(event)"],
+      "runtimeRisk": "Minimal — metric values will be higher (correct)",
+      "rollback": "git revert <commit>",
+      "hours": 1.0,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": ["docs/Events/Relay/README.md — note that duration metric now includes routing latency"],
+      "testsRequired": ["tests/unit/integrations/laravel/event-router.test.ts — should observe processing duration for routed events"]
+    },
+    {
+      "issueId": "RL-005",
+      "severity": "LOW",
+      "filesTouched": ["src/integrations/laravel/types.ts"],
+      "patchSketch": "Add @deprecated JSDoc to KNOWN_EVENTS and KnownEventType",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — annotation only",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": ["docs/Events/Relay/README.md — note deprecation"],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-006",
+      "severity": "LOW",
+      "filesTouched": ["src/integrations/laravel/event-subscriber.ts"],
+      "patchSketch": "Remove dead messageBuffer handler (3 lines)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — events were already silently dropped",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-007",
+      "severity": "LOW",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "Replace metrics.laravelEventsReceived?.inc() with .inc() (remove optional chaining)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — metric is always initialized",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P3",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-008",
+      "severity": "INFO",
+      "filesTouched": [
+        "tests/unit/integrations/laravel/event-router.test.ts",
+        "tests/unit/integrations/laravel/event-subscriber.test.ts",
+        "tests/unit/integrations/laravel/user-socket.repository.test.ts"
+      ],
+      "patchSketch": "Create 3 new test files: EventRouter (7 cases), EventSubscriber (7 cases), UserSocketRepository (5 cases)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — test-only",
+      "rollback": "Delete test files",
+      "hours": 3.0,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-009",
+      "severity": "INFO",
+      "filesTouched": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/types.ts"
+      ],
+      "patchSketch": "Add KNOWN_EVENT_NAMES Set to types.ts; add warn log in subscriber for unknown events",
+      "downstreamCallsites": ["src/socket/index.ts:68 — new LaravelEventSubscriber(...)"],
+      "runtimeRisk": "Minimal — adds one Set.has() per event (~O(1))",
+      "rollback": "git revert <commit>",
+      "hours": 1.0,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": ["docs/Events/Relay/README.md — document unknown event warning behavior"],
+      "testsRequired": ["tests/unit/integrations/laravel/event-subscriber.test.ts — should warn on unknown event names"]
+    },
+    {
+      "issueId": "RL-010",
+      "severity": "INFO",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "Guard event_type label: use event.event if known, else 'unknown'",
+      "downstreamCallsites": [],
+      "runtimeRisk": "Minimal — adds one Set.has() per event",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": ["tests/unit/integrations/laravel/event-router.test.ts — should bucket unknown events under 'unknown' label"]
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 1,
+      "title": "fix(relay): backpressure bug, dead code, Lua hoist",
+      "files": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/user-socket.repository.ts",
+        "src/integrations/laravel/event-router.ts"
+      ],
+      "findings": ["RL-001", "RL-002", "RL-003", "RL-006", "RL-007"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 2,
+      "title": "perf(relay): fix duration metric, add allowlist + cardinality guard",
+      "files": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/event-router.ts",
+        "src/integrations/laravel/types.ts"
+      ],
+      "findings": ["RL-004", "RL-005", "RL-009", "RL-010"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 3,
+      "title": "test(relay): add unit tests for relay domain",
+      "files": [
+        "tests/unit/integrations/laravel/event-router.test.ts",
+        "tests/unit/integrations/laravel/event-subscriber.test.ts",
+        "tests/unit/integrations/laravel/user-socket.repository.test.ts"
+      ],
+      "findings": ["RL-008"],
+      "dependsOn": [1, 2]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "All relay domain fixes + tests",
+      "prs": [1, 2, 3],
+      "hours": 8.25
+    }
+  ]
+}

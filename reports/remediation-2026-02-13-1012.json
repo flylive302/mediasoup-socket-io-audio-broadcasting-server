@@ -1,0 +1,214 @@
+{
+  "meta": {
+    "timestamp": "2026-02-13T10:12:47+05:00",
+    "auditRef": "reports/audit-2026-02-13-0918.json",
+    "commit": "28ec11d",
+    "scope": "relay-domain-supplementary",
+    "note": "Supplementary findings (RL-011→RL-018) missed by the original audit"
+  },
+  "remediations": [
+    {
+      "issueId": "RL-011",
+      "severity": "CRITICAL",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "Remove local adapter.rooms.get() gate in emitToRoom and emitToUserInRoom — emit unconditionally via io.to().emit() which Redis adapter broadcasts cross-instance",
+      "downstreamCallsites": ["src/socket/index.ts:73 — eventRouter.route(event)"],
+      "runtimeRisk": "Low — events previously dropped will now be delivered. May surface latent frontend bugs.",
+      "rollback": "git revert <commit>",
+      "hours": 1.0,
+      "owner": "Backend",
+      "priority": "P0",
+      "docsUpdates": ["docs/Events/Relay/README.md — note multi-instance delivery semantics"],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/event-router.test.ts — emitToRoom emits unconditionally even with empty local room",
+        "tests/unit/integrations/laravel/event-router.test.ts — emitToUserInRoom emits when user sockets exist regardless of local room"
+      ]
+    },
+    {
+      "issueId": "RL-012",
+      "severity": "HIGH",
+      "filesTouched": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/event-router.ts"
+      ],
+      "patchSketch": "Move laravelEventsInFlight gauge inc/dec and laravelEventProcessingDuration observe from subscriber (sync-only) to EventRouter.route() (includes async routing)",
+      "downstreamCallsites": ["src/socket/index.ts:73 — eventRouter.route(event)"],
+      "runtimeRisk": "Minimal — metric values will change (duration higher, in-flight reflects reality). Dashboards may need threshold adjustments.",
+      "rollback": "git revert <commit>",
+      "hours": 1.5,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": ["docs/Events/Relay/README.md — update observability section"],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/event-router.test.ts — route() increments/decrements in-flight gauge correctly",
+        "tests/unit/integrations/laravel/event-router.test.ts — route() records duration metric including async work",
+        "tests/unit/integrations/laravel/event-subscriber.test.ts — no in-flight gauge calls in subscriber"
+      ]
+    },
+    {
+      "issueId": "RL-013",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/socket/index.ts"],
+      "patchSketch": "Replace fire-and-forget registerSocket call with registerWithRetry helper (3 attempts, exponential backoff 100ms/200ms/400ms) + failure metric",
+      "downstreamCallsites": ["src/socket/index.ts:116 — registerSocket in connection handler"],
+      "runtimeRisk": "Low — adds up to 700ms latency only on Redis failure. Normal path unchanged.",
+      "rollback": "git revert <commit>",
+      "hours": 0.5,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/event-router.test.ts — registerWithRetry retries on failure",
+        "tests/unit/integrations/laravel/event-router.test.ts — registerWithRetry succeeds on first attempt"
+      ]
+    },
+    {
+      "issueId": "RL-014",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "Add metrics.laravelEventsReceived.inc({ event_type, delivered: 'error' }) in catch block of route()",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — adds a metric increment on error path",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P1",
+      "docsUpdates": [],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/event-router.test.ts — route() increments counter on error path with delivered: error"
+      ]
+    },
+    {
+      "issueId": "RL-015",
+      "severity": "MEDIUM",
+      "filesTouched": [
+        "src/integrations/laravel/user-socket.repository.ts",
+        "src/integrations/laravel/user-room.repository.ts",
+        "src/integrations/laravel/index.ts",
+        "src/socket/index.ts",
+        "src/domains/room/room.handler.ts",
+        "src/domains/user/user.handler.ts",
+        "src/context.ts"
+      ],
+      "patchSketch": "Extract setUserRoom/clearUserRoom/getUserRoom into new UserRoomRepository class. Update all 4 downstream callsite files and AppContext interface.",
+      "downstreamCallsites": [
+        "src/socket/index.ts:194 — clearUserRoom",
+        "src/socket/index.ts:218 — clearUserRoom",
+        "src/domains/room/room.handler.ts:142 — setUserRoom",
+        "src/domains/room/room.handler.ts:216 — clearUserRoom",
+        "src/domains/user/user.handler.ts:29 — getUserRoom"
+      ],
+      "runtimeRisk": "Medium — interface change across 4 files. Must be atomic.",
+      "rollback": "git revert <commit>",
+      "hours": 1.5,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": ["docs/Events/Relay/README.md — document UserRoomRepository separation"],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/user-room.repository.test.ts — setUserRoom stores room with TTL",
+        "tests/unit/integrations/laravel/user-room.repository.test.ts — clearUserRoom deletes key",
+        "tests/unit/integrations/laravel/user-room.repository.test.ts — getUserRoom returns null when not set"
+      ]
+    },
+    {
+      "issueId": "RL-016",
+      "severity": "MEDIUM",
+      "filesTouched": ["src/integrations/laravel/types.ts"],
+      "patchSketch": "Add @deprecated JSDoc to RELAY_EVENTS (same treatment as RL-005 for KNOWN_EVENTS)",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — annotation only",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-017",
+      "severity": "LOW",
+      "filesTouched": ["src/integrations/laravel/event-subscriber.ts"],
+      "patchSketch": "Remove redundant `if (channel !== this.channel) return;` guard — subscriber only subscribes to one channel",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — dead code removal",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": []
+    },
+    {
+      "issueId": "RL-018",
+      "severity": "LOW",
+      "filesTouched": ["src/integrations/laravel/event-router.ts"],
+      "patchSketch": "Update emitToAll to compute targetCount after emit, with comment noting local-only count",
+      "downstreamCallsites": [],
+      "runtimeRisk": "None — metric accuracy improvement",
+      "rollback": "git revert <commit>",
+      "hours": 0.25,
+      "owner": "Backend",
+      "priority": "P2",
+      "docsUpdates": [],
+      "testsRequired": [
+        "tests/unit/integrations/laravel/event-router.test.ts — emitToAll reports local count but emits globally"
+      ]
+    }
+  ],
+  "prPlan": [
+    {
+      "prNumber": 0,
+      "title": "fix(relay): remove local room gate for multi-instance",
+      "files": [
+        "src/integrations/laravel/event-router.ts"
+      ],
+      "findings": ["RL-011", "RL-018"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 1,
+      "title": "fix(relay): move observability to EventRouter.route()",
+      "files": [
+        "src/integrations/laravel/event-subscriber.ts",
+        "src/integrations/laravel/event-router.ts"
+      ],
+      "findings": ["RL-012", "RL-014"],
+      "dependsOn": []
+    },
+    {
+      "prNumber": 2,
+      "title": "refactor(relay): SRP extract, dead surface, retry",
+      "files": [
+        "src/integrations/laravel/user-socket.repository.ts",
+        "src/integrations/laravel/user-room.repository.ts",
+        "src/integrations/laravel/index.ts",
+        "src/integrations/laravel/types.ts",
+        "src/socket/index.ts",
+        "src/domains/room/room.handler.ts",
+        "src/domains/user/user.handler.ts",
+        "src/context.ts"
+      ],
+      "findings": ["RL-013", "RL-015", "RL-016", "RL-017"],
+      "dependsOn": [1]
+    },
+    {
+      "prNumber": 3,
+      "title": "test(relay): unit tests for RL-011 through RL-018",
+      "files": [
+        "tests/unit/integrations/laravel/event-router.test.ts",
+        "tests/unit/integrations/laravel/event-subscriber.test.ts",
+        "tests/unit/integrations/laravel/user-room.repository.test.ts"
+      ],
+      "findings": ["RL-011", "RL-012", "RL-013", "RL-014", "RL-015", "RL-017", "RL-018"],
+      "dependsOn": [0, 1, 2]
+    }
+  ],
+  "sprintPlan": [
+    {
+      "sprint": 1,
+      "focus": "All supplementary relay domain fixes + tests",
+      "prs": [0, 1, 2, 3],
+      "hours": 7.5
+    }
+  ]
+}

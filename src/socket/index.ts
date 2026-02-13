@@ -25,9 +25,11 @@ import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/ind
 // Events module (Laravel pub/sub integration)
 import {
   UserSocketRepository,
+  UserRoomRepository,
   LaravelEventSubscriber,
   EventRouter,
 } from "@src/integrations/laravel/index.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 export async function initializeSocket(
   io: Server,
@@ -62,6 +64,7 @@ export async function initializeSocket(
 
   // Initialize events system (Laravel pub/sub)
   const userSocketRepository = new UserSocketRepository(redis, logger);
+  const userRoomRepository = new UserRoomRepository(redis, logger);
   const eventRouter = new EventRouter(io, userSocketRepository, logger);
 
   // Create event subscriber with router callback
@@ -100,6 +103,7 @@ export async function initializeSocket(
     autoCloseJob,
     seatRepository,
     userSocketRepository,
+    userRoomRepository,
     eventSubscriber,
   };
 
@@ -111,11 +115,9 @@ export async function initializeSocket(
     // Register Client in ClientManager (local instance tracking)
     clientManager.addClient(socket);
 
-    // Register socket in UserSocketRepository (Redis-backed for cross-instance)
+    // RL-013 FIX: Register socket with retry (Redis-backed for cross-instance)
     if (userId) {
-      userSocketRepository.registerSocket(userId, socket.id).catch((err) => {
-        logger.error({ err, userId, socketId: socket.id }, "Failed to register socket");
-      });
+      registerWithRetry(userSocketRepository, userId, socket.id, logger);
     }
 
 
@@ -134,6 +136,7 @@ export async function initializeSocket(
       handleDisconnect(socket, reason, {
         clientManager,
         userSocketRepository,
+        userRoomRepository,
         seatRepository,
         roomManager,
         logger,
@@ -151,6 +154,7 @@ export async function initializeSocket(
 interface DisconnectDeps {
   clientManager: ClientManager;
   userSocketRepository: UserSocketRepository;
+  userRoomRepository: UserRoomRepository;
   seatRepository: SeatRepository;
   roomManager: RoomManager;
   logger: typeof logger;
@@ -161,7 +165,7 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, seatRepository, roomManager, logger: log } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
@@ -191,7 +195,7 @@ async function handleDisconnect(
     const [seatResult] = await Promise.allSettled([
       seatRepository.leaveSeat(roomId, roomUserId),
       userSocketRepository.unregisterSocket(client.userId, socket.id),
-      userSocketRepository.clearUserRoom(client.userId),
+      userRoomRepository.clearUserRoom(client.userId),
       roomManager.state.adjustParticipantCount(roomId, -1),
     ]);
 
@@ -215,9 +219,31 @@ async function handleDisconnect(
     // No room but has userId — just clean up socket registration
     await Promise.allSettled([
       userSocketRepository.unregisterSocket(client.userId, socket.id),
-      userSocketRepository.clearUserRoom(client.userId),
+      userRoomRepository.clearUserRoom(client.userId),
     ]);
   }
 
   clientManager.removeClient(socket.id);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RL-013 FIX: Register socket with exponential backoff retry
+// ─────────────────────────────────────────────────────────────────
+
+async function registerWithRetry(
+  repo: UserSocketRepository,
+  userId: number,
+  socketId: string,
+  log: typeof logger,
+  attempts = 3,
+): Promise<void> {
+  for (let i = 1; i <= attempts; i++) {
+    const success = await repo.registerSocket(userId, socketId);
+    if (success) return;
+    if (i < attempts) {
+      await new Promise((r) => setTimeout(r, 100 * 2 ** (i - 1))); // 100ms, 200ms, 400ms
+    }
+  }
+  log.error({ userId, socketId }, "Failed to register socket after retries");
+  metrics.socketRegistrationFailures.inc();
 }

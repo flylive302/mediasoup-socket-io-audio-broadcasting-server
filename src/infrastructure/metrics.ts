@@ -137,6 +137,13 @@ export const metrics = {
     buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
     registers: [metricsRegistry],
   }),
+
+  // Socket registration
+  socketRegistrationFailures: new Counter({
+    name: "flylive_socket_registration_failures_total",
+    help: "Total socket registration failures (Redis unreachable during auth)",
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

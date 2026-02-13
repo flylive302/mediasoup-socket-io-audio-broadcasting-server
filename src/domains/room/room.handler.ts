@@ -13,7 +13,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     laravelClient,
     autoCloseService,
     seatRepository,
-    userSocketRepository,
+    userRoomRepository,
   } = context;
 
   // JOIN
@@ -139,7 +139,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       const [newCount] = await Promise.all([
         roomManager.state.adjustParticipantCount(roomId, 1),
         autoCloseService.recordActivity(roomId),
-        userSocketRepository.setUserRoom(userId, roomId),
+        userRoomRepository.setUserRoom(userId, roomId),
       ]);
 
       // BL-001 FIX: Laravel update is fire-and-forget — don't make user wait
@@ -213,7 +213,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     // BL-001 FIX: Parallelize Redis cleanup and fire-and-forget Laravel
     const [newCount] = await Promise.all([
       roomManager.state.adjustParticipantCount(roomId, -1),
-      userSocketRepository.clearUserRoom(socket.data.user.id),
+      userRoomRepository.clearUserRoom(socket.data.user.id),
       autoCloseService.recordActivity(roomId),
     ]);
 

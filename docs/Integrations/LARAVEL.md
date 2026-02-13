@@ -65,7 +65,12 @@ interface LaravelEvent {
 }
 ```
 
-### 3.3 Routing Logic
+### 3.3 Event Allowlist
+
+> [!IMPORTANT]
+> Only events registered in `RELAY_EVENTS` (`src/integrations/laravel/types.ts`) are accepted. Unregistered events are **rejected** with an error log and a `delivered: "rejected"` metric. You must add new events to `RELAY_EVENTS` before publishing.
+
+### 3.4 Routing Logic
 
 | user_id | room_id | Target                         |
 | ------- | ------- | ------------------------------ |
@@ -78,61 +83,18 @@ interface LaravelEvent {
 
 ## 4. Known Event Types
 
-### Economy Events
+Events are documented per domain in [`docs/Events/Relay/`](../Events/Relay/README.md):
 
-| Event             | Description          |
-| ----------------- | -------------------- |
-| `balance.updated` | User balance changed |
-| `reward.earned`   | Reward received      |
+| Domain                                                  | Events | Description                |
+| ------------------------------------------------------- | ------ | -------------------------- |
+| [Economy](../Events/Relay/Economy/README.md)            | 2      | Balance changes, rewards   |
+| [Achievement](../Events/Relay/Achievement/README.md)    | 2      | Badges, level ups          |
+| [Room](../Events/Relay/Room/README.md)                  | 10     | Room levels, membership    |
+| [Income Target](../Events/Relay/IncomeTarget/README.md) | 2      | Income target achievements |
+| [Agency](../Events/Relay/Agency/README.md)              | 8      | Invitations, membership    |
+| [System](../Events/Relay/System/README.md)              | 2      | Cache invalidation         |
 
-### Achievement Events
-
-| Event          | Description     |
-| -------------- | --------------- |
-| `badge.earned` | Badge unlocked  |
-| `level.up`     | User leveled up |
-
-### Room Events
-
-| Event                        | Description               |
-| ---------------------------- | ------------------------- |
-| `room.level_up`              | Room gained a level       |
-| `room.participant_count`     | Participant count changed |
-| `room.member_joined`         | Member joined room group  |
-| `room.member_left`           | Member left room group    |
-| `room.member_kicked`         | Member was kicked         |
-| `room.member_blocked`        | Member was blocked        |
-| `room.member_role_changed`   | Member role updated       |
-| `room.join_request_created`  | New join request          |
-| `room.join_request_approved` | Join request approved     |
-| `room.join_request_rejected` | Join request rejected     |
-
-### Income Target Events
-
-| Event                            | Description                  |
-| -------------------------------- | ---------------------------- |
-| `income_target.completed`        | Target achieved              |
-| `income_target.member_completed` | Member contribution complete |
-
-### Agency Events
-
-| Event                          | Description          |
-| ------------------------------ | -------------------- |
-| `agency.invitation`            | Invited to agency    |
-| `agency.join_request`          | Join request created |
-| `agency.join_request_approved` | Approved             |
-| `agency.join_request_rejected` | Rejected             |
-| `agency.member_kicked`         | Member kicked        |
-| `agency.member_joined`         | Member joined        |
-| `agency.member_left`           | Member left          |
-| `agency.dissolved`             | Agency dissolved     |
-
-### System Events
-
-| Event               | Description               |
-| ------------------- | ------------------------- |
-| `config:invalidate` | Config cache invalidation |
-| `asset:invalidate`  | Asset cache invalidation  |
+📖 For the complete map of all events (including socket events), see [`docs/EVENT_MAP.md`](../EVENT_MAP.md).
 
 ---
 
@@ -141,5 +103,5 @@ interface LaravelEvent {
 | Property     | Value                                                            |
 | ------------ | ---------------------------------------------------------------- |
 | Created      | 2026-02-09                                                       |
-| Last Updated | 2026-02-12                                                       |
+| Last Updated | 2026-02-13                                                       |
 | Source       | `src/integrations/laravelClient.ts`, `src/integrations/laravel/` |

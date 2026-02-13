@@ -12,6 +12,7 @@ import type { Server } from "socket.io";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { UserSocketRepository } from "./user-socket.repository.js";
 import type { LaravelEvent, EventRoutingResult, EventTarget } from "./types.js";
+import { KNOWN_EVENT_SET } from "./types.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 export class EventRouter {
@@ -25,8 +26,22 @@ export class EventRouter {
    * Route an event to appropriate Socket.IO targets
    */
   async route(event: LaravelEvent): Promise<EventRoutingResult> {
+    // Allowlist gate — only registered events pass through
+    if (!KNOWN_EVENT_SET.has(event.event)) {
+      this.logger.error(
+        { event: event.event, correlationId: event.correlation_id },
+        "Unknown relay event — register in RELAY_EVENTS (types.ts) before publishing",
+      );
+      metrics.laravelEventsReceived.inc({
+        event_type: "unknown",
+        delivered: "rejected",
+      });
+      return { delivered: false, targetCount: 0, error: "Unknown event" };
+    }
+
     const startTime = Date.now();
     const target = this.determineTarget(event);
+    metrics.laravelEventsInFlight.inc();
 
     this.logger.debug(
       {
@@ -42,6 +57,7 @@ export class EventRouter {
 
       switch (target.type) {
         case "user":
+        case "user_in_room":
           result = await this.emitToUser(
             target.userId,
             event.event,
@@ -53,21 +69,13 @@ export class EventRouter {
           result = this.emitToRoom(target.roomId, event.event, event.payload);
           break;
 
-        case "user_in_room":
-          result = await this.emitToUserInRoom(
-            target.userId,
-            target.roomId,
-            event.event,
-            event.payload,
-          );
-          break;
-
         case "broadcast":
           result = this.emitToAll(event.event, event.payload);
           break;
       }
 
       const durationMs = Date.now() - startTime;
+      const durationSec = durationMs / 1000;
 
       this.logger.debug(
         {
@@ -81,8 +89,14 @@ export class EventRouter {
         "Event routed",
       );
 
-      // Record metrics
-      metrics.laravelEventsReceived?.inc({
+      // RL-012 FIX: Duration metric now includes async routing time
+      metrics.laravelEventProcessingDuration.observe(
+        { event_type: event.event },
+        durationSec,
+      );
+
+      // RL-007 FIX: Remove optional chaining — metric is always initialized
+      metrics.laravelEventsReceived.inc({
         event_type: event.event,
         delivered: result.delivered ? "true" : "false",
       });
@@ -98,11 +112,19 @@ export class EventRouter {
         "Failed to route event",
       );
 
+      // RL-014 FIX: Count failed events so they're visible in Prometheus
+      metrics.laravelEventsReceived.inc({
+        event_type: event.event,
+        delivered: "error",
+      });
+
       return {
         delivered: false,
         targetCount: 0,
         error: err instanceof Error ? err.message : "Unknown error",
       };
+    } finally {
+      metrics.laravelEventsInFlight.dec();
     }
   }
 
@@ -163,71 +185,30 @@ export class EventRouter {
   }
 
   /**
-   * Emit event to all sockets in a room
+   * Emit event to all sockets in a room.
+   * Emits unconditionally — Redis adapter handles cross-instance delivery.
+   * Local room count is informational only (not a delivery gate).
    */
   private emitToRoom(
     roomId: string,
     event: string,
     payload: unknown,
   ): EventRoutingResult {
-    // Get count of sockets in room for metrics
-    const room = this.io.sockets.adapter.rooms.get(roomId);
-    const targetCount = room?.size ?? 0;
-
-    if (targetCount === 0) {
-      this.logger.debug({ roomId, event }, "Room has no sockets");
-      return { delivered: false, targetCount: 0 };
-    }
-
     this.io.to(roomId).emit(event, payload);
+    const localCount = this.io.sockets.adapter.rooms.get(roomId)?.size ?? 0;
 
-    return { delivered: true, targetCount };
+    return { delivered: true, targetCount: localCount };
   }
 
   /**
-   * Emit event to a specific user within a room context
-   * Used when both user_id and room_id are set
-   */
-  private async emitToUserInRoom(
-    userId: number,
-    roomId: string,
-    event: string,
-    payload: unknown,
-  ): Promise<EventRoutingResult> {
-    const socketIds = await this.userSocketRepo.getSocketIds(userId);
-    const room = this.io.sockets.adapter.rooms.get(roomId);
-
-    if (!room) {
-      this.logger.debug({ userId, roomId, event }, "Room does not exist");
-      return { delivered: false, targetCount: 0 };
-    }
-
-    // Find sockets belonging to user that are in the room
-    const targetSockets = socketIds.filter((sid) => room.has(sid));
-
-    if (targetSockets.length === 0) {
-      this.logger.debug({ userId, roomId, event }, "User not in room");
-      return { delivered: false, targetCount: 0 };
-    }
-
-    // Chain .to() for a single adapter call
-    let target = this.io.to(targetSockets[0]!);
-    for (let i = 1; i < targetSockets.length; i++) {
-      target = target.to(targetSockets[i]!);
-    }
-    target.emit(event, payload);
-
-    return { delivered: true, targetCount: targetSockets.length };
-  }
-
-  /**
-   * Broadcast event to all connected sockets
+   * Broadcast event to all connected sockets.
+   * io.emit() broadcasts to all instances via Redis adapter.
+   * targetCount reflects local sockets only (informational).
    */
   private emitToAll(event: string, payload: unknown): EventRoutingResult {
-    const targetCount = this.io.sockets.sockets.size;
-
     this.io.emit(event, payload);
+    const localCount = this.io.sockets.sockets.size;
 
-    return { delivered: true, targetCount };
+    return { delivered: true, targetCount: localCount };
   }
 }

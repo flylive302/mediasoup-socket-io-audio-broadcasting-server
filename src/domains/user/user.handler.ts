@@ -10,7 +10,7 @@ import { getUserRoomSchema } from "@src/socket/schemas.js";
 import { Errors } from "@src/shared/errors.js";
 
 export const userHandler = (socket: Socket, context: AppContext) => {
-  const { userSocketRepository } = context;
+  const { userRoomRepository } = context;
 
   /**
    * Get the room a user is currently in
@@ -26,7 +26,7 @@ export const userHandler = (socket: Socket, context: AppContext) => {
     const { userId } = parseResult.data;
 
     try {
-      const roomId = await userSocketRepository.getUserRoom(userId);
+      const roomId = await userRoomRepository.getUserRoom(userId);
       
       logger.debug({ userId, roomId }, "user:getRoom result");
       

@@ -7,18 +7,31 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelEvent } from "./types.js";
-import { metrics } from "@src/infrastructure/metrics.js";
+import { z } from "zod";
 
-const BACKPRESSURE_THRESHOLD = 50;
+/** Zod schema for incoming Laravel event messages from Redis pub/sub */
+const LaravelEventSchema = z.object({
+  event: z.string(),
+  user_id: z.number().nullable().default(null),
+  room_id: z.number().nullable().default(null),
+  payload: z.record(z.unknown()).default({}),
+  timestamp: z.string().default(() => new Date().toISOString()),
+  correlation_id: z.string().default("unknown"),
+});
+
 
 export class LaravelEventSubscriber {
   private subscriber: Redis | null = null;
   private isRunning = false;
-  private inFlightCount = 0;
 
   constructor(
     private readonly redis: Redis,
     private readonly channel: string,
+    /**
+     * Callback invoked for each parsed event. Expected to be synchronous or
+     * fire-and-forget async (caller manages its own error handling via .catch()).
+     * The subscriber does NOT await this callback.
+     */
     private readonly onEvent: (event: LaravelEvent) => void,
     private readonly logger: Logger,
   ) {}
@@ -51,48 +64,21 @@ export class LaravelEventSubscriber {
     });
 
     // Handle incoming messages (standard event)
-    this.subscriber.on("message", (channel, message) => {
-      this.logger.debug({ channel, messageLength: message.length }, "Redis message received");
-      
-      if (channel !== this.channel) return;
-
-      const startTime = Date.now();
-      metrics.laravelEventsInFlight.inc();
-      this.inFlightCount++;
+    this.subscriber.on("message", (_channel, message) => {
+      this.logger.debug({ messageLength: message.length }, "Redis message received");
 
       try {
         const event = this.parseEvent(message);
         if (event) {
           this.logger.debug({ event: event.event, user_id: event.user_id }, "Event parsed, routing...");
           this.onEvent(event);
-
-          const durationSec = (Date.now() - startTime) / 1000;
-          metrics.laravelEventProcessingDuration.observe(
-            { event_type: event.event },
-            durationSec,
-          );
         }
       } catch (err) {
         this.logger.error(
           { err, message: message.substring(0, 200) },
           "Failed to process event message",
         );
-      } finally {
-        metrics.laravelEventsInFlight.dec();
-        this.inFlightCount--;
-
-        if (this.inFlightCount > BACKPRESSURE_THRESHOLD) {
-          this.logger.warn(
-            { inFlight: this.inFlightCount, threshold: BACKPRESSURE_THRESHOLD },
-            "Laravel event subscriber backpressure detected",
-          );
-        }
       }
-    });
-
-    // Some ioredis versions use messageBuffer instead
-    this.subscriber.on("messageBuffer", (_channel, _message) => {
-      this.logger.debug("Redis messageBuffer received (buffer mode)");
     });
 
     // Subscribe to the channel
@@ -137,9 +123,9 @@ export class LaravelEventSubscriber {
    * Parse and validate event message
    */
   private parseEvent(message: string): LaravelEvent | null {
-    let parsed: unknown;
+    let raw: unknown;
     try {
-      parsed = JSON.parse(message);
+      raw = JSON.parse(message);
     } catch {
       this.logger.warn(
         { messagePreview: message.substring(0, 100) },
@@ -148,37 +134,15 @@ export class LaravelEventSubscriber {
       return null;
     }
 
-    // Basic validation
-    if (typeof parsed !== "object" || parsed === null) {
-      this.logger.warn("Invalid event: not an object");
+    const result = LaravelEventSchema.safeParse(raw);
+    if (!result.success) {
+      this.logger.warn(
+        { errors: result.error.flatten().fieldErrors },
+        "Invalid event: schema validation failed",
+      );
       return null;
     }
 
-    const obj = parsed as Record<string, unknown>;
-
-    if (typeof obj.event !== "string") {
-      this.logger.warn("Invalid event: missing event type");
-      return null;
-    }
-
-    // Validate user_id and room_id types
-    if (obj.user_id !== null && typeof obj.user_id !== "number") {
-      this.logger.warn({ user_id: obj.user_id }, "Invalid user_id type");
-      return null;
-    }
-
-    if (obj.room_id !== null && typeof obj.room_id !== "number") {
-      this.logger.warn({ room_id: obj.room_id }, "Invalid room_id type");
-      return null;
-    }
-
-    return {
-      event: obj.event as string,
-      user_id: (obj.user_id as number) ?? null,
-      room_id: (obj.room_id as number) ?? null,
-      payload: (obj.payload as Record<string, unknown>) ?? {},
-      timestamp: (obj.timestamp as string) ?? new Date().toISOString(),
-      correlation_id: (obj.correlation_id as string) ?? "unknown",
-    };
+    return result.data;
   }
 }
