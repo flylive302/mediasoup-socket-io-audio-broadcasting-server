@@ -101,6 +101,7 @@ main() {
         printf "export RTC_MIN_PORT=%q\n" "${RTC_MIN_PORT}"
         printf "export RTC_MAX_PORT=%q\n" "${RTC_MAX_PORT}"
         printf "export CORS_ORIGINS=%q\n" "${CORS_ORIGINS}"
+        printf "export JWT_SECRET=%q\n" "${JWT_SECRET}"
     } > "${temp_env_file}"
 
     # Securely copy environment file to remote host
@@ -172,6 +173,8 @@ MEDIASOUP_RTC_MIN_PORT=${RTC_MIN_PORT}
 MEDIASOUP_RTC_MAX_PORT=${RTC_MAX_PORT}
 
 CORS_ORIGINS=${CORS_ORIGINS}
+
+JWT_SECRET=${JWT_SECRET}
 ENV_EOF
 
 # Generate version.json for health check
