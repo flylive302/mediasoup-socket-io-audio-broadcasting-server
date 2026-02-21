@@ -25,6 +25,7 @@ export const Errors = {
 
   MUTE_FAILED: "Failed to mute user",
   UNMUTE_FAILED: "Failed to unmute user",
+  VIP_PROTECTED: "User is VIP protected",
 
   // Invite
   INVITE_CREATE_FAILED: "Failed to create invite",

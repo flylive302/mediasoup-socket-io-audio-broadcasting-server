@@ -4,7 +4,9 @@
 import { seatRemoveSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
+import { isVipAntiKickProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { Errors } from "@src/shared/errors.js";
 
 export const removeSeatHandler = createHandler(
   "seat:remove",
@@ -16,6 +18,20 @@ export const removeSeatHandler = createHandler(
     const ownership = await verifyRoomOwner(roomId, requesterId, context);
     if (!ownership.allowed) {
       return { success: false, error: ownership.error };
+    }
+
+    // VIP anti-kick guard
+    const isProtected = await isVipAntiKickProtected(
+      context.io,
+      context.userSocketRepository,
+      targetUserId,
+    );
+    if (isProtected) {
+      logger.info(
+        { roomId, targetUserId, requesterId },
+        "VIP anti-kick: target user is protected",
+      );
+      return { success: false, error: Errors.VIP_PROTECTED };
     }
 
     const targetUserIdStr = String(targetUserId);

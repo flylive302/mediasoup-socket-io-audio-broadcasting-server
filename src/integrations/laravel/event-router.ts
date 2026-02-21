@@ -12,8 +12,9 @@ import type { Server } from "socket.io";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { UserSocketRepository } from "./user-socket.repository.js";
 import type { LaravelEvent, EventRoutingResult, EventTarget } from "./types.js";
-import { KNOWN_EVENT_SET } from "./types.js";
+import { KNOWN_EVENT_SET, RELAY_EVENTS } from "./types.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { syncVipLevelOnSockets } from "@src/domains/seat/vip.guard.js";
 
 export class EventRouter {
   constructor(
@@ -100,6 +101,27 @@ export class EventRouter {
         event_type: event.event,
         delivered: result.delivered ? "true" : "false",
       });
+
+      // Post-relay side-effect: sync socket.data.user when VIP status changes
+      if (
+        result.delivered &&
+        event.event === RELAY_EVENTS.vip.VIP_UPDATED &&
+        event.user_id !== null
+      ) {
+        try {
+          const vipLevel =
+            typeof event.payload.vip_level === "number"
+              ? event.payload.vip_level
+              : 0;
+          syncVipLevelOnSockets(this.io, event.user_id, vipLevel);
+        } catch (syncErr) {
+          // Non-blocking — VIP sync failure should not break event routing
+          this.logger.warn(
+            { err: syncErr, userId: event.user_id },
+            "Failed to sync VIP level on sockets",
+          );
+        }
+      }
 
       return result;
     } catch (err) {

@@ -6,6 +6,7 @@
 import { seatMuteSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { isVipAntiMuteProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
 
@@ -29,6 +30,22 @@ export function createMuteHandler(config: MuteConfig) {
       const authorization = await verifyRoomManager(roomId, userId, context);
       if (!authorization.allowed) {
         return { success: false, error: authorization.error };
+      }
+
+      // VIP anti-mute guard — only applies when muting, not unmuting
+      if (config.muted) {
+        const isProtected = await isVipAntiMuteProtected(
+          context.io,
+          context.userSocketRepository,
+          targetUserId,
+        );
+        if (isProtected) {
+          logger.info(
+            { roomId, targetUserId, requesterId: userId },
+            "VIP anti-mute: target user is protected",
+          );
+          return { success: false, error: Errors.VIP_PROTECTED };
+        }
       }
 
       const targetUserIdStr = String(targetUserId);

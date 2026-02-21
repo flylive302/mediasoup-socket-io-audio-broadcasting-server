@@ -98,6 +98,12 @@ export const RELAY_EVENTS = {
     AGENCY_DISSOLVED: "agency.dissolved",
   },
 
+  /** VIP: status changes, gifting */
+  vip: {
+    VIP_UPDATED: "vip.updated",
+    VIP_GIFTED: "vip.gifted",
+  },
+
   /** System: cache invalidation signals */
   system: {
     CONFIG_INVALIDATE: "config:invalidate",

@@ -24,6 +24,7 @@ export const UserSchema = z.object({
   wealth_xp: z.string(),
   charm_xp: z.string(),
   is_blocked: z.boolean(),
+  vip_level: z.number().default(0),
   isSpeaker: z.boolean(),
 });
 

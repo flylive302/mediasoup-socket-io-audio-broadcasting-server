@@ -154,6 +154,18 @@
 
 ---
 
+### VIP (2 relay events)
+
+| Event         | Direction        | Description                              |
+| ------------- | ---------------- | ---------------------------------------- |
+| `vip.updated` | Laravel → Client | VIP status changed (purchase/gift/grant) |
+| `vip.gifted`  | Laravel → Client | VIP gifted by another user               |
+
+> [!NOTE]
+> `vip.updated` also triggers a post-relay hook in MSAB to sync `socket.data.user.vip_level` for VIP guard enforcement (anti-mute / anti-kick).
+
+---
+
 ### System (2 relay events)
 
 | Event               | Direction        | Description               |
@@ -169,8 +181,8 @@
 | ---------------- | ------ | ------------------------------------ |
 | Client → Server  | **25** | Socket.IO handlers in `src/domains/` |
 | Server → Client  | **13** | `socket.emit()` / `io.to().emit()`   |
-| Laravel → Client | **26** | Redis pub/sub → `EventRouter` relay  |
-| **Total**        | **64** |                                      |
+| Laravel → Client | **28** | Redis pub/sub → `EventRouter` relay  |
+| **Total**        | **66** |                                      |
 
 > [!NOTE]
 > **Relay events are allowlisted.** Only events registered in `RELAY_EVENTS` (`src/integrations/laravel/types.ts`) are accepted by `EventRouter`. Unregistered events are rejected. See [Relay Events README](./Events/Relay/README.md) for the registration workflow.
