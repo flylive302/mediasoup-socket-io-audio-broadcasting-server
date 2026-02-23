@@ -66,7 +66,7 @@ export const RELAY_EVENTS = {
     LEVEL_UP: "level.up",
   },
 
-  /** Room: level ups, participant counts, membership changes */
+  /** Room: level ups, participant counts, membership changes, settings */
   room: {
     ROOM_LEVEL_UP: "room.level_up",
     ROOM_PARTICIPANT_COUNT: "room.participant_count",
@@ -78,6 +78,10 @@ export const RELAY_EVENTS = {
     ROOM_JOIN_REQUEST_CREATED: "room.join_request_created",
     ROOM_JOIN_REQUEST_APPROVED: "room.join_request_approved",
     ROOM_JOIN_REQUEST_REJECTED: "room.join_request_rejected",
+    ROOM_UPDATED: "room.updated",
+    ROOM_INVITATION_CANCELLED: "room.invitation_cancelled",
+    ROOM_JOIN_REQUEST_CANCELLED: "room.join_request_cancelled",
+    ROOM_USER_UNBLOCKED: "room.user_unblocked",
   },
 
   /** Income Targets: achievement tracking */
