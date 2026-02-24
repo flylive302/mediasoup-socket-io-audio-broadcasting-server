@@ -30,7 +30,7 @@ main() {
     check_doctl
     check_required_vars
 
-    local lb_ip=$(doctl compute load-balancer list --format IP,Name --no-header | grep "^[0-9.]* ${LB_NAME}$" | awk '{print $1}')
+    local lb_ip=$(doctl compute load-balancer list --format IP,Name --no-header 2>/dev/null | grep "^[0-9.]* ${LB_NAME}$" | awk '{print $1}' || echo "")
     if [[ -z "$lb_ip" ]]; then
         log_warn "Load balancer IP not yet assigned (pending)"
         lb_ip="<pending>"
@@ -67,7 +67,7 @@ main() {
 create_vpc() {
     log_info "Step 1/6: Creating VPC..."
     
-    local existing_vpc=$(get_vpc_id)
+    local existing_vpc=$(get_vpc_id 2>/dev/null || echo "")
     
     if [[ -n "$existing_vpc" ]]; then
         log_warn "VPC '${VPC_NAME}' already exists (ID: ${existing_vpc})"
@@ -144,7 +144,7 @@ create_valkey() {
 create_firewall() {
     log_info "Step 3/6: Creating Firewall..."
     
-    local existing_fw=$(get_firewall_id)
+    local existing_fw=$(get_firewall_id 2>/dev/null || echo "")
     
     if [[ -n "$existing_fw" ]]; then
         log_warn "Firewall '${FIREWALL_NAME}' already exists (ID: ${existing_fw})"
@@ -397,7 +397,7 @@ REMOTE_SCRIPT
 create_load_balancer() {
     log_info "Step 6/6: Creating Load Balancer..."
     
-    local existing_lb=$(get_lb_id)
+    local existing_lb=$(get_lb_id 2>/dev/null || echo "")
     
     if [[ -n "$existing_lb" ]]; then
         log_warn "Load Balancer '${LB_NAME}' already exists (ID: ${existing_lb})"
