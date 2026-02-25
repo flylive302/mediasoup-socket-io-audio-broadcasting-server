@@ -1,26 +1,16 @@
-name: Deploy to Production
+name: Deploy to AWS EC2
 
 on:
   push:
     branches: [master]
-  workflow_dispatch:
-    inputs:
-      droplet:
-        description: 'Specific droplet to deploy to (optional, deploys to all if empty)'
-        required: false
-        type: string
+  workflow_dispatch: # Manual trigger from GitHub UI
 
-# Ensure only one deployment runs at a time
+# Only one deploy at a time
 concurrency:
-  group: production-deploy
+  group: aws-deploy
   cancel-in-progress: false
 
-env:
-  PROJECT_NAME: flylive-audio
-  DO_REGION: sgp1
-
 jobs:
-  # First run CI checks
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -29,8 +19,8 @@ jobs:
       - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 24          
-          cache: 'npm'
+          node-version: 24
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -47,285 +37,60 @@ jobs:
       - name: Test
         run: npm test
 
-  # Deploy to production after CI passes
   deploy:
     needs: ci
     runs-on: ubuntu-latest
-    environment: production
+    environment: aws-production
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate DigitalOcean token
-        run: |
-          if [ -z "${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" ]; then
-            echo "❌ Error: DIGITALOCEAN_ACCESS_TOKEN secret is not configured"
-            echo ""
-            echo "This workflow uses the 'production' environment, which requires secrets to be configured"
-            echo "at the environment level, not just at the repository level."
-            echo ""
-            echo "To fix this:"
-            echo "1. Go to your repository settings"
-            echo "2. Navigate to Settings > Environments > production"
-            echo "3. Add the DIGITALOCEAN_ACCESS_TOKEN secret"
-            exit 1
-          fi
-          echo "✓ DigitalOcean token is configured"
-
-      - name: Validate deployment secrets
-        run: |
-          MISSING_SECRETS=()
-          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
-            MISSING_SECRETS+=("SSH_PRIVATE_KEY")
-          fi
-          if [ -z "${{ secrets.LARAVEL_INTERNAL_KEY }}" ]; then
-            MISSING_SECRETS+=("LARAVEL_INTERNAL_KEY")
-          fi
-          if [ -z "${{ secrets.VALKEY_PASSWORD }}" ]; then
-            MISSING_SECRETS+=("VALKEY_PASSWORD")
-          fi
-          
-          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
-            echo "❌ Error: The following secrets are not configured in the 'production' environment:"
-            for secret in "${MISSING_SECRETS[@]}"; do
-              echo "  - $secret"
-            done
-            echo ""
-            echo "To fix this:"
-            echo "1. Go to your repository settings"
-            echo "2. Navigate to Settings > Environments > production"
-            echo "3. Add the missing secrets listed above"
-            exit 1
-          fi
-          echo "✓ All required secrets are configured"
-
-      - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            set -e
+            APP_DIR="/opt/msab"
+            echo "📦 Pulling latest code..."
+            cd "$APP_DIR"
+            sudo git fetch origin
+            sudo git checkout master
+            sudo git pull origin master
 
-      - name: Get production droplets
-        id: droplets
-        run: |
-          DROPLETS=$(doctl compute droplet list --tag-name "$PROJECT_NAME" --format ID,Name,PublicIPv4 --no-header)
-          if [ -z "$DROPLETS" ]; then
-            echo "No droplets found with tag '$PROJECT_NAME'"
-            exit 1
-          fi
-          echo "Found droplets:"
-          echo "$DROPLETS"
-          echo "droplets<<EOF" >> $GITHUB_OUTPUT
-          echo "$DROPLETS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+            echo "🔨 Building Docker image..."
+            sudo docker build --network=host -t msab:latest -f docker/Dockerfile .
 
-      - name: Get Load Balancer ID
-        id: lb
-        run: |
-          set -e
-          
-          # Run doctl command and capture output, checking for failures
-          if ! LB_OUTPUT=$(doctl compute load-balancer list --format ID,Name --no-header 2>&1); then
-            echo "Error: Failed to list load balancers" >&2
-            echo "$LB_OUTPUT" >&2
-            exit 1
-          fi
-          
-          # Extract Load Balancer ID
-          LB_ID=$(echo "$LB_OUTPUT" | grep "$PROJECT_NAME-lb" | awk '{print $1}')
-          
-          # Validate that LB_ID is non-empty
-          if [ -z "$LB_ID" ]; then
-            echo "Error: Load Balancer with name '$PROJECT_NAME-lb' not found" >&2
-            echo "Available load balancers:" >&2
-            echo "$LB_OUTPUT" >&2
-            exit 1
-          fi
-          
-          # Only write to GITHUB_OUTPUT when LB_ID is valid
-          echo "lb_id=$LB_ID" >> $GITHUB_OUTPUT
-          echo "Load Balancer ID: $LB_ID"
+            echo "🔄 Restarting container..."
+            sudo docker stop msab 2>/dev/null || true
+            sudo docker rm msab 2>/dev/null || true
+            sudo docker run -d \
+              --name msab \
+              --restart unless-stopped \
+              --network host \
+              --env-file .env \
+              msab:latest
 
-      - name: Get Valkey connection info
-        id: valkey
-        run: |
-          if ! doctl databases get "$PROJECT_NAME-valkey" > /dev/null 2>&1; then
-            echo "Valkey database not found: $PROJECT_NAME-valkey"
-            exit 1
-          fi
-          VALKEY_INFO=$(doctl databases connection "$PROJECT_NAME-valkey" --format Host,Port,User --no-header)
-          if [ -z "$VALKEY_INFO" ]; then
-            echo "Failed to retrieve Valkey connection info"
-            exit 1
-          fi
-          VALKEY_HOST=$(echo "$VALKEY_INFO" | awk '{print $1}')
-          VALKEY_PORT=$(echo "$VALKEY_INFO" | awk '{print $2}')
-          VALKEY_USER=$(echo "$VALKEY_INFO" | awk '{print $3}')
-          if [ -z "$VALKEY_HOST" ] || [ -z "$VALKEY_PORT" ] || [ -z "$VALKEY_USER" ]; then
-            echo "Malformed Valkey connection info: $VALKEY_INFO"
-            exit 1
-          fi
-          echo "valkey_host=$VALKEY_HOST" >> $GITHUB_OUTPUT
-          echo "valkey_port=$VALKEY_PORT" >> $GITHUB_OUTPUT
-          echo "valkey_user=$VALKEY_USER" >> $GITHUB_OUTPUT
-      - name: Setup SSH key
-        if: ${{ secrets.SSH_PRIVATE_KEY != '' }}
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          set -e
-          # Create .ssh directory if it doesn't exist
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-
-          # Write the private key to a file with secure permissions
-          cat <<EOF > ~/.ssh/deploy_key
-          $SSH_PRIVATE_KEY
-          EOF
-          chmod 600 ~/.ssh/deploy_key
-          echo "SSH key configured"
-          
-      - name: Rolling deployment
-        env:
-          LARAVEL_INTERNAL_KEY: ${{ secrets.LARAVEL_INTERNAL_KEY }}
-          VALKEY_PASSWORD: ${{ secrets.VALKEY_PASSWORD }}
-          VALKEY_HOST: ${{ steps.valkey.outputs.valkey_host }}
-          VALKEY_PORT: ${{ steps.valkey.outputs.valkey_port }}
-          VALKEY_USER: ${{ steps.valkey.outputs.valkey_user }}
-          LB_ID: ${{ steps.lb.outputs.lb_id }}
-          SPECIFIC_DROPLET: ${{ inputs.droplet }}
-        run: |
-          set -e
-          
-          # Process each droplet
-          echo "${{ steps.droplets.outputs.droplets }}" | while IFS= read -r line; do
-            DROPLET_ID=$(echo "$line" | awk '{print $1}')
-            DROPLET_NAME=$(echo "$line" | awk '{print $2}')
-            DROPLET_IP=$(echo "$line" | awk '{print $3}')
-            
-            # Skip if specific droplet requested and this isn't it
-            if [ -n "$SPECIFIC_DROPLET" ] && [ "$DROPLET_NAME" != "$SPECIFIC_DROPLET" ]; then
-              echo "Skipping $DROPLET_NAME (not the requested droplet)"
-              continue
-            fi
-            
-            echo ""
-            echo "========================================="
-            echo "Deploying to $DROPLET_NAME ($DROPLET_IP)"
-            echo "========================================="
-            
-            # Step 1: Remove from load balancer
-            echo "Removing from load balancer..."
-            REMOVE_OUTPUT=$(doctl compute load-balancer remove-droplets "$LB_ID" --droplet-ids "$DROPLET_ID" 2>&1)
-            REMOVE_EXIT_CODE=$?
-            
-            if [ $REMOVE_EXIT_CODE -ne 0 ]; then
-              # Check if this is a benign error (droplet not found/not attached)
-              if echo "$REMOVE_OUTPUT" | grep -qiE "(not found|not attached|does not exist|not a member)"; then
-                echo "⚠️  Droplet not attached to load balancer (benign): $REMOVE_OUTPUT"
-              else
-                # This is a real error (authentication, malformed request, etc.)
-                echo "❌ Failed to remove droplet from load balancer: $REMOVE_OUTPUT"
-                exit $REMOVE_EXIT_CODE
-              fi
-            else
-              echo "✓ Droplet removed from load balancer"
-            fi
-            sleep 5
-            
-            # Step 2: Deploy via SSH
-            echo "Deploying..."
-            ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 "root@$DROPLET_IP" << DEPLOY_SCRIPT
-          set -e
-          cd /opt/audio-server
-          
-          # Pull latest code
-          git fetch origin
-          git reset --hard origin/master
-          
-          # Update environment
-          cat > .env << EOF
-          NODE_ENV=production
-          PORT=3030
-          LOG_LEVEL=info
-          
-          REDIS_HOST=${VALKEY_HOST}
-          REDIS_PORT=${VALKEY_PORT}
-          REDIS_USERNAME=${VALKEY_USER}
-          REDIS_PASSWORD=${VALKEY_PASSWORD}
-          REDIS_TLS=true
-          REDIS_DB=3
-          
-          LARAVEL_API_URL=https://api.flyliveapp.com
-          LARAVEL_INTERNAL_KEY=${LARAVEL_INTERNAL_KEY}
-          
-          MEDIASOUP_LISTEN_IP=0.0.0.0
-          MEDIASOUP_ANNOUNCED_IP=${DROPLET_IP}
-          MEDIASOUP_RTC_MIN_PORT=10000
-          MEDIASOUP_RTC_MAX_PORT=59999
-          
-          CORS_ORIGINS=https://flyliveapp.com,https://www.flyliveapp.com
-          EOF          
-          # Rebuild and restart
-          docker build -t audio-server:latest -f docker/Dockerfile .
-          docker stop audio-server || true
-          docker rm audio-server || true
-          docker run -d --name audio-server --restart unless-stopped --network host --env-file .env audio-server:latest
-          
-          echo "Deployment complete on $DROPLET_NAME"
-          DEPLOY_SCRIPT
-            
-            # Step 3: Wait for health check
-            echo "Waiting for health check..."
-            HEALTH_CHECK_PASSED=0
-            for i in {1..30}; do
-              if curl -sf "http://$DROPLET_IP:3030/health" > /dev/null 2>&1; then
-                echo "Health check passed!"
-                HEALTH_CHECK_PASSED=1
+            echo "⏳ Waiting for health check..."
+            for i in $(seq 1 12); do
+              HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3030/health)
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "✅ Health check passed on attempt $i"
                 break
               fi
-              echo "Attempt $i/30 - waiting..."
-              sleep 10
+              echo "  Attempt $i/12 — got $HTTP_CODE, retrying..."
+              sleep 5
             done
-            
-            # Check if health check passed
-            if [ "$HEALTH_CHECK_PASSED" -ne 1 ]; then
-              echo "❌ Health check failed after 30 attempts. Aborting deployment."
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Health check failed after 12 attempts"
+              sudo docker logs msab --tail 40
               exit 1
             fi
-            
-            # Step 4: Add back to load balancer
-            echo "Adding back to load balancer..."
-            if ! doctl compute load-balancer add-droplets "$LB_ID" --droplet-ids "$DROPLET_ID"; then
-              echo "⚠️ Failed to add $DROPLET_NAME back to load balancer!"
-              exit 1
-            fi
-            sleep 5
-            
-            echo "✅ $DROPLET_NAME updated successfully"
-          done
-          
-          echo ""
-          echo "========================================="
-          echo "Deployment complete!"
-          echo "========================================="
 
-      - name: Cleanup SSH key
-        if: always()
-        run: |
-          # Remove the private key file
-          rm -f ~/.ssh/deploy_key
-          echo "SSH key cleaned up"
+            echo "🧹 Cleaning up old images..."
+            sudo docker image prune -f
 
-      - name: Verify deployment
-        run: |
-          LB_IP=$(doctl compute load-balancer list --format IP,Name --no-header | grep "$PROJECT_NAME-lb" | awk '{print $1}')
-          echo "Load Balancer IP: $LB_IP"
-          echo "Checking health..."
-          curl -sf "http://$LB_IP:80/health" || echo "Warning: Health check via LB failed (may need SSL)"
-
-          echo "| Droplet | IP | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|----|--------|" >> $GITHUB_STEP_SUMMARY
-          doctl compute droplet list --tag-name "$PROJECT_NAME" --format Name,PublicIPv4,Status --no-header | while read name ip status; do
-            echo "| $name | $ip | $status |" >> $GITHUB_STEP_SUMMARY
-          done
-          echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Deploy complete!"
