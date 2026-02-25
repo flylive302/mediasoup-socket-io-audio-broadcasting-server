@@ -41,6 +41,16 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     environment: aws-production
+    strategy:
+      max-parallel: 1
+      matrix:
+        region:
+          - name: mumbai
+            host_secret: EC2_HOST
+          - name: uae
+            host_secret: EC2_HOST_UAE
+          - name: frankfurt
+            host_secret: EC2_HOST_FRANKFURT
 
     steps:
       - name: Setup SSH
@@ -48,11 +58,21 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          HOST="${{ secrets[matrix.region.host_secret] }}"
+          if [ -z "$HOST" ]; then
+            echo "⚠️ No host configured for ${{ matrix.region.name }} — skipping"
+            echo "SKIP=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SKIP=false" >> $GITHUB_ENV
 
-      - name: Deploy via SSH
+      - name: Deploy to ${{ matrix.region.name }}
+        if: env.SKIP != 'true'
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@${{ secrets.EC2_HOST }} 'bash -s' << 'DEPLOY_SCRIPT'
+          HOST="${{ secrets[matrix.region.host_secret] }}"
+          echo "🚀 Deploying to ${{ matrix.region.name }} ($HOST)..."
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'bash -s' << 'DEPLOY_SCRIPT'
           set -e
           APP_DIR="/opt/msab"
           echo "📦 Pulling latest code..."

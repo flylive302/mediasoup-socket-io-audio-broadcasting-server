@@ -1,7 +1,7 @@
 # =============================================================================
 # FlyLive Audio Server — Terraform Root Configuration
 # =============================================================================
-# Phase 1: Single-region deployment to AWS Mumbai (ap-south-1)
+# Phase 2: Multi-region deployment (Mumbai, UAE, Frankfurt)
 # =============================================================================
 
 terraform {
@@ -24,8 +24,55 @@ terraform {
   }
 }
 
+# =============================================================================
+# Provider Aliases — one per region
+# =============================================================================
+
 provider "aws" {
-  region = var.aws_region
+  alias  = "mumbai"
+  region = "ap-south-1"
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      ManagedBy   = "terraform"
+      Environment = "production"
+      Region      = "mumbai"
+    }
+  }
+}
+
+provider "aws" {
+  alias  = "uae"
+  region = "me-south-1"
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      ManagedBy   = "terraform"
+      Environment = "production"
+      Region      = "uae"
+    }
+  }
+}
+
+provider "aws" {
+  alias  = "frankfurt"
+  region = "eu-central-1"
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      ManagedBy   = "terraform"
+      Environment = "production"
+      Region      = "frankfurt"
+    }
+  }
+}
+
+# Default provider (Mumbai) — used by global resources like SNS
+provider "aws" {
+  region = "ap-south-1"
 
   default_tags {
     tags = {
@@ -36,9 +83,13 @@ provider "aws" {
   }
 }
 
-# --- Networking ---
-module "networking" {
+# =============================================================================
+# Region: Mumbai (ap-south-1) — existing infrastructure
+# =============================================================================
+
+module "networking_mumbai" {
   source = "./modules/networking"
+  providers = { aws = aws.mumbai }
 
   project_name = var.project_name
   app_port     = var.app_port
@@ -46,66 +97,232 @@ module "networking" {
   rtc_max_port = var.rtc_max_port
 }
 
-# --- Redis ---
-module "redis" {
+module "redis_mumbai" {
   source = "./modules/redis"
+  providers = { aws = aws.mumbai }
 
   project_name            = var.project_name
   redis_node_type         = var.redis_node_type
-  private_subnet_ids      = module.networking.private_subnet_ids
-  redis_security_group_id = module.networking.redis_security_group_id
+  private_subnet_ids      = module.networking_mumbai.private_subnet_ids
+  redis_security_group_id = module.networking_mumbai.redis_security_group_id
 }
 
-# --- Compute ---
-module "compute" {
+module "compute_mumbai" {
   source = "./modules/compute"
+  providers = { aws = aws.mumbai }
 
-  project_name         = var.project_name
-  instance_type        = var.instance_type
-  ssh_public_key_path  = var.ssh_public_key_path
-  public_subnet_id     = module.networking.public_subnet_ids[0]
-  msab_security_group_id = module.networking.msab_security_group_id
-  github_repo          = var.github_repo
-  github_branch        = var.github_branch
-  app_port             = var.app_port
-  rtc_min_port         = var.rtc_min_port
-  rtc_max_port         = var.rtc_max_port
-  redis_host           = module.redis.redis_host
-  redis_port           = module.redis.redis_port
-  redis_password       = "" # ElastiCache without auth in VPC (Phase 1)
-  laravel_internal_key = var.laravel_internal_key
-  jwt_secret           = var.jwt_secret
-  session_secret       = var.session_secret
-  audio_domain         = var.audio_domain
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  ssh_public_key_path    = var.ssh_public_key_path
+  public_subnet_id       = module.networking_mumbai.public_subnet_ids[0]
+  msab_security_group_id = module.networking_mumbai.msab_security_group_id
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_mumbai.redis_host
+  redis_port             = module.redis_mumbai.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
 }
 
-# --- SSL ---
-module "ssl" {
+module "ssl_mumbai" {
   source = "./modules/ssl"
+  providers = { aws = aws.mumbai }
 
   project_name = var.project_name
   audio_domain = var.audio_domain
 }
 
-# --- Load Balancer ---
-module "loadbalancer" {
+module "loadbalancer_mumbai" {
   source = "./modules/loadbalancer"
+  providers = { aws = aws.mumbai }
 
-  project_name    = var.project_name
-  vpc_id          = module.networking.vpc_id
-  public_subnet_ids = module.networking.public_subnet_ids
-  app_port        = var.app_port
-  instance_id     = module.compute.instance_id
-  certificate_arn = module.ssl.certificate_arn
+  project_name      = var.project_name
+  vpc_id            = module.networking_mumbai.vpc_id
+  public_subnet_ids = module.networking_mumbai.public_subnet_ids
+  app_port          = var.app_port
+  instance_id       = module.compute_mumbai.instance_id
+  certificate_arn   = module.ssl_mumbai.certificate_arn
 }
 
-# --- SNS Event Bus ---
+# =============================================================================
+# Region: UAE / Bahrain (me-south-1)
+# =============================================================================
+
+module "networking_uae" {
+  source = "./modules/networking"
+  providers = { aws = aws.uae }
+
+  project_name = var.project_name
+  app_port     = var.app_port
+  rtc_min_port = var.rtc_min_port
+  rtc_max_port = var.rtc_max_port
+}
+
+module "redis_uae" {
+  source = "./modules/redis"
+  providers = { aws = aws.uae }
+
+  project_name            = var.project_name
+  redis_node_type         = var.redis_node_type
+  private_subnet_ids      = module.networking_uae.private_subnet_ids
+  redis_security_group_id = module.networking_uae.redis_security_group_id
+}
+
+module "compute_uae" {
+  source = "./modules/compute"
+  providers = { aws = aws.uae }
+
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  ssh_public_key_path    = var.ssh_public_key_path
+  public_subnet_id       = module.networking_uae.public_subnet_ids[0]
+  msab_security_group_id = module.networking_uae.msab_security_group_id
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_uae.redis_host
+  redis_port             = module.redis_uae.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
+}
+
+module "ssl_uae" {
+  source = "./modules/ssl"
+  providers = { aws = aws.uae }
+
+  project_name = var.project_name
+  audio_domain = var.audio_domain
+}
+
+module "loadbalancer_uae" {
+  source = "./modules/loadbalancer"
+  providers = { aws = aws.uae }
+
+  project_name      = var.project_name
+  vpc_id            = module.networking_uae.vpc_id
+  public_subnet_ids = module.networking_uae.public_subnet_ids
+  app_port          = var.app_port
+  instance_id       = module.compute_uae.instance_id
+  certificate_arn   = module.ssl_uae.certificate_arn
+}
+
+# =============================================================================
+# Region: Frankfurt (eu-central-1)
+# =============================================================================
+
+module "networking_frankfurt" {
+  source = "./modules/networking"
+  providers = { aws = aws.frankfurt }
+
+  project_name = var.project_name
+  app_port     = var.app_port
+  rtc_min_port = var.rtc_min_port
+  rtc_max_port = var.rtc_max_port
+}
+
+module "redis_frankfurt" {
+  source = "./modules/redis"
+  providers = { aws = aws.frankfurt }
+
+  project_name            = var.project_name
+  redis_node_type         = var.redis_node_type
+  private_subnet_ids      = module.networking_frankfurt.private_subnet_ids
+  redis_security_group_id = module.networking_frankfurt.redis_security_group_id
+}
+
+module "compute_frankfurt" {
+  source = "./modules/compute"
+  providers = { aws = aws.frankfurt }
+
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  ssh_public_key_path    = var.ssh_public_key_path
+  public_subnet_id       = module.networking_frankfurt.public_subnet_ids[0]
+  msab_security_group_id = module.networking_frankfurt.msab_security_group_id
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_frankfurt.redis_host
+  redis_port             = module.redis_frankfurt.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
+}
+
+module "ssl_frankfurt" {
+  source = "./modules/ssl"
+  providers = { aws = aws.frankfurt }
+
+  project_name = var.project_name
+  audio_domain = var.audio_domain
+}
+
+module "loadbalancer_frankfurt" {
+  source = "./modules/loadbalancer"
+  providers = { aws = aws.frankfurt }
+
+  project_name      = var.project_name
+  vpc_id            = module.networking_frankfurt.vpc_id
+  public_subnet_ids = module.networking_frankfurt.public_subnet_ids
+  app_port          = var.app_port
+  instance_id       = module.compute_frankfurt.instance_id
+  certificate_arn   = module.ssl_frankfurt.certificate_arn
+}
+
+# =============================================================================
+# Global: AWS Global Accelerator
+# =============================================================================
+
+module "global_accelerator" {
+  source = "./modules/global-accelerator"
+
+  project_name = var.project_name
+
+  regional_endpoints = {
+    "ap-south-1"  = { nlb_arn = module.loadbalancer_mumbai.nlb_arn }
+    "me-south-1"  = { nlb_arn = module.loadbalancer_uae.nlb_arn }
+    "eu-central-1" = { nlb_arn = module.loadbalancer_frankfurt.nlb_arn }
+  }
+}
+
+# =============================================================================
+# Global: SNS Event Bus (stays in Mumbai, fans out to all regions)
+# =============================================================================
+
 data "aws_caller_identity" "current" {}
 
 module "sns" {
   source = "./modules/sns"
 
-  project_name       = var.project_name
-  aws_account_id     = data.aws_caller_identity.current.account_id
-  msab_endpoint_urls = ["https://${var.audio_domain}/api/events"]
+  project_name   = var.project_name
+  aws_account_id = data.aws_caller_identity.current.account_id
+  msab_endpoint_urls = [
+    "https://${var.audio_domain}/api/events",
+  ]
+  # Note: SNS delivers to audio.flyliveapp.com which resolves to Global Accelerator.
+  # GA routes to the nearest healthy NLB → EC2. Since SNS publishes from ap-south-1,
+  # it will hit the Mumbai endpoint. For multi-region fan-out, we use a single
+  # subscription because GA routes to the nearest region from the SNS publish location.
+  #
+  # If you need ALL regions to receive every event (not just nearest), uncomment:
+  # msab_endpoint_urls = [
+  #   "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events",
+  #   "https://${module.loadbalancer_uae.nlb_dns_name}/api/events",
+  #   "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
+  # ]
 }
