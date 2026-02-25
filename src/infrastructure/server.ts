@@ -6,6 +6,7 @@ import { config } from "@src/config/index.js";
 
 import { getRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
+import { createEventIngestRoutes } from "./event-ingest.js";
 import { initializeSocket } from "@src/socket/index.js";
 
 import { logger } from "./logger.js";
@@ -62,7 +63,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     adapter: createAdapter(pubClient, subClient),
   });
 
-  const { roomManager, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventSubscriber, eventRouter } =
     await initializeSocket(io, pubClient);
 
   // Register health check
@@ -70,6 +71,9 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
 
   // Register metrics
   await fastify.register(createMetricsRoutes(roomManager, workerManager));
+
+  // Register event ingest (Laravel → MSAB via SNS/HTTP)
+  await fastify.register(createEventIngestRoutes(eventRouter));
 
   // Return subClient for proper cleanup during graceful shutdown
   return {

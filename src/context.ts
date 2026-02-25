@@ -14,6 +14,7 @@ import type { SeatRepository } from "./domains/seat/seat.repository.js";
 import type { UserSocketRepository } from "./integrations/laravel/user-socket.repository.js";
 import type { UserRoomRepository } from "./integrations/laravel/user-room.repository.js";
 import type { LaravelEventSubscriber } from "./integrations/laravel/event-subscriber.js";
+import type { EventRouter } from "./integrations/laravel/event-router.js";
 
 
 export interface AppContext {
@@ -31,4 +32,5 @@ export interface AppContext {
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;
   eventSubscriber: LaravelEventSubscriber;
+  eventRouter: EventRouter;
 }
