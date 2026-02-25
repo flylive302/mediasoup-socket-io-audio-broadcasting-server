@@ -15,14 +15,13 @@ terraform {
   }
 
   # Remote state in S3 (created via bootstrap)
-  # Uncomment after running: ./scripts/aws/bootstrap-state.sh
-  # backend "s3" {
-  #   bucket         = "flylive-audio-terraform-state"
-  #   key            = "phase1/terraform.tfstate"
-  #   region         = "ap-south-1"
-  #   dynamodb_table = "flylive-audio-terraform-locks"
-  #   encrypt        = true
-  # }
+  backend "s3" {
+    bucket       = "flylive-audio-terraform-state"
+    key          = "phase1/terraform.tfstate"
+    region       = "ap-south-1"
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 provider "aws" {
