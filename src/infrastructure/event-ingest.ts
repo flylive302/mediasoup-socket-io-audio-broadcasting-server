@@ -28,6 +28,20 @@ export const createEventIngestRoutes = (
   eventRouter: EventRouter,
 ): FastifyPluginAsync => {
   return async (fastify) => {
+    // SNS sends requests with Content-Type: text/plain containing JSON
+    // Fastify only parses application/json by default
+    fastify.addContentTypeParser(
+      "text/plain",
+      { parseAs: "string" },
+      (_req, body, done) => {
+        try {
+          done(null, JSON.parse(body as string));
+        } catch {
+          done(null, body);
+        }
+      },
+    );
+
     /**
      * POST /api/events
      *
