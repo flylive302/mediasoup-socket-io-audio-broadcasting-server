@@ -43,54 +43,63 @@ jobs:
     environment: aws-production
 
     steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          command_timeout: 10m
-          script: |
-            set -e
-            APP_DIR="/opt/msab"
-            echo "📦 Pulling latest code..."
-            cd "$APP_DIR"
-            sudo git fetch origin
-            sudo git checkout master
-            sudo git pull origin master
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@${{ secrets.EC2_HOST }} 'bash -s' << 'DEPLOY_SCRIPT'
+          set -e
+          APP_DIR="/opt/msab"
+          echo "📦 Pulling latest code..."
+          cd "$APP_DIR"
+          sudo git fetch origin
+          sudo git checkout master
+          sudo git pull origin master
 
-            echo "🔨 Building Docker image..."
-            sudo docker build --network=host -t msab:latest -f docker/Dockerfile .
+          echo "🔨 Building Docker image..."
+          sudo docker build --network=host -t msab:latest -f docker/Dockerfile .
 
-            echo "🔄 Restarting container..."
-            sudo docker stop msab 2>/dev/null || true
-            sudo docker rm msab 2>/dev/null || true
-            sudo docker run -d \
-              --name msab \
-              --restart unless-stopped \
-              --network host \
-              --env-file .env \
-              msab:latest
+          echo "🔄 Restarting container..."
+          sudo docker stop msab 2>/dev/null || true
+          sudo docker rm msab 2>/dev/null || true
+          sudo docker run -d \
+            --name msab \
+            --restart unless-stopped \
+            --network host \
+            --env-file .env \
+            msab:latest
 
-            echo "⏳ Waiting for health check..."
-            for i in $(seq 1 12); do
-              HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3030/health)
-              if [ "$HTTP_CODE" = "200" ]; then
-                echo "✅ Health check passed on attempt $i"
-                break
-              fi
-              echo "  Attempt $i/12 — got $HTTP_CODE, retrying..."
-              sleep 5
-            done
-
-            if [ "$HTTP_CODE" != "200" ]; then
-              echo "❌ Health check failed after 12 attempts"
-              sudo docker logs msab --tail 40
-              exit 1
+          echo "⏳ Waiting for health check..."
+          sleep 5
+          ATTEMPTS=0
+          while [ $ATTEMPTS -lt 12 ]; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3030/health)
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Health check passed on attempt $ATTEMPTS"
+              break
             fi
+            echo "  Attempt $ATTEMPTS/12 — got $HTTP_CODE, retrying..."
+            sleep 5
+          done
 
-            echo "🧹 Cleaning up old images..."
-            sudo docker image prune -f
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Health check failed after 12 attempts"
+            sudo docker logs msab --tail 40
+            exit 1
+          fi
 
-            echo "✅ Deploy complete!"
+          echo "🧹 Cleaning up old images..."
+          sudo docker image prune -f
+
+          echo "✅ Deploy complete!"
+          DEPLOY_SCRIPT
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
