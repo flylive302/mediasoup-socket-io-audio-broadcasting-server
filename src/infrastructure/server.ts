@@ -7,6 +7,7 @@ import { config } from "@src/config/index.js";
 import { getRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
 import { createEventIngestRoutes } from "./event-ingest.js";
+import { createAdminRoutes } from "./drain.js";
 import { initializeSocket } from "@src/socket/index.js";
 
 import { logger } from "./logger.js";
@@ -74,6 +75,9 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
 
   // Register event ingest (Laravel → MSAB via SNS/HTTP)
   await fastify.register(createEventIngestRoutes(eventRouter));
+
+  // Register admin routes (drain mode, status)
+  await fastify.register(createAdminRoutes(roomManager));
 
   // Return subClient for proper cleanup during graceful shutdown
   return {

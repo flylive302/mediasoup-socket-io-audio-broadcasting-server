@@ -1,12 +1,27 @@
 import type { FastifyPluginAsync } from "fastify";
 import { getRedisClient } from "./redis.js";
 import type { WorkerManager } from "./worker.manager.js";
+import { isDraining } from "./drain.js";
 
 export const createHealthRoutes = (
   workerManager: WorkerManager,
 ): FastifyPluginAsync => {
   return async (fastify) => {
     fastify.get("/health", async (_request, reply) => {
+      // Draining: return 503 immediately so NLB stops routing new connections
+      if (isDraining()) {
+        reply.code(503);
+        return {
+          status: "draining",
+          workers: {
+            active: workerManager.getWorkerCount(),
+            expected: workerManager.getExpectedWorkerCount(),
+          },
+          uptime: process.uptime(),
+          timestamp: new Date().toISOString(),
+        };
+      }
+
       const redis = getRedisClient();
       // SEC-001 FIX: redis.status check is sufficient — no need for redundant ping
       let redisOk = false;

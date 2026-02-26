@@ -71,8 +71,9 @@ resource "aws_lb_listener" "tls" {
   }
 }
 
-# --- Register EC2 instance ---
+# --- Register EC2 instance (only for standalone EC2, not when using ASG) ---
 resource "aws_lb_target_group_attachment" "msab" {
+  count            = var.instance_id != "" ? 1 : 0
   target_group_arn = aws_lb_target_group.app.arn
   target_id        = var.instance_id
   port             = var.app_port

@@ -17,7 +17,9 @@ variable "app_port" {
 }
 
 variable "instance_id" {
-  type = string
+  description = "EC2 instance ID — leave empty when using ASG (ASG manages target registration)"
+  type        = string
+  default     = ""
 }
 
 variable "certificate_arn" {

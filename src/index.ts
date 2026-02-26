@@ -2,13 +2,15 @@ import { logger } from "./infrastructure/logger.js";
 import { config } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
+import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
+import { startDrain, isDraining } from "./infrastructure/drain.js";
 
 const start = async () => {
   try {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -27,6 +29,9 @@ const start = async () => {
       `Protocol: ${protocol.toUpperCase()} / ${wsProtocol.toUpperCase()}`,
     );
 
+    // Start CloudWatch metrics publisher (disabled in dev)
+    await startCloudWatchPublisher(roomManager, workerManager);
+
     // Graceful Shutdown Logic
     let isShuttingDown = false;
 
@@ -35,6 +40,11 @@ const start = async () => {
       isShuttingDown = true;
 
       logger.info({ signal }, "Graceful shutdown initiated");
+
+      // Enter drain mode if not already draining
+      if (!isDraining()) {
+        startDrain(roomManager, { timeoutMs: 30_000 });
+      }
 
       const timeoutMs = 30_000;
       const shutdownTimeout = setTimeout(() => {
@@ -60,7 +70,10 @@ const start = async () => {
         // 5. Shutdown mediasoup workers
         await workerManager.shutdown();
 
-        // 4. Close Redis connections (both pub and sub clients)
+        // 6. Stop CloudWatch publisher
+        stopCloudWatchPublisher();
+
+        // 7. Close Redis connections (both pub and sub clients)
         const pubClient = getRedisClient();
         if (pubClient.status === "ready") {
           await pubClient.quit();
@@ -69,7 +82,7 @@ const start = async () => {
           await subClient.quit();
         }
 
-        // 5. Close Fastify
+        // 8. Close Fastify
         await server.close();
 
         clearTimeout(shutdownTimeout);
@@ -96,3 +109,4 @@ process.on("unhandledRejection", (err) => {
 });
 
 start();
+

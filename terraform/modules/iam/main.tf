@@ -1,0 +1,105 @@
+# =============================================================================
+# IAM Module — EC2 Instance Profile for MSAB
+# =============================================================================
+# Provides IAM role + instance profile with permissions for:
+#   - CloudWatch PutMetricData (custom metrics)
+#   - Auto Scaling lifecycle hooks (complete + describe)
+#   - EC2 metadata (describe instances)
+# =============================================================================
+
+# --- IAM Role ---
+resource "aws_iam_role" "msab" {
+  name = "${var.project_name}-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- CloudWatch Metrics Policy ---
+resource "aws_iam_role_policy" "cloudwatch_metrics" {
+  name = "${var.project_name}-cloudwatch-metrics"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "FlyLive/MSAB"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# --- Auto Scaling Lifecycle Policy ---
+resource "aws_iam_role_policy" "asg_lifecycle" {
+  name = "${var.project_name}-asg-lifecycle"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:CompleteLifecycleAction",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:RecordLifecycleActionHeartbeat",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# --- EC2 Describe Policy (for metadata enrichment) ---
+resource "aws_iam_role_policy" "ec2_describe" {
+  name = "${var.project_name}-ec2-describe"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances",
+          "ec2:DescribeTags",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# --- Instance Profile ---
+resource "aws_iam_instance_profile" "msab" {
+  name = "${var.project_name}-ec2-profile"
+  role = aws_iam_role.msab.name
+
+  tags = {
+    Project = var.project_name
+  }
+}
