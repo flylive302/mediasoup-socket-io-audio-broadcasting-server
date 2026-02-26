@@ -280,6 +280,7 @@ module "autoscaling_mumbai" {
   source = "./modules/autoscaling"
   providers = { aws = aws.mumbai }
 
+  region                 = "ap-south-1"
   project_name           = var.project_name
   instance_type          = var.instance_type
   ssh_public_key_path    = var.ssh_public_key_path
@@ -305,6 +306,7 @@ module "autoscaling_uae" {
   source = "./modules/autoscaling"
   providers = { aws = aws.uae }
 
+  region                 = "me-south-1"
   project_name           = var.project_name
   instance_type          = "c6i.xlarge" # c7i not available in me-south-1
   ssh_public_key_path    = var.ssh_public_key_path
@@ -330,6 +332,7 @@ module "autoscaling_frankfurt" {
   source = "./modules/autoscaling"
   providers = { aws = aws.frankfurt }
 
+  region                 = "eu-central-1"
   project_name           = var.project_name
   instance_type          = var.instance_type
   ssh_public_key_path    = var.ssh_public_key_path

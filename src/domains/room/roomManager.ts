@@ -8,6 +8,7 @@ import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
+import { config } from "@src/config/index.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -99,10 +100,11 @@ export class RoomManager {
       lastActivityAt: Date.now(),
     });
 
-    // 4. Notify Laravel Live
+    // 4. Notify Laravel Live (including hosting region for cross-region routing)
     await this.laravelClient.updateRoomStatus(roomId, {
       is_live: true,
       participant_count: 0,
+      hosting_region: config.AWS_REGION,
     });
 
     return cluster;
@@ -172,6 +174,7 @@ export class RoomManager {
         is_live: false,
         participant_count: 0,
         ended_at: new Date().toISOString(),
+        hosting_region: null,
       })
       .catch((err) =>
         logger.error({ err, roomId }, "Laravel close status update failed"),

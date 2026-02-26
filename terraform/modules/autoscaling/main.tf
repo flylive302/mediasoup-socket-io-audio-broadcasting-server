@@ -67,6 +67,7 @@ resource "aws_launch_template" "msab" {
 
   # User data script — same as compute module
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
+    region               = var.region
     project_name         = var.project_name
     github_repo          = var.github_repo
     github_branch        = var.github_branch

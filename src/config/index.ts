@@ -77,6 +77,9 @@ const configSchema = z.object({
     .string()
     .default("https://flyliveapp.com,https://www.flyliveapp.com")
     .transform((s) => new Set(s.split(",").map((o) => o.trim()))),
+
+  // AWS Region (for cross-region room routing)
+  AWS_REGION: z.string().default("ap-south-1"),
 });
 
 export type Config = z.infer<typeof configSchema>;

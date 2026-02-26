@@ -34,6 +34,7 @@ export interface BatchProcessingResult {
 export interface RoomStatusUpdate {
   is_live: boolean;
   participant_count: number;
-  started_at?: string; // NEW - ISO 8601 timestamp, optional
+  started_at?: string; // ISO 8601 timestamp, optional
   ended_at?: string | null; // Renamed from "closed_at" per protocol
+  hosting_region?: string | null; // AWS region hosting this room (e.g., "ap-south-1")
 }

@@ -1,5 +1,10 @@
 # Auto Scaling Module — Variables
 
+variable "region" {
+  description = "AWS region identifier (e.g., ap-south-1) — passed to MSAB for cross-region routing"
+  type        = string
+}
+
 variable "project_name" {
   description = "Project name for resource naming"
   type        = string

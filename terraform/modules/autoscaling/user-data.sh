@@ -127,6 +127,9 @@ MSAB_EVENTS_ENABLED=true
 
 # CloudWatch (enabled in production)
 CLOUDWATCH_ENABLED=true
+
+# AWS Region (for cross-region room routing)
+AWS_REGION=${region}
 ENVEOF
 
 # --- Build Docker Image (use host network for DNS resolution in VPC) ---

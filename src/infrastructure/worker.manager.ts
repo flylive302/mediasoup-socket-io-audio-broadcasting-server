@@ -4,7 +4,8 @@
  * Moved to core/ as it's infrastructure-level code used across domains
  */
 import * as mediasoup from "mediasoup";
-import { cpus } from "os";
+import { cpus, platform } from "os";
+import { execSync } from "child_process";
 import type { Logger } from "./logger.js";
 import { mediasoupConfig } from "@src/config/mediasoup.js";
 import { config } from "@src/config/index.js";
@@ -176,6 +177,9 @@ export class WorkerManager {
         );
       }
 
+      // Pin worker to a dedicated CPU core (eliminates context-switch overhead)
+      this.pinWorkerToCpu(worker.pid, index);
+
       const info: WorkerInfo = { worker, webRtcServer, routerCount: 0 };
       this.workers.push(info);
       this.workerByPid.set(worker.pid, info);
@@ -238,5 +242,41 @@ export class WorkerManager {
       { idx, pid, maxRetries: MAX_RETRIES },
       "Worker recreation failed after all retries",
     );
+  }
+
+  /**
+   * Pin a mediasoup worker process to a specific CPU core.
+   * Uses Linux `taskset` to set CPU affinity, preventing context-switch overhead.
+   * On non-Linux platforms or if taskset fails, logs a warning and continues.
+   */
+  private pinWorkerToCpu(pid: number, coreIndex: number): void {
+    if (platform() !== "linux") {
+      return; // CPU pinning only supported on Linux
+    }
+
+    // Reserve core 0 for Node.js event loop; workers use cores 1+
+    const targetCore = coreIndex + 1;
+    const availableCores = cpus().length;
+
+    if (targetCore >= availableCores) {
+      this.logger.warn(
+        { pid, coreIndex, targetCore, availableCores },
+        "Not enough CPU cores for pinning, skipping",
+      );
+      return;
+    }
+
+    try {
+      execSync(`taskset -cp ${targetCore} ${pid}`, { stdio: "ignore" });
+      this.logger.info(
+        { pid, core: targetCore },
+        "Worker pinned to CPU core",
+      );
+    } catch (error) {
+      this.logger.warn(
+        { error, pid, core: targetCore },
+        "Failed to pin worker to CPU core (taskset may not be available)",
+      );
+    }
   }
 }
