@@ -169,7 +169,7 @@ module "redis_uae" {
   providers = { aws = aws.uae }
 
   project_name            = var.project_name
-  redis_node_type         = var.redis_node_type
+  redis_node_type         = "cache.t3.micro" # t4g (Graviton) not available in me-south-1
   private_subnet_ids      = module.networking_uae.private_subnet_ids
   redis_security_group_id = module.networking_uae.redis_security_group_id
 }
@@ -179,7 +179,7 @@ module "compute_uae" {
   providers = { aws = aws.uae }
 
   project_name           = var.project_name
-  instance_type          = var.instance_type
+  instance_type          = "c6i.xlarge" # c7i not available in me-south-1
   ssh_public_key_path    = var.ssh_public_key_path
   public_subnet_id       = module.networking_uae.public_subnet_ids[0]
   msab_security_group_id = module.networking_uae.msab_security_group_id
