@@ -107,29 +107,6 @@ module "redis_mumbai" {
   redis_security_group_id = module.networking_mumbai.redis_security_group_id
 }
 
-module "compute_mumbai" {
-  source = "./modules/compute"
-  providers = { aws = aws.mumbai }
-
-  project_name           = var.project_name
-  instance_type          = var.instance_type
-  ssh_public_key_path    = var.ssh_public_key_path
-  public_subnet_id       = module.networking_mumbai.public_subnet_ids[0]
-  msab_security_group_id = module.networking_mumbai.msab_security_group_id
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_mumbai.redis_host
-  redis_port             = module.redis_mumbai.redis_port
-  redis_password         = ""
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-}
-
 module "ssl_mumbai" {
   source = "./modules/ssl"
   providers = { aws = aws.mumbai }
@@ -146,8 +123,8 @@ module "loadbalancer_mumbai" {
   vpc_id            = module.networking_mumbai.vpc_id
   public_subnet_ids = module.networking_mumbai.public_subnet_ids
   app_port          = var.app_port
-  instance_id       = module.compute_mumbai.instance_id
   certificate_arn   = module.ssl_mumbai.certificate_arn
+  # instance_id omitted — ASG manages target group registration
 }
 
 # =============================================================================
@@ -174,29 +151,6 @@ module "redis_uae" {
   redis_security_group_id = module.networking_uae.redis_security_group_id
 }
 
-module "compute_uae" {
-  source = "./modules/compute"
-  providers = { aws = aws.uae }
-
-  project_name           = var.project_name
-  instance_type          = "c6i.xlarge" # c7i not available in me-south-1
-  ssh_public_key_path    = var.ssh_public_key_path
-  public_subnet_id       = module.networking_uae.public_subnet_ids[0]
-  msab_security_group_id = module.networking_uae.msab_security_group_id
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_uae.redis_host
-  redis_port             = module.redis_uae.redis_port
-  redis_password         = ""
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-}
-
 module "ssl_uae" {
   source = "./modules/ssl"
   providers = { aws = aws.uae }
@@ -213,8 +167,8 @@ module "loadbalancer_uae" {
   vpc_id            = module.networking_uae.vpc_id
   public_subnet_ids = module.networking_uae.public_subnet_ids
   app_port          = var.app_port
-  instance_id       = module.compute_uae.instance_id
   certificate_arn   = module.ssl_uae.certificate_arn
+  # instance_id omitted — ASG manages target group registration
 }
 
 # =============================================================================
@@ -241,29 +195,6 @@ module "redis_frankfurt" {
   redis_security_group_id = module.networking_frankfurt.redis_security_group_id
 }
 
-module "compute_frankfurt" {
-  source = "./modules/compute"
-  providers = { aws = aws.frankfurt }
-
-  project_name           = var.project_name
-  instance_type          = var.instance_type
-  ssh_public_key_path    = var.ssh_public_key_path
-  public_subnet_id       = module.networking_frankfurt.public_subnet_ids[0]
-  msab_security_group_id = module.networking_frankfurt.msab_security_group_id
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_frankfurt.redis_host
-  redis_port             = module.redis_frankfurt.redis_port
-  redis_password         = ""
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-}
-
 module "ssl_frankfurt" {
   source = "./modules/ssl"
   providers = { aws = aws.frankfurt }
@@ -280,8 +211,8 @@ module "loadbalancer_frankfurt" {
   vpc_id            = module.networking_frankfurt.vpc_id
   public_subnet_ids = module.networking_frankfurt.public_subnet_ids
   app_port          = var.app_port
-  instance_id       = module.compute_frankfurt.instance_id
   certificate_arn   = module.ssl_frankfurt.certificate_arn
+  # instance_id omitted — ASG manages target group registration
 }
 
 # =============================================================================
@@ -325,4 +256,108 @@ module "sns" {
   #   "https://${module.loadbalancer_uae.nlb_dns_name}/api/events",
   #   "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
   # ]
+}
+
+# =============================================================================
+# Phase 3: IAM Role + Instance Profile (global — IAM is not regional)
+# =============================================================================
+
+module "iam" {
+  source = "./modules/iam"
+
+  project_name = var.project_name
+}
+
+# =============================================================================
+# Phase 3: Auto Scaling Groups (one per region)
+# =============================================================================
+# These run ALONGSIDE existing compute modules during cutover.
+# Both old (compute) and new (ASG) instances serve traffic via the same NLB.
+# After ASG instances are healthy, the compute modules will be removed.
+# =============================================================================
+
+module "autoscaling_mumbai" {
+  source = "./modules/autoscaling"
+  providers = { aws = aws.mumbai }
+
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  ssh_public_key_path    = var.ssh_public_key_path
+  instance_profile_name  = module.iam.instance_profile_name
+  msab_security_group_id = module.networking_mumbai.msab_security_group_id
+  public_subnet_ids      = module.networking_mumbai.public_subnet_ids
+  target_group_arn       = module.loadbalancer_mumbai.target_group_arn
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_mumbai.redis_host
+  redis_port             = module.redis_mumbai.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
+}
+
+module "autoscaling_uae" {
+  source = "./modules/autoscaling"
+  providers = { aws = aws.uae }
+
+  project_name           = var.project_name
+  instance_type          = "c6i.xlarge" # c7i not available in me-south-1
+  ssh_public_key_path    = var.ssh_public_key_path
+  instance_profile_name  = module.iam.instance_profile_name
+  msab_security_group_id = module.networking_uae.msab_security_group_id
+  public_subnet_ids      = module.networking_uae.public_subnet_ids
+  target_group_arn       = module.loadbalancer_uae.target_group_arn
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_uae.redis_host
+  redis_port             = module.redis_uae.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
+}
+
+module "autoscaling_frankfurt" {
+  source = "./modules/autoscaling"
+  providers = { aws = aws.frankfurt }
+
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  ssh_public_key_path    = var.ssh_public_key_path
+  instance_profile_name  = module.iam.instance_profile_name
+  msab_security_group_id = module.networking_frankfurt.msab_security_group_id
+  public_subnet_ids      = module.networking_frankfurt.public_subnet_ids
+  target_group_arn       = module.loadbalancer_frankfurt.target_group_arn
+  github_repo            = var.github_repo
+  github_branch          = var.github_branch
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
+  redis_host             = module.redis_frankfurt.redis_host
+  redis_port             = module.redis_frankfurt.redis_port
+  redis_password         = ""
+  laravel_internal_key   = var.laravel_internal_key
+  jwt_secret             = var.jwt_secret
+  session_secret         = var.session_secret
+  audio_domain           = var.audio_domain
+}
+
+# =============================================================================
+# Phase 3: CloudWatch Operational Alarms
+# =============================================================================
+
+module "cloudwatch_mumbai" {
+  source = "./modules/cloudwatch"
+  providers = { aws = aws.mumbai }
+
+  project_name = var.project_name
 }

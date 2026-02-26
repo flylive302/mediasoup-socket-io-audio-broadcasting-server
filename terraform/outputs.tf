@@ -1,5 +1,5 @@
 # =============================================================================
-# FlyLive Audio Server — Terraform Outputs (Multi-Region)
+# FlyLive Audio Server — Terraform Outputs (Phase 3: Auto-Scaling)
 # =============================================================================
 
 # --- Global Accelerator ---
@@ -13,62 +13,56 @@ output "global_accelerator_ips" {
   value       = module.global_accelerator.ip_addresses
 }
 
-# --- Mumbai ---
-output "ec2_public_ip_mumbai" {
-  description = "Mumbai EC2 Elastic IP"
-  value       = module.compute_mumbai.elastic_ip
-}
-
+# --- NLB DNS (per region) ---
 output "nlb_dns_mumbai" {
   value = module.loadbalancer_mumbai.nlb_dns_name
-}
-
-output "redis_host_mumbai" {
-  value = module.redis_mumbai.redis_host
-}
-
-output "ssh_mumbai" {
-  value = "ssh -i ~/.ssh/id_ed25519 ubuntu@${module.compute_mumbai.elastic_ip}"
-}
-
-# --- UAE ---
-output "ec2_public_ip_uae" {
-  description = "UAE EC2 Elastic IP"
-  value       = module.compute_uae.elastic_ip
 }
 
 output "nlb_dns_uae" {
   value = module.loadbalancer_uae.nlb_dns_name
 }
 
-output "redis_host_uae" {
-  value = module.redis_uae.redis_host
-}
-
-output "ssh_uae" {
-  value = "ssh -i ~/.ssh/id_ed25519 ubuntu@${module.compute_uae.elastic_ip}"
-}
-
-# --- Frankfurt ---
-output "ec2_public_ip_frankfurt" {
-  description = "Frankfurt EC2 Elastic IP"
-  value       = module.compute_frankfurt.elastic_ip
-}
-
 output "nlb_dns_frankfurt" {
   value = module.loadbalancer_frankfurt.nlb_dns_name
+}
+
+# --- Redis (per region) ---
+output "redis_host_mumbai" {
+  value = module.redis_mumbai.redis_host
+}
+
+output "redis_host_uae" {
+  value = module.redis_uae.redis_host
 }
 
 output "redis_host_frankfurt" {
   value = module.redis_frankfurt.redis_host
 }
 
-output "ssh_frankfurt" {
-  value = "ssh -i ~/.ssh/id_ed25519 ubuntu@${module.compute_frankfurt.elastic_ip}"
+# --- ASG Names (per region) ---
+output "asg_name_mumbai" {
+  description = "Mumbai Auto Scaling Group name"
+  value       = module.autoscaling_mumbai.asg_name
+}
+
+output "asg_name_uae" {
+  description = "UAE Auto Scaling Group name"
+  value       = module.autoscaling_uae.asg_name
+}
+
+output "asg_name_frankfurt" {
+  description = "Frankfurt Auto Scaling Group name"
+  value       = module.autoscaling_frankfurt.asg_name
 }
 
 # --- SNS ---
 output "sns_topic_arn" {
   description = "SNS topic ARN — Laravel publishes events here"
   value       = module.sns.topic_arn
+}
+
+# --- CloudWatch Alerts ---
+output "alerts_topic_arn" {
+  description = "SNS topic ARN for CloudWatch operational alerts"
+  value       = module.cloudwatch_mumbai.alerts_topic_arn
 }

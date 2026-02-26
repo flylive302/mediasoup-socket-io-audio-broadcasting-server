@@ -1,4 +1,4 @@
-name: Deploy to AWS EC2
+name: Deploy via ASG Instance Refresh
 
 on:
   push:
@@ -46,80 +46,88 @@ jobs:
       matrix:
         region:
           - name: mumbai
-            host_secret: EC2_HOST
+            aws_region: ap-south-1
           - name: uae
-            host_secret: EC2_HOST_UAE
+            aws_region: me-south-1
           - name: frankfurt
-            host_secret: EC2_HOST_FRANKFURT
+            aws_region: eu-central-1
 
     steps:
-      - name: Setup SSH
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ matrix.region.aws_region }}
+
+      - name: Discover ASG name (${{ matrix.region.name }})
+        id: asg
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          HOST="${{ secrets[matrix.region.host_secret] }}"
-          if [ -z "$HOST" ]; then
-            echo "⚠️ No host configured for ${{ matrix.region.name }} — skipping"
-            echo "SKIP=true" >> $GITHUB_ENV
-            exit 0
-          fi
-          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          echo "SKIP=false" >> $GITHUB_ENV
+          ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
+            --query "AutoScalingGroups[?contains(Tags[?Key=='Project'].Value, 'flylive-audio')].AutoScalingGroupName | [0]" \
+            --output text)
 
-      - name: Deploy to ${{ matrix.region.name }}
-        if: env.SKIP != 'true'
-        run: |
-          HOST="${{ secrets[matrix.region.host_secret] }}"
-          echo "🚀 Deploying to ${{ matrix.region.name }} ($HOST)..."
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'bash -s' << 'DEPLOY_SCRIPT'
-          set -e
-          APP_DIR="/opt/msab"
-          echo "📦 Pulling latest code..."
-          cd "$APP_DIR"
-          sudo git fetch origin
-          sudo git checkout master
-          sudo git pull origin master
-
-          echo "🔨 Building Docker image..."
-          sudo docker build --network=host -t msab:latest -f docker/Dockerfile .
-
-          echo "🔄 Restarting container..."
-          sudo docker stop msab 2>/dev/null || true
-          sudo docker rm msab 2>/dev/null || true
-          sudo docker run -d \
-            --name msab \
-            --restart unless-stopped \
-            --network host \
-            --env-file .env \
-            msab:latest
-
-          echo "⏳ Waiting for health check..."
-          sleep 5
-          ATTEMPTS=0
-          while [ $ATTEMPTS -lt 12 ]; do
-            ATTEMPTS=$((ATTEMPTS + 1))
-            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3030/health)
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ Health check passed on attempt $ATTEMPTS"
-              break
-            fi
-            echo "  Attempt $ATTEMPTS/12 — got $HTTP_CODE, retrying..."
-            sleep 5
-          done
-
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ Health check failed after 12 attempts"
-            sudo docker logs msab --tail 40
+          if [ -z "$ASG_NAME" ] || [ "$ASG_NAME" = "None" ]; then
+            echo "❌ No ASG found with Project=flylive-audio tag in ${{ matrix.region.aws_region }}"
             exit 1
           fi
 
-          echo "🧹 Cleaning up old images..."
-          sudo docker image prune -f
+          echo "✅ Found ASG: $ASG_NAME"
+          echo "asg_name=$ASG_NAME" >> "$GITHUB_OUTPUT"
 
-          echo "✅ Deploy complete!"
-          DEPLOY_SCRIPT
+      - name: Start Instance Refresh (${{ matrix.region.name }})
+        id: refresh
+        run: |
+          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
+          echo "🚀 Starting instance refresh for $ASG_NAME in ${{ matrix.region.aws_region }}..."
 
-      - name: Cleanup SSH
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
+            --query 'InstanceRefreshId' \
+            --output text)
+
+          echo "🔄 Instance refresh started: $REFRESH_ID"
+          echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Instance Refresh (${{ matrix.region.name }})
+        run: |
+          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
+          REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
+          MAX_WAIT=600  # 10 minutes
+          ELAPSED=0
+          INTERVAL=30
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+
+            echo "  ⏳ Status: $STATUS (${ELAPSED}s elapsed)"
+
+            case "$STATUS" in
+              Successful)
+                echo "✅ Instance refresh completed successfully!"
+                exit 0
+                ;;
+              Failed|Cancelled|RollbackSuccessful|RollbackFailed)
+                echo "❌ Instance refresh $STATUS"
+                aws autoscaling describe-instance-refreshes \
+                  --auto-scaling-group-name "$ASG_NAME" \
+                  --instance-refresh-ids "$REFRESH_ID" \
+                  --query 'InstanceRefreshes[0].StatusReason' \
+                  --output text
+                exit 1
+                ;;
+              *)
+                # Pending, InProgress, Cancelling, RollbackInProgress
+                sleep $INTERVAL
+                ELAPSED=$((ELAPSED + INTERVAL))
+                ;;
+            esac
+          done
+
+          echo "❌ Timed out after ${MAX_WAIT}s waiting for instance refresh"
+          exit 1

@@ -8,3 +8,4 @@ coverage
 *.log
 # SSH known_hosts files for deployment scripts
 scripts/deploy/.known_hosts
+terraform/tfplan
