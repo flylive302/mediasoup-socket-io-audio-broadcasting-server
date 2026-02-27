@@ -5,6 +5,11 @@ variable "project_name" {
   type        = string
 }
 
+variable "aws_region" {
+  description = "AWS region for dashboard metric queries"
+  type        = string
+}
+
 variable "connection_alert_threshold" {
   description = "ActiveConnections threshold for alert (not scaling)"
   type        = number

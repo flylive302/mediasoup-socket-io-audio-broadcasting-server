@@ -363,4 +363,5 @@ module "cloudwatch_mumbai" {
   providers = { aws = aws.mumbai }
 
   project_name = var.project_name
+  aws_region   = "ap-south-1"
 }
