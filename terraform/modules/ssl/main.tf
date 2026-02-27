@@ -17,3 +17,14 @@ resource "aws_acm_certificate" "main" {
     create_before_destroy = true
   }
 }
+
+# --- Wait for DNS validation to complete ---
+# This blocks downstream resources (NLB listener) until ACM issues the cert.
+resource "aws_acm_certificate_validation" "main" {
+  certificate_arn = aws_acm_certificate.main.arn
+
+  # Timeout after 10 minutes (DNS propagation + ACM validation)
+  timeouts {
+    create = "10m"
+  }
+}
