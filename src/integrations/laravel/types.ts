@@ -113,6 +113,11 @@ export const RELAY_EVENTS = {
     CONFIG_INVALIDATE: "config:invalidate",
     ASSET_INVALIDATE: "asset:invalidate",
   },
+
+  /** User: profile updates */
+  user: {
+    PROFILE_UPDATED: "user.profile.updated",
+  },
 } as const;
 
 /**

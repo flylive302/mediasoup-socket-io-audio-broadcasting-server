@@ -121,4 +121,29 @@ export class ClientManager {
     }
     return result;
   }
+
+  /**
+   * Update in-memory user profile for all sockets belonging to a user.
+   * Called when `user.profile.updated` event is received from Laravel.
+   * Returns the set of room IDs the user is currently in (for broadcasting).
+   */
+  updateUserProfile(
+    userId: number,
+    profile: Partial<User>,
+  ): Set<string> {
+    const affectedRooms = new Set<string>();
+
+    for (const client of this.clients.values()) {
+      if (client.userId === userId) {
+        // Merge profile into existing user data (profile from Laravel is authoritative)
+        client.user = { ...client.user, ...profile };
+
+        if (client.roomId) {
+          affectedRooms.add(client.roomId);
+        }
+      }
+    }
+
+    return affectedRooms;
+  }
 }

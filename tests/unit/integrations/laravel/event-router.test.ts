@@ -63,6 +63,16 @@ function createMockLogger() {
   } as any;
 }
 
+// Helper: create a mock ClientManager
+function createMockClientManager() {
+  return {
+    updateUserProfile: vi.fn().mockReturnValue(new Set()),
+    getClient: vi.fn(),
+    addClient: vi.fn(),
+    removeClient: vi.fn(),
+  } as any;
+}
+
 // Helper: create a base event
 function createEvent(overrides: Partial<LaravelEvent> = {}): LaravelEvent {
   return {
@@ -80,6 +90,7 @@ describe("EventRouter", () => {
   let io: ReturnType<typeof createMockIO>;
   let repo: ReturnType<typeof createMockRepo>;
   let logger: ReturnType<typeof createMockLogger>;
+  let clientManager: ReturnType<typeof createMockClientManager>;
   let router: EventRouter;
 
   beforeEach(() => {
@@ -87,7 +98,8 @@ describe("EventRouter", () => {
     io = createMockIO();
     repo = createMockRepo();
     logger = createMockLogger();
-    router = new EventRouter(io, repo, logger);
+    clientManager = createMockClientManager();
+    router = new EventRouter(io, repo, clientManager, logger);
   });
 
   // ─── RL-011: Multi-instance room emit ──────────────────────────
