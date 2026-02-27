@@ -1,10 +1,9 @@
 /**
  * Laravel Integration - Barrel Export
- * Handles communication with Laravel backend via Redis pub/sub
+ * Handles communication with Laravel backend via HTTP events + Redis state
  */
 
-// Event subscriber for Laravel events
-export { LaravelEventSubscriber } from "./event-subscriber.js";
+
 
 // Event router for dispatching events to sockets
 export { EventRouter } from "./event-router.js";

@@ -53,6 +53,11 @@ export const createEventIngestRoutes = (
       // --- SNS Subscription Confirmation ---
       const snsMessageType = request.headers["x-amz-sns-message-type"];
 
+      fastify.log.info(
+        { snsMessageType: snsMessageType ?? "none", contentType: request.headers["content-type"] },
+        "Event ingest: request received",
+      );
+
       if (snsMessageType === "SubscriptionConfirmation") {
         const body = request.body as { SubscribeURL?: string };
         if (body.SubscribeURL) {
@@ -106,7 +111,12 @@ export const createEventIngestRoutes = (
 
       const event: LaravelEvent = result.data;
 
-      // --- Route Event (fire-and-forget, same as Redis subscriber) ---
+      fastify.log.info(
+        { event: event.event, userId: event.user_id, roomId: event.room_id, correlationId: event.correlation_id },
+        "Event ingest: routing event",
+      );
+
+      // --- Route Event ---
       const routingResult = await eventRouter.route(event);
 
       return reply.code(200).send({

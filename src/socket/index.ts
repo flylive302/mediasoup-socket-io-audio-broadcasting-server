@@ -5,7 +5,7 @@ import { authMiddleware } from "@src/auth/middleware.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
 import { ClientManager } from "@src/client/clientManager.js";
-import { config } from "@src/config/index.js";
+
 
 // Handlers
 import { GiftHandler } from "@src/domains/gift/giftHandler.js";
@@ -26,7 +26,6 @@ import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/ind
 import {
   UserSocketRepository,
   UserRoomRepository,
-  LaravelEventSubscriber,
   EventRouter,
 } from "@src/integrations/laravel/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
@@ -67,25 +66,7 @@ export async function initializeSocket(
   const userRoomRepository = new UserRoomRepository(redis, logger);
   const eventRouter = new EventRouter(io, userSocketRepository, clientManager, logger);
 
-  // Create event subscriber with router callback
-  const eventSubscriber = new LaravelEventSubscriber(
-    redis,
-    config.MSAB_EVENTS_CHANNEL,
-    (event) => {
-      // Route event asynchronously (fire-and-forget with error handling)
-      eventRouter.route(event).catch((err) => {
-        logger.error({ err, event: event.event }, "Failed to route event");
-      });
-    },
-    logger,
-  );
 
-  // Start event subscriber if enabled
-  if (config.MSAB_EVENTS_ENABLED) {
-    await eventSubscriber.start();
-  } else {
-    logger.info("Laravel events disabled via MSAB_EVENTS_ENABLED=false");
-  }
 
   // Authentication Middleware
   io.use(authMiddleware);
@@ -104,7 +85,7 @@ export async function initializeSocket(
     seatRepository,
     userSocketRepository,
     userRoomRepository,
-    eventSubscriber,
+
     eventRouter,
   };
 

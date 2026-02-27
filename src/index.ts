@@ -10,7 +10,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, eventSubscriber } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -59,10 +59,7 @@ const start = async () => {
         // 2. Stop auto-close job
         autoCloseJob.stop();
 
-        // 3. Stop event subscriber (Laravel pub/sub)
-        await eventSubscriber.stop();
 
-        // 4. Stop gift buffer processing
         if (giftHandler) {
           await giftHandler.stop();
         }
