@@ -82,6 +82,11 @@ export class RoomMediaCluster {
     return pids;
   }
 
+  /** Total listener count across all distribution routers */
+  getListenerCount(): number {
+    return this.distributionRouters.reduce((sum, d) => sum + d.listenerCount, 0);
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Initialization
   // ─────────────────────────────────────────────────────────────────

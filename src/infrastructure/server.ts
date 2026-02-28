@@ -8,6 +8,7 @@ import { getRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
 import { createEventIngestRoutes } from "./event-ingest.js";
 import { createAdminRoutes } from "./drain.js";
+import { createInternalRoutes } from "@src/api/internal.js";
 import { initializeSocket } from "@src/socket/index.js";
 
 import { logger } from "./logger.js";
@@ -19,6 +20,8 @@ import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
+import { RoomRegistry } from "@src/domains/room/room-registry.js";
+import { PipeManager } from "@src/domains/media/pipe-manager.js";
 
 
 export interface BootstrapResult {
@@ -29,7 +32,8 @@ export interface BootstrapResult {
   workerManager: WorkerManager;
   giftHandler: GiftHandler;
   autoCloseJob: AutoCloseJob;
-
+  roomRegistry: RoomRegistry;
+  pipeManager: PipeManager;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -79,6 +83,13 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   // Register admin routes (drain mode, status)
   await fastify.register(createAdminRoutes(roomManager));
 
+  // Register internal API routes (SFU cascade — Phase 5)
+  const roomRegistry = new RoomRegistry(pubClient, logger);
+  const pipeManager = new PipeManager(logger);
+  await fastify.register(createInternalRoutes(roomManager, roomRegistry), {
+    prefix: "/",
+  });
+
   // Return subClient for proper cleanup during graceful shutdown
   return {
     server: fastify,
@@ -88,6 +99,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     workerManager,
     giftHandler,
     autoCloseJob,
-
+    roomRegistry,
+    pipeManager,
   };
 }

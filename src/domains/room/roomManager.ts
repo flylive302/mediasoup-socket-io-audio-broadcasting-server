@@ -39,6 +39,16 @@ export class RoomManager {
     return this.rooms.size;
   }
 
+  /** Max listeners in any single room on this instance (for CloudWatch) */
+  getMaxRoomListeners(): number {
+    let max = 0;
+    for (const cluster of this.rooms.values()) {
+      const count = cluster.getListenerCount();
+      if (count > max) max = count;
+    }
+    return max;
+  }
+
   /**
    * Get or create a room.
    * If creating, initializes mediasoup router and Redis state.

@@ -115,6 +115,9 @@ async function publishMetrics(
     const loadAvg1m = os.loadavg()[0] ?? 0;
     const workerCpuPercent = Math.min(100, (loadAvg1m / cpuCount) * 100);
 
+    // Max listeners in any single room (for cascade threshold monitoring)
+    const maxRoomListeners = roomManager.getMaxRoomListeners();
+
     await client.send(
       new PutMetricDataCommand({
         Namespace: NAMESPACE,
@@ -147,12 +150,19 @@ async function publishMetrics(
             Timestamp: now,
             Dimensions: dimensions,
           },
+          {
+            MetricName: "MaxRoomListeners",
+            Value: maxRoomListeners,
+            Unit: "Count",
+            Timestamp: now,
+            Dimensions: dimensions,
+          },
         ],
       }),
     );
 
     logger.debug(
-      { activeRooms, activeConnections, workerCount, workerCpuPercent },
+      { activeRooms, activeConnections, workerCount, workerCpuPercent, maxRoomListeners },
       "CloudWatch metrics published",
     );
   } catch (err) {

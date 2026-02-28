@@ -78,6 +78,12 @@ const configSchema = z.object({
 
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
+
+  // SFU Cascade (Phase 5)
+  CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
+  CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
+  INTERNAL_API_KEY: z.string().default(""),                // Shared secret for instance-to-instance auth
+  PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
 });
 
 export type Config = z.infer<typeof configSchema>;

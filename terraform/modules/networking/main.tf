@@ -118,6 +118,15 @@ resource "aws_security_group" "msab" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # SFU cascade: allow inter-instance UDP for plainTransport RTP pipes
+  ingress {
+    description = "SFU cascade plainTransport (RTP/SRTP)"
+    from_port   = 40000
+    to_port     = 49999
+    protocol    = "udp"
+    self        = true
+  }
+
   # All outbound
   egress {
     from_port   = 0
