@@ -2,6 +2,7 @@ import { config } from "@src/config/index.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type {
   BatchProcessingResult,
+  CascadeInfo,
   GiftTransaction,
   RoomStatusUpdate,
 } from "./types.js";
@@ -69,6 +70,38 @@ export class LaravelClient {
       }
     } catch (error) {
       this.logger.error({ error, roomId }, "Error updating room status");
+    }
+  }
+
+  /**
+   * Fetch cascade routing info for a room.
+   * Returns the origin instance's region, IP, and port so edges can connect.
+   */
+  async getCascadeInfo(roomId: string): Promise<CascadeInfo> {
+    try {
+      const response = await this.get(
+        `/api/v1/internal/rooms/${roomId}/cascade-info`,
+      );
+
+      if (!response.ok) {
+        this.logger.warn(
+          { status: response.status, roomId },
+          "Failed to fetch cascade info",
+        );
+        return { hosting_region: null, hosting_ip: null, hosting_port: null, is_live: false };
+      }
+
+      const data = await response.json() as Record<string, unknown>;
+
+      return {
+        hosting_region: (data.hosting_region as string) ?? null,
+        hosting_ip: (data.hosting_ip as string) ?? null,
+        hosting_port: typeof data.hosting_port === "number" ? data.hosting_port : null,
+        is_live: data.is_live === true,
+      };
+    } catch (error) {
+      this.logger.error({ error, roomId }, "Error fetching cascade info");
+      return { hosting_region: null, hosting_ip: null, hosting_port: null, is_live: false };
     }
   }
 

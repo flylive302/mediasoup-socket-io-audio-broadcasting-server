@@ -6,6 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 
 
 // Invite expiry in seconds (30 seconds TTL in Redis)
@@ -74,11 +75,11 @@ export const inviteSeatHandler = createHandler(
     );
 
     // Broadcast pending status to room (so UI can show "Invited...")
-    socket.nsp.to(roomId).emit("seat:invite:pending", {
+    broadcastToRoom(socket.nsp, roomId, "seat:invite:pending", {
       seatIndex,
       isPending: true,
       invitedUserId: targetUserId,
-    });
+    }, context.cascadeRelay);
 
     // BL-007 FIX: userId-only — frontend looks up inviter from participants
     const inviteEvent = {

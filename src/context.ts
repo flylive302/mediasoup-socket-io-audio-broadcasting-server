@@ -15,6 +15,8 @@ import type { UserSocketRepository } from "./integrations/laravel/user-socket.re
 import type { UserRoomRepository } from "./integrations/laravel/user-room.repository.js";
 
 import type { EventRouter } from "./integrations/laravel/event-router.js";
+import type { CascadeCoordinator } from "./domains/cascade/cascade-coordinator.js";
+import type { CascadeRelay } from "./domains/cascade/cascade-relay.js";
 
 
 export interface AppContext {
@@ -33,4 +35,6 @@ export interface AppContext {
   userRoomRepository: UserRoomRepository;
 
   eventRouter: EventRouter;
+  cascadeCoordinator: CascadeCoordinator | null;
+  cascadeRelay: CascadeRelay | null;
 }

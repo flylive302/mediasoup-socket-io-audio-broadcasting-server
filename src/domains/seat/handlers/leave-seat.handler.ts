@@ -3,6 +3,7 @@
  */
 import { seatLeaveSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import { logger } from "@src/infrastructure/logger.js";
 
 export const leaveSeatHandler = createHandler(
@@ -23,8 +24,8 @@ export const leaveSeatHandler = createHandler(
       "User left seat",
     );
 
-    // Broadcast to room
-    socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
+    // Broadcast to room (cascade-aware)
+    emitToRoom(socket, roomId, "seat:cleared", { seatIndex: result.seatIndex }, context.cascadeRelay);
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService.recordActivity(roomId).catch(() => {});

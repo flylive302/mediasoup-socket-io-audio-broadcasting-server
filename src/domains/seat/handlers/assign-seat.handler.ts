@@ -3,6 +3,7 @@
  */
 import { seatAssignSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import { verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
@@ -42,12 +43,12 @@ export const assignSeatHandler = createHandler(
       "User assigned to seat",
     );
 
-    // BL-007 FIX: userId-only — frontend looks up user from participants
-    socket.to(roomId).emit("seat:updated", {
+    // BL-007 FIX: userId-only — frontend looks up user from participants (cascade-aware)
+    emitToRoom(socket, roomId, "seat:updated", {
       seatIndex,
       userId: targetUserId,
       isMuted: false,
-    });
+    }, context.cascadeRelay);
 
     return { success: true };
   },

@@ -37,4 +37,17 @@ export interface RoomStatusUpdate {
   started_at?: string; // ISO 8601 timestamp, optional
   ended_at?: string | null; // Renamed from "closed_at" per protocol
   hosting_region?: string | null; // AWS region hosting this room (e.g., "ap-south-1")
+  hosting_ip?: string | null; // Public IP of the MSAB instance hosting this room
+  hosting_port?: number | null; // HTTPS port of the MSAB instance (for internal API)
+}
+
+/**
+ * Cascade info returned by Laravel for cross-region room routing.
+ * Used by edge instances to discover and connect to the origin instance.
+ */
+export interface CascadeInfo {
+  hosting_region: string | null;
+  hosting_ip: string | null;
+  hosting_port: number | null;
+  is_live: boolean;
 }

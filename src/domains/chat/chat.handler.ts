@@ -5,6 +5,7 @@ import type { AppContext } from "@src/context.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 
 const handleChatMessage = createHandler(
   "chat:message",
@@ -39,7 +40,7 @@ const handleChatMessage = createHandler(
     };
 
     // Emit to everyone in room INCLUDING sender (simplifies frontend state sync)
-    socket.nsp.in(payload.roomId).emit("chat:message", message);
+    broadcastToRoom(socket.nsp, payload.roomId, "chat:message", message, context.cascadeRelay);
 
     // BL-001 FIX: Record room activity to prevent auto-close during active chat
     context.autoCloseService.recordActivity(payload.roomId).catch((err) => {

@@ -5,6 +5,7 @@ import { seatLockSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 
 
 
@@ -29,7 +30,7 @@ export const unlockSeatHandler = createHandler(
     logger.info({ roomId, seatIndex, unlockedBy: userId }, "Seat unlocked");
 
     // Broadcast to all including sender
-    socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: false });
+    broadcastToRoom(socket.nsp, roomId, "seat:locked", { seatIndex, isLocked: false }, context.cascadeRelay);
 
     return { success: true };
   },

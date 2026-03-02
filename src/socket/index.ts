@@ -1,6 +1,8 @@
 import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
+import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import { authMiddleware } from "@src/auth/middleware.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
@@ -87,6 +89,8 @@ export async function initializeSocket(
     userRoomRepository,
 
     eventRouter,
+    cascadeCoordinator: null, // Wired in server.ts after bootstrap
+    cascadeRelay: null,       // Wired in server.ts after bootstrap
   };
 
   io.on("connection", (socket) => {
@@ -122,6 +126,7 @@ export async function initializeSocket(
         seatRepository,
         roomManager,
         logger,
+        cascadeRelay: appContext.cascadeRelay,
       }),
     );
   });
@@ -140,6 +145,7 @@ interface DisconnectDeps {
   seatRepository: SeatRepository;
   roomManager: RoomManager;
   logger: typeof logger;
+  cascadeRelay: CascadeRelay | null;
 }
 
 async function handleDisconnect(
@@ -147,7 +153,7 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
@@ -187,16 +193,15 @@ async function handleDisconnect(
       seatResult.value.success &&
       seatResult.value.seatIndex !== undefined
     ) {
-      socket
-        .to(roomId)
-        .emit("seat:cleared", { seatIndex: seatResult.value.seatIndex });
+      emitToRoom(socket, roomId, "seat:cleared", { seatIndex: seatResult.value.seatIndex }, cascadeRelay);
+
       log.debug(
         { roomId, userId: roomUserId, seatIndex: seatResult.value.seatIndex },
         "User seat cleared on disconnect",
       );
     }
 
-    socket.to(roomId).emit("room:userLeft", { userId: client.userId });
+    emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
   } else if (client?.userId) {
     // No room but has userId — just clean up socket registration
     await Promise.allSettled([

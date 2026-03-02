@@ -4,6 +4,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { joinRoomSchema, leaveRoomSchema } from "@src/socket/schemas.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { Errors } from "@src/shared/errors.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const {
@@ -14,6 +15,8 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     autoCloseService,
     seatRepository,
     userRoomRepository,
+    cascadeCoordinator,
+    cascadeRelay,
   } = context;
 
   // JOIN
@@ -28,7 +31,35 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     try {
       logger.debug({ socketId: socket.id, roomId }, "Join request");
 
-      const cluster = await roomManager.getOrCreateRoom(roomId);
+      // Try to get/create the room locally first
+      let cluster = roomManager.getRoom(roomId);
+
+      // ─── Cross-Region Cascade Check ─────────────────────────
+      // If room doesn't exist locally, check if it's live on another region
+      if (!cluster && cascadeCoordinator) {
+        const cascadeResult = await cascadeCoordinator.handleCrossRegionJoin(roomId);
+
+        if (cascadeResult.isEdge) {
+          // Room exists in another region — we became an edge
+          // Create a local room for edge listeners
+          cluster = await roomManager.getOrCreateRoom(roomId);
+
+          logger.info(
+            {
+              roomId,
+              originRegion: cascadeResult.originRegion,
+              originIp: cascadeResult.originIp,
+            },
+            "Edge room created for cross-region cascade",
+          );
+        }
+      }
+
+      // Standard flow: create room if still not found (we're the origin)
+      if (!cluster) {
+        cluster = await roomManager.getOrCreateRoom(roomId);
+      }
+
       const rtpCapabilities = cluster.router?.rtpCapabilities;
 
       // BL-003 FIX: Persist seatCount from frontend if different from default
@@ -155,10 +186,11 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       }
 
       // BL-007 FIX: Include full user data so existing members can update participants store
-      socket.to(roomId).emit("room:userJoined", {
+      // Uses emitToRoom for cascade-aware broadcasting
+      emitToRoom(socket, roomId, "room:userJoined", {
         userId: socket.data.user.id,
         user: socket.data.user,
-      });
+      }, cascadeRelay);
 
       logger.info(
         {
@@ -198,7 +230,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
     // Clear user's seat if seated (using Redis)
     const result = await seatRepository.leaveSeat(roomId, userId);
     if (result.success && result.seatIndex !== undefined) {
-      socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
+      emitToRoom(socket, roomId, "seat:cleared", { seatIndex: result.seatIndex }, cascadeRelay);
       logger.debug(
         { roomId, userId, seatIndex: result.seatIndex },
         "User seat cleared on leave",
@@ -229,7 +261,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         );
     }
 
-    // Notify others
-    socket.to(roomId).emit("room:userLeft", { userId: socket.data.user.id });
+    // Notify others (cascade-aware)
+    emitToRoom(socket, roomId, "room:userLeft", { userId: socket.data.user.id }, cascadeRelay);
   });
 };

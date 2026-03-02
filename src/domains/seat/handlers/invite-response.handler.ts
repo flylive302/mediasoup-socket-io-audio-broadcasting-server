@@ -9,6 +9,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 
 
 export const inviteAcceptHandler = createHandler(
@@ -52,16 +53,16 @@ export const inviteAcceptHandler = createHandler(
     await context.seatRepository.deleteInvite(roomId, seatIndex);
 
     // Notify room that pending status is cleared
-    socket.nsp.to(roomId).emit("seat:invite:pending", {
+    broadcastToRoom(socket.nsp, roomId, "seat:invite:pending", {
       seatIndex,
       isPending: false,
-    });
+    }, context.cascadeRelay);
 
     // Auto-unlock seat if locked (invited users bypass seat lock)
     // SEAT-002: unlockSeat now returns SeatActionResult — ignore errors (best-effort)
     const unlockResult = await context.seatRepository.unlockSeat(roomId, seatIndex);
     if (unlockResult.success) {
-      socket.nsp.to(roomId).emit("seat:locked", { seatIndex, isLocked: false });
+      broadcastToRoom(socket.nsp, roomId, "seat:locked", { seatIndex, isLocked: false }, context.cascadeRelay);
       logger.info({ roomId, seatIndex, userId }, "Seat auto-unlocked for invited user");
     }
 
@@ -87,11 +88,11 @@ export const inviteAcceptHandler = createHandler(
     );
 
     // BL-007 FIX: userId-only — frontend looks up user from participants
-    socket.nsp.to(roomId).emit("seat:updated", {
+    broadcastToRoom(socket.nsp, roomId, "seat:updated", {
       seatIndex,
       userId: socket.data.user.id,
       isMuted: false,
-    });
+    }, context.cascadeRelay);
 
     return { success: true };
   },
@@ -138,10 +139,10 @@ export const inviteDeclineHandler = createHandler(
     await context.seatRepository.deleteInvite(roomId, seatIndex);
 
     // Notify room that pending status is cleared
-    socket.nsp.to(roomId).emit("seat:invite:pending", {
+    broadcastToRoom(socket.nsp, roomId, "seat:invite:pending", {
       seatIndex,
       isPending: false,
-    });
+    }, context.cascadeRelay);
 
     logger.info({ roomId, userId, seatIndex }, "User declined seat invite");
 

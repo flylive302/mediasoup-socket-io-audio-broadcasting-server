@@ -22,6 +22,8 @@ import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 import { RoomRegistry } from "@src/domains/room/room-registry.js";
 import { PipeManager } from "@src/domains/media/pipe-manager.js";
+import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
+import { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 
 
 export interface BootstrapResult {
@@ -68,8 +70,26 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     adapter: createAdapter(pubClient, subClient),
   });
 
-  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter } =
-    await initializeSocket(io, pubClient);
+  const appContext = await initializeSocket(io, pubClient);
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter } = appContext;
+
+  // SFU Cascade — conditionally wire coordinator and relay
+  const roomRegistry = new RoomRegistry(pubClient, logger);
+  const pipeManager = new PipeManager(logger);
+  let cascadeCoordinator: CascadeCoordinator | null = null;
+  let cascadeRelay: CascadeRelay | null = null;
+
+  if (config.CASCADE_ENABLED) {
+    cascadeRelay = new CascadeRelay(logger);
+    cascadeCoordinator = new CascadeCoordinator(
+      roomManager, pipeManager,
+      appContext.laravelClient, cascadeRelay, logger,
+    );
+    appContext.cascadeCoordinator = cascadeCoordinator;
+    appContext.cascadeRelay = cascadeRelay;
+    roomManager.setCascadeServices(cascadeCoordinator, cascadeRelay);
+    logger.info("SFU cascade services wired (CASCADE_ENABLED=true)");
+  }
 
   // Register health check
   await fastify.register(createHealthRoutes(workerManager));
@@ -83,12 +103,18 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   // Register admin routes (drain mode, status)
   await fastify.register(createAdminRoutes(roomManager));
 
-  // Register internal API routes (SFU cascade — Phase 5)
-  const roomRegistry = new RoomRegistry(pubClient, logger);
-  const pipeManager = new PipeManager(logger);
-  await fastify.register(createInternalRoutes(roomManager, roomRegistry), {
-    prefix: "/",
-  });
+  // Register internal API routes (SFU cascade)
+  await fastify.register(
+    createInternalRoutes({
+      roomManager,
+      roomRegistry,
+      pipeManager,
+      cascadeRelay,
+      cascadeCoordinator,
+      io,
+    }),
+    { prefix: "/" },
+  );
 
   // Return subClient for proper cleanup during graceful shutdown
   return {
@@ -103,3 +129,4 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     pipeManager,
   };
 }
+

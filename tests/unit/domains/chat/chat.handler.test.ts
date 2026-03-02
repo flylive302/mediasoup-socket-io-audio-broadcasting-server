@@ -100,7 +100,7 @@ describe("chat:message handler", () => {
     await handler({ roomId: "room-7", content: "Hello!" }, cb);
 
     expect(cb).toHaveBeenCalledWith({ success: true });
-    expect(socket.nsp.in).toHaveBeenCalledWith("room-7");
+    expect(socket.nsp.to).toHaveBeenCalledWith("room-7");
   });
 
   it("rejects when socket is NOT in the room", async () => {
@@ -112,7 +112,7 @@ describe("chat:message handler", () => {
 
     expect(cb).toHaveBeenCalledWith({ success: false, error: "Not in room" });
     // Should NOT broadcast
-    expect(socket.nsp.in).not.toHaveBeenCalled();
+    expect(socket.nsp.to).not.toHaveBeenCalled();
   });
 
   it("rejects when rate limit is exceeded", async () => {
@@ -122,7 +122,7 @@ describe("chat:message handler", () => {
     await handler({ roomId: "room-7", content: "spam" }, cb);
 
     expect(cb).toHaveBeenCalledWith({ success: false, error: "Too many messages" });
-    expect(socket.nsp.in).not.toHaveBeenCalled();
+    expect(socket.nsp.to).not.toHaveBeenCalled();
   });
 
   it("uses per-user-per-room rate-limit key", async () => {
@@ -162,10 +162,9 @@ describe("chat:message handler", () => {
     await handler({ roomId: "room-7", content: "hi" }, cb);
 
     expect(cb).toHaveBeenCalledWith({ success: true });
-    // Verify the emitted message has type "text"
-    // The handler called socket.nsp.in("room-7") → check results[0] (first call from handler)
-    const inReturnValue = socket.nsp.in.mock.results[0].value;
-    expect(inReturnValue.emit).toHaveBeenCalledWith(
+    // The handler called broadcastToRoom(socket.nsp, "room-7", ...) → check nsp.to results
+    const toReturnValue = socket.nsp.to.mock.results[0].value;
+    expect(toReturnValue.emit).toHaveBeenCalledWith(
       "chat:message",
       expect.objectContaining({ type: "text" }),
     );

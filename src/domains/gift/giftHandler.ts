@@ -9,6 +9,7 @@ import { sendGiftSchema, prepareGiftSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { Errors } from "@src/shared/errors.js";
 import type { AppContext } from "@src/context.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 
 const GIFT_RATE_LIMIT = 330; // 330 gifts per minute
 const GIFT_RATE_WINDOW = 60; // 60 seconds
@@ -65,13 +66,13 @@ export class GiftHandler {
         };
 
         // GF-008 FIX: Explicitly pick emitted fields instead of spreading payload
-        sock.to(payload.roomId).emit("gift:received", {
+        emitToRoom(sock, payload.roomId, "gift:received", {
           senderId: user.id,
           roomId: payload.roomId,
           giftId: payload.giftId,
           recipientId: payload.recipientId,
           quantity: payload.quantity,
-        });
+        }, context.cascadeRelay);
 
         // BL-001 FIX: Record room activity to prevent auto-close during active gifting
         // GF-016 FIX: Log errors instead of silently swallowing

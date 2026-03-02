@@ -3,6 +3,7 @@
  */
 import { seatTakeSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 
@@ -31,12 +32,12 @@ export const takeSeatHandler = createHandler(
 
     logger.info({ roomId, userId, seatIndex }, "User took seat");
 
-    // BL-007 FIX: userId-only — frontend looks up user from participants
-    socket.to(roomId).emit("seat:updated", {
+    // BL-007 FIX: userId-only — frontend looks up user from participants (cascade-aware)
+    emitToRoom(socket, roomId, "seat:updated", {
       seatIndex,
       userId: socket.data.user.id,
       isMuted: false,
-    });
+    }, context.cascadeRelay);
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService.recordActivity(roomId).catch(() => {});

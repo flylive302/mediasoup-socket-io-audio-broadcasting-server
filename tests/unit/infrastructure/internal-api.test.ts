@@ -5,6 +5,19 @@ vi.mock("@src/config/index.js", () => ({
     CASCADE_ENABLED: true,
     INTERNAL_API_KEY: "test-internal-key-12345678",
     PUBLIC_IP: "10.0.1.100",
+    PORT: 3030,
+    LOG_LEVEL: "silent",
+  },
+  isDev: false,
+}));
+
+vi.mock("@src/infrastructure/logger.js", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
   },
 }));
 
@@ -16,6 +29,7 @@ import Fastify from "fastify";
 function createMockRoomManager() {
   return {
     getRoomCount: vi.fn().mockReturnValue(3),
+    getRoom: vi.fn().mockReturnValue(null), // No rooms exist by default
   };
 }
 
@@ -33,6 +47,15 @@ function createMockRoomRegistry() {
   };
 }
 
+function createMockPipeManager() {
+  return {
+    createOriginPipe: vi.fn(),
+    createEdgePipe: vi.fn(),
+    closePipes: vi.fn(),
+    getPipeCount: vi.fn().mockReturnValue(0),
+  };
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe("Internal API", () => {
@@ -43,10 +66,20 @@ describe("Internal API", () => {
 
     const roomManager = createMockRoomManager();
     const roomRegistry = createMockRoomRegistry();
+    const pipeManager = createMockPipeManager();
 
     app = Fastify();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await app.register(createInternalRoutes(roomManager as any, roomRegistry as any));
+    await app.register(
+      createInternalRoutes({
+        roomManager: roomManager as any,
+        roomRegistry: roomRegistry as any,
+        pipeManager: pipeManager as any,
+        cascadeRelay: null,
+        cascadeCoordinator: null,
+        io: null,
+      }),
+    );
     await app.ready();
   });
 
@@ -98,26 +131,97 @@ describe("Internal API", () => {
   });
 
   describe("POST /internal/pipe/offer", () => {
-    it("returns 501 (stubbed for Phase 5A)", async () => {
+    it("returns 400 when missing roomId or producerId", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/pipe/offer",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns 404 when room does not exist on this instance", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/internal/pipe/offer",
         headers: { "x-internal-key": "test-internal-key-12345678" },
         payload: { roomId: "room-1", producerId: "prod-1" },
       });
-      expect(res.statusCode).toBe(501);
+      expect(res.statusCode).toBe(404);
+      const body = JSON.parse(res.payload);
+      expect(body.message).toBe("Room not found on this instance");
     });
   });
 
   describe("POST /internal/pipe/close", () => {
-    it("returns 501 (stubbed for Phase 5A)", async () => {
+    it("returns 400 when missing roomId", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/internal/pipe/close",
         headers: { "x-internal-key": "test-internal-key-12345678" },
-        payload: { roomId: "room-1", instanceId: "i-edge-001" },
+        payload: {},
       });
-      expect(res.statusCode).toBe(501);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("succeeds when roomId is provided", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/pipe/close",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: { roomId: "room-1", edgeInstanceId: "i-edge-001" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.status).toBe("ok");
+    });
+  });
+
+  describe("POST /internal/cascade/relay", () => {
+    it("returns 400 when missing roomId or event", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns ok with relayed=false when sourceInstanceId matches self", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {
+          roomId: "room-1",
+          event: "room:userJoined",
+          data: { userId: 1 },
+          sourceInstanceId: "10.0.1.100", // matches PUBLIC_IP
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.relayed).toBe(false);
+      expect(body.reason).toBe("self");
+    });
+
+    it("returns ok with relayed=true for valid relay payload", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {
+          roomId: "room-1",
+          event: "room:userJoined",
+          data: { userId: 1 },
+          sourceInstanceId: "10.0.2.200", // different instance
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.relayed).toBe(true);
     });
   });
 });

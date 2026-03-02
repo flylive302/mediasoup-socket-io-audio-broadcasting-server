@@ -3,6 +3,7 @@
  */
 import { seatRemoveSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import { verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { isVipAntiKickProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
@@ -46,8 +47,8 @@ export const removeSeatHandler = createHandler(
       "User removed from seat",
     );
 
-    // Broadcast to room
-    socket.to(roomId).emit("seat:cleared", { seatIndex: result.seatIndex });
+    // Broadcast to room (cascade-aware)
+    emitToRoom(socket, roomId, "seat:cleared", { seatIndex: result.seatIndex }, context.cascadeRelay);
 
     return { success: true };
   },

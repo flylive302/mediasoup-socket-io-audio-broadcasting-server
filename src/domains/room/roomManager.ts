@@ -9,6 +9,8 @@ import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { config } from "@src/config/index.js";
+import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
+import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -16,6 +18,10 @@ export class RoomManager {
 
   // Track rooms being created to prevent race conditions
   private readonly creatingRooms = new Map<string, Promise<RoomMediaCluster>>();
+
+  // Cascade services (late-bound after bootstrap)
+  private cascadeCoordinator: CascadeCoordinator | null = null;
+  private cascadeRelay: CascadeRelay | null = null;
 
   constructor(
     private readonly workerManager: WorkerManager,
@@ -33,6 +39,15 @@ export class RoomManager {
   // Getter for state repo
   get state() {
     return this.stateRepo;
+  }
+
+  /**
+   * Late-bind cascade services after bootstrap.
+   * Called from server.ts when CASCADE_ENABLED is true.
+   */
+  setCascadeServices(coordinator: CascadeCoordinator, relay: CascadeRelay): void {
+    this.cascadeCoordinator = coordinator;
+    this.cascadeRelay = relay;
   }
 
   getRoomCount(): number {
@@ -110,11 +125,13 @@ export class RoomManager {
       lastActivityAt: Date.now(),
     });
 
-    // 4. Notify Laravel Live (including hosting region for cross-region routing)
+    // 4. Notify Laravel Live (including hosting info for cross-region cascade)
     await this.laravelClient.updateRoomStatus(roomId, {
       is_live: true,
       participant_count: 0,
       hosting_region: config.AWS_REGION,
+      hosting_ip: config.PUBLIC_IP,
+      hosting_port: config.PORT,
     });
 
     return cluster;
@@ -171,12 +188,12 @@ export class RoomManager {
 
     logger.info({ roomId, reason }, "Closing room");
 
-    // 1. Notify Frontend
-    this.io.to(roomId).emit("room:closed", {
-      roomId,
-      reason,
-      timestamp: Date.now(),
-    });
+    // 1. Notify Frontend (local + cross-region)
+    const closePayload = { roomId, reason, timestamp: Date.now() };
+    this.io.to(roomId).emit("room:closed", closePayload);
+    if (this.cascadeRelay?.hasRemotes(roomId)) {
+      this.cascadeRelay.relayToRemote(roomId, "room:closed", closePayload).catch(() => {});
+    }
 
     // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel)
     this.laravelClient
@@ -185,6 +202,8 @@ export class RoomManager {
         participant_count: 0,
         ended_at: new Date().toISOString(),
         hosting_region: null,
+        hosting_ip: null,
+        hosting_port: null,
       })
       .catch((err) =>
         logger.error({ err, roomId }, "Laravel close status update failed"),
@@ -197,6 +216,13 @@ export class RoomManager {
     ];
     if (this.seatRepository) {
       cleanupOps.push(this.seatRepository.clearRoom(roomId));
+    }
+    if (this.cascadeCoordinator) {
+      cleanupOps.push(
+        this.cascadeCoordinator.cleanup(roomId).catch((err) =>
+          logger.error({ err, roomId }, "Cascade cleanup failed"),
+        ),
+      );
     }
     await Promise.all(cleanupOps);
 

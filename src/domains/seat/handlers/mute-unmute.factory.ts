@@ -9,6 +9,7 @@ import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { isVipAntiMuteProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 
 interface MuteConfig {
   event: "seat:mute" | "seat:unmute";
@@ -95,12 +96,13 @@ export function createMuteHandler(config: MuteConfig) {
         }
       }
 
-      socket.nsp.to(roomId).emit("seat:userMuted", {
+      broadcastToRoom(socket.nsp, roomId, "seat:userMuted", {
         userId: targetUserId,
         isMuted: config.muted,
-      });
+      }, context.cascadeRelay);
 
       return { success: true };
     },
   );
 }
+

@@ -18,6 +18,7 @@ import {
   selfMuteSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
+import { emitToRoom } from "@src/shared/room-emit.js";
 import type { Socket } from "socket.io";
 
 // 1. Create Transport
@@ -120,11 +121,12 @@ const audioProduceHandler = createHandler(
 
     // Notify room members causing them to consume
     // (after piping is complete so distribution routers have the producer)
-    socket.to(roomId).emit("audio:newProducer", {
+    // Uses emitToRoom for cascade-aware broadcasting
+    emitToRoom(socket, roomId, "audio:newProducer", {
       producerId: producer.id,
       userId: socket.data.user.id,
       kind: "audio",
-    });
+    }, context.cascadeRelay);
 
     producer.on("transportclose", () => {
       // Clean up client tracking
@@ -236,12 +238,12 @@ const selfMuteHandler = createHandler(
       "Producer paused (self-mute)",
     );
 
-    // Notify room so frontend can update UI
-    socket.to(roomId).emit("seat:userMuted", {
+    // Notify room so frontend can update UI (cascade-aware)
+    emitToRoom(socket, roomId, "seat:userMuted", {
       userId: socket.data.user.id,
       isMuted: true,
       selfMuted: true,
-    });
+    }, context.cascadeRelay);
 
     return { success: true };
   },
@@ -271,12 +273,12 @@ const selfUnmuteHandler = createHandler(
       "Producer resumed (self-unmute)",
     );
 
-    // Notify room so frontend can update UI
-    socket.to(roomId).emit("seat:userMuted", {
+    // Notify room so frontend can update UI (cascade-aware)
+    emitToRoom(socket, roomId, "seat:userMuted", {
       userId: socket.data.user.id,
       isMuted: false,
       selfMuted: true,
-    });
+    }, context.cascadeRelay);
 
     return { success: true };
   },
