@@ -162,3 +162,9 @@ variable "drain_timeout_seconds" {
   type        = number
   default     = 900 # 15 minutes
 }
+
+variable "cascade_enabled" {
+  description = "Enable SFU cross-region room cascading"
+  type        = bool
+  default     = false
+}

@@ -130,6 +130,12 @@ CLOUDWATCH_ENABLED=true
 
 # AWS Region (for cross-region room routing)
 AWS_REGION=${region}
+
+# SFU Cascade (Phase 5)
+CASCADE_ENABLED=${cascade_enabled}
+CASCADE_THRESHOLD=1800
+INTERNAL_API_KEY=${laravel_internal_key}
+PUBLIC_IP=$PUBLIC_IP
 ENVEOF
 
 # --- Build Docker Image (use host network for DNS resolution in VPC) ---

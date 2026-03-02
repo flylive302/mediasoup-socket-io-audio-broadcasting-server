@@ -300,6 +300,7 @@ module "autoscaling_mumbai" {
   jwt_secret             = var.jwt_secret
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
+  cascade_enabled        = true
 }
 
 module "autoscaling_uae" {
@@ -326,6 +327,7 @@ module "autoscaling_uae" {
   jwt_secret             = var.jwt_secret
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
+  cascade_enabled        = true
 }
 
 module "autoscaling_frankfurt" {
@@ -352,6 +354,7 @@ module "autoscaling_frankfurt" {
   jwt_secret             = var.jwt_secret
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
+  cascade_enabled        = true
 }
 
 # =============================================================================

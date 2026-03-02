@@ -83,6 +83,7 @@ resource "aws_launch_template" "msab" {
     audio_domain         = var.audio_domain
     cors_origins         = var.cors_origins
     laravel_api_url      = var.laravel_api_url
+    cascade_enabled      = var.cascade_enabled
   }))
 
   # Metadata options (IMDSv2 required)
