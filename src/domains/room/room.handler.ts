@@ -1,5 +1,6 @@
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
+import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { joinRoomSchema, leaveRoomSchema } from "@src/socket/schemas.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
@@ -179,6 +180,9 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
           .updateRoomStatus(roomId, {
             is_live: true,
             participant_count: newCount,
+            hosting_region: config.AWS_REGION,
+            hosting_ip: config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null,
+            hosting_port: config.PORT,
           })
           .catch((err) =>
             logger.error({ err, roomId }, "Laravel status update failed"),
@@ -251,10 +255,15 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
 
     // Laravel update is fire-and-forget
     if (newCount !== null) {
+      const isLive = newCount > 0;
       laravelClient
         .updateRoomStatus(roomId, {
-          is_live: newCount > 0,
+          is_live: isLive,
           participant_count: newCount,
+          // Clear hosting data when room goes offline
+          hosting_region: isLive ? config.AWS_REGION : null,
+          hosting_ip: isLive ? (config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null) : null,
+          hosting_port: isLive ? config.PORT : null,
         })
         .catch((err) =>
           logger.error({ err, roomId }, "Laravel leave status update failed"),
