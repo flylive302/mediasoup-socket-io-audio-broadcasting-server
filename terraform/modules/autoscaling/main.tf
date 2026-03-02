@@ -126,10 +126,41 @@ resource "aws_autoscaling_group" "msab" {
   health_check_type         = "ELB"
   health_check_grace_period = 300 # 5 min for user-data to complete
 
-  # Use latest launch template version
-  launch_template {
-    id      = aws_launch_template.msab.id
-    version = "$Latest"
+  # Simple launch template — used when no instance type fallbacks are configured
+  dynamic "launch_template" {
+    for_each = length(var.instance_type_overrides) == 0 ? [1] : []
+    content {
+      id      = aws_launch_template.msab.id
+      version = "$Latest"
+    }
+  }
+
+  # Mixed instances policy — used when fallback instance types are configured.
+  # Tries each type in priority order (on_demand_allocation_strategy = "prioritized")
+  # until one has capacity. All instances are on-demand (no spot).
+  dynamic "mixed_instances_policy" {
+    for_each = length(var.instance_type_overrides) > 0 ? [1] : []
+    content {
+      launch_template {
+        launch_template_specification {
+          launch_template_id = aws_launch_template.msab.id
+          version            = "$Latest"
+        }
+
+        dynamic "override" {
+          for_each = var.instance_type_overrides
+          content {
+            instance_type = override.value
+          }
+        }
+      }
+
+      instances_distribution {
+        on_demand_base_capacity                  = var.min_instances
+        on_demand_percentage_above_base_capacity = 100
+        on_demand_allocation_strategy            = "prioritized"
+      }
+    }
   }
 
   # Instance refresh settings (for rolling deployments)

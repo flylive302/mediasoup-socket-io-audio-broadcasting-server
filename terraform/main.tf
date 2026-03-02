@@ -88,7 +88,7 @@ provider "aws" {
 # =============================================================================
 
 module "networking_mumbai" {
-  source = "./modules/networking"
+  source    = "./modules/networking"
   providers = { aws = aws.mumbai }
 
   project_name = var.project_name
@@ -98,7 +98,7 @@ module "networking_mumbai" {
 }
 
 module "redis_mumbai" {
-  source = "./modules/redis"
+  source    = "./modules/redis"
   providers = { aws = aws.mumbai }
 
   project_name            = var.project_name
@@ -108,7 +108,7 @@ module "redis_mumbai" {
 }
 
 module "ssl_mumbai" {
-  source = "./modules/ssl"
+  source    = "./modules/ssl"
   providers = { aws = aws.mumbai }
 
   project_name = var.project_name
@@ -116,7 +116,7 @@ module "ssl_mumbai" {
 }
 
 module "loadbalancer_mumbai" {
-  source = "./modules/loadbalancer"
+  source    = "./modules/loadbalancer"
   providers = { aws = aws.mumbai }
 
   project_name      = var.project_name
@@ -132,7 +132,7 @@ module "loadbalancer_mumbai" {
 # =============================================================================
 
 module "networking_uae" {
-  source = "./modules/networking"
+  source    = "./modules/networking"
   providers = { aws = aws.uae }
 
   project_name = var.project_name
@@ -142,7 +142,7 @@ module "networking_uae" {
 }
 
 module "redis_uae" {
-  source = "./modules/redis"
+  source    = "./modules/redis"
   providers = { aws = aws.uae }
 
   project_name            = var.project_name
@@ -152,7 +152,7 @@ module "redis_uae" {
 }
 
 module "ssl_uae" {
-  source = "./modules/ssl"
+  source    = "./modules/ssl"
   providers = { aws = aws.uae }
 
   project_name = var.project_name
@@ -160,7 +160,7 @@ module "ssl_uae" {
 }
 
 module "loadbalancer_uae" {
-  source = "./modules/loadbalancer"
+  source    = "./modules/loadbalancer"
   providers = { aws = aws.uae }
 
   project_name      = var.project_name
@@ -176,7 +176,7 @@ module "loadbalancer_uae" {
 # =============================================================================
 
 module "networking_frankfurt" {
-  source = "./modules/networking"
+  source    = "./modules/networking"
   providers = { aws = aws.frankfurt }
 
   project_name = var.project_name
@@ -186,7 +186,7 @@ module "networking_frankfurt" {
 }
 
 module "redis_frankfurt" {
-  source = "./modules/redis"
+  source    = "./modules/redis"
   providers = { aws = aws.frankfurt }
 
   project_name            = var.project_name
@@ -196,7 +196,7 @@ module "redis_frankfurt" {
 }
 
 module "ssl_frankfurt" {
-  source = "./modules/ssl"
+  source    = "./modules/ssl"
   providers = { aws = aws.frankfurt }
 
   project_name = var.project_name
@@ -204,7 +204,7 @@ module "ssl_frankfurt" {
 }
 
 module "loadbalancer_frankfurt" {
-  source = "./modules/loadbalancer"
+  source    = "./modules/loadbalancer"
   providers = { aws = aws.frankfurt }
 
   project_name      = var.project_name
@@ -225,8 +225,8 @@ module "global_accelerator" {
   project_name = var.project_name
 
   regional_endpoints = {
-    "ap-south-1"  = { nlb_arn = module.loadbalancer_mumbai.nlb_arn }
-    "me-south-1"  = { nlb_arn = module.loadbalancer_uae.nlb_arn }
+    "ap-south-1"   = { nlb_arn = module.loadbalancer_mumbai.nlb_arn }
+    "me-south-1"   = { nlb_arn = module.loadbalancer_uae.nlb_arn }
     "eu-central-1" = { nlb_arn = module.loadbalancer_frankfurt.nlb_arn }
   }
 }
@@ -277,7 +277,7 @@ module "iam" {
 # =============================================================================
 
 module "autoscaling_mumbai" {
-  source = "./modules/autoscaling"
+  source    = "./modules/autoscaling"
   providers = { aws = aws.mumbai }
 
   region                 = "ap-south-1"
@@ -304,12 +304,12 @@ module "autoscaling_mumbai" {
 }
 
 module "autoscaling_uae" {
-  source = "./modules/autoscaling"
+  source    = "./modules/autoscaling"
   providers = { aws = aws.uae }
 
   region                 = "me-south-1"
   project_name           = var.project_name
-  instance_type          = "c5.xlarge" # c6i/c7i experiencing capacity limits in UAE
+  instance_type          = "c5a.xlarge" # Baseline for launch template config
   ssh_public_key_path    = var.ssh_public_key_path
   instance_profile_name  = module.iam.instance_profile_name
   msab_security_group_id = module.networking_uae.msab_security_group_id
@@ -328,10 +328,15 @@ module "autoscaling_uae" {
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
   cascade_enabled        = true
+
+  # me-south-1 has limited instance capacity — use mixed instances policy
+  # to try multiple types in priority order (prioritized allocation strategy).
+  # All compute-optimized 4-vCPU variants, with t3.xlarge as last resort.
+  instance_type_overrides = ["c5a.xlarge", "c5.xlarge", "c5n.xlarge", "t3.xlarge"]
 }
 
 module "autoscaling_frankfurt" {
-  source = "./modules/autoscaling"
+  source    = "./modules/autoscaling"
   providers = { aws = aws.frankfurt }
 
   region                 = "eu-central-1"
@@ -362,7 +367,7 @@ module "autoscaling_frankfurt" {
 # =============================================================================
 
 module "cloudwatch_mumbai" {
-  source = "./modules/cloudwatch"
+  source    = "./modules/cloudwatch"
   providers = { aws = aws.mumbai }
 
   project_name = var.project_name

@@ -167,10 +167,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{FlyLive/MSAB,InstanceId} MetricName=\"ActiveConnections\"', 'Sum', 60)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 60
-          yAxis   = { left = { min = 0 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 60
+          yAxis  = { left = { min = 0 } }
         }
       },
       {
@@ -184,10 +184,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{FlyLive/MSAB,InstanceId} MetricName=\"WorkerCPU\"', 'Average', 60)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 60
-          yAxis   = { left = { min = 0, max = 100 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 60
+          yAxis  = { left = { min = 0, max = 100 } }
         }
       },
 
@@ -203,10 +203,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{AWS/NetworkELB,LoadBalancer} MetricName=\"ActiveFlowCount\"', 'Average', 300)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 300
-          yAxis   = { left = { min = 0 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 300
+          yAxis  = { left = { min = 0 } }
         }
       },
       {
@@ -220,10 +220,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{AWS/NetworkELB,LoadBalancer} MetricName=\"NewFlowCount\"', 'Sum', 300)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 300
-          yAxis   = { left = { min = 0 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 300
+          yAxis  = { left = { min = 0 } }
         }
       },
       {
@@ -237,10 +237,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{AWS/NetworkELB,LoadBalancer} MetricName=\"ProcessedBytes\"', 'Sum', 300)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 300
-          yAxis   = { left = { min = 0 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 300
+          yAxis  = { left = { min = 0 } }
         }
       },
 
@@ -256,10 +256,10 @@ resource "aws_cloudwatch_dashboard" "msab" {
           metrics = [
             [{ expression = "SEARCH('{AWS/AutoScaling,AutoScalingGroupName} MetricName=\"GroupInServiceInstances\"', 'Average', 300)", id = "e1" }]
           ]
-          view    = "timeSeries"
-          region  = var.aws_region
-          period  = 300
-          yAxis   = { left = { min = 0 } }
+          view   = "timeSeries"
+          region = var.aws_region
+          period = 300
+          yAxis  = { left = { min = 0 } }
         }
       },
       {
@@ -269,7 +269,7 @@ resource "aws_cloudwatch_dashboard" "msab" {
         width  = 12
         height = 6
         properties = {
-          title  = "Alarm Status"
+          title = "Alarm Status"
           alarms = [
             aws_cloudwatch_metric_alarm.high_connections.arn,
             aws_cloudwatch_metric_alarm.no_workers.arn,

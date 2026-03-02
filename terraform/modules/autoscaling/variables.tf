@@ -168,3 +168,9 @@ variable "cascade_enabled" {
   type        = bool
   default     = false
 }
+
+variable "instance_type_overrides" {
+  description = "Ordered list of fallback instance types for mixed instances policy. When non-empty, the ASG uses a prioritized allocation strategy to try each type in order. Leave empty to use only the primary instance_type from the launch template."
+  type        = list(string)
+  default     = []
+}
