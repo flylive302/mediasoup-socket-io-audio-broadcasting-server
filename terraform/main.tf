@@ -308,7 +308,7 @@ module "autoscaling_uae" {
 
   region                 = "me-south-1"
   project_name           = var.project_name
-  instance_type          = "c6i.xlarge" # c7i not available in me-south-1
+  instance_type          = "c5.xlarge" # c6i/c7i experiencing capacity limits in UAE
   ssh_public_key_path    = var.ssh_public_key_path
   instance_profile_name  = module.iam.instance_profile_name
   msab_security_group_id = module.networking_uae.msab_security_group_id
