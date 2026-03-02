@@ -5,7 +5,7 @@ on:
     branches: [master]
   workflow_dispatch: # Manual trigger from GitHub UI
 
-# Only one deploy at a time
+# Only one deploy workflow at a time (queues, doesn't cancel)
 concurrency:
   group: aws-deploy
   cancel-in-progress: false
@@ -42,7 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: aws-production
     strategy:
-      max-parallel: 1
+      fail-fast: false # Don't cancel other regions if one fails
+      max-parallel: 3 # Deploy all regions in parallel
       matrix:
         region:
           - name: mumbai
@@ -75,6 +76,66 @@ jobs:
           echo "✅ Found ASG: $ASG_NAME"
           echo "asg_name=$ASG_NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Cancel existing Instance Refresh (${{ matrix.region.name }})
+        run: |
+          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
+
+          # Check if there's an active refresh
+          ACTIVE_STATUS=$(aws autoscaling describe-instance-refreshes \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --max-records 1 \
+            --query 'InstanceRefreshes[0].Status' \
+            --output text 2>/dev/null || echo "None")
+
+          if [ "$ACTIVE_STATUS" = "InProgress" ] || [ "$ACTIVE_STATUS" = "Pending" ]; then
+            echo "⚠️  Active refresh found (status: $ACTIVE_STATUS). Cancelling..."
+            aws autoscaling cancel-instance-refresh \
+              --auto-scaling-group-name "$ASG_NAME" || true
+
+            # Wait for cancellation to complete
+            for i in $(seq 1 20); do
+              sleep 15
+              STATUS=$(aws autoscaling describe-instance-refreshes \
+                --auto-scaling-group-name "$ASG_NAME" \
+                --max-records 1 \
+                --query 'InstanceRefreshes[0].Status' \
+                --output text 2>/dev/null || echo "None")
+
+              echo "  ⏳ Cancellation status: $STATUS (${i}/20)"
+
+              if [ "$STATUS" != "Cancelling" ] && [ "$STATUS" != "InProgress" ] && [ "$STATUS" != "Pending" ]; then
+                echo "✅ Previous refresh resolved (status: $STATUS)"
+                break
+              fi
+            done
+          else
+            echo "✅ No active refresh to cancel (status: $ACTIVE_STATUS)"
+          fi
+
+          # Also complete any stuck lifecycle hooks
+          PENDING_INSTANCES=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[?LifecycleState=='Pending:Wait'].InstanceId" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$PENDING_INSTANCES" ] && [ "$PENDING_INSTANCES" != "None" ]; then
+            LAUNCH_HOOK=$(aws autoscaling describe-lifecycle-hooks \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --query "LifecycleHooks[?LifecycleTransition=='autoscaling:EC2_INSTANCE_LAUNCHING'].LifecycleHookName | [0]" \
+              --output text 2>/dev/null || echo "")
+
+            if [ -n "$LAUNCH_HOOK" ] && [ "$LAUNCH_HOOK" != "None" ]; then
+              for INSTANCE_ID in $PENDING_INSTANCES; do
+                echo "  🔧 Completing launch lifecycle hook for $INSTANCE_ID"
+                aws autoscaling complete-lifecycle-action \
+                  --lifecycle-action-result CONTINUE \
+                  --instance-id "$INSTANCE_ID" \
+                  --auto-scaling-group-name "$ASG_NAME" \
+                  --lifecycle-hook-name "$LAUNCH_HOOK" || true
+              done
+            fi
+          fi
+
       - name: Start Instance Refresh (${{ matrix.region.name }})
         id: refresh
         run: |
@@ -94,7 +155,7 @@ jobs:
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
-          MAX_WAIT=900  # 15 minutes
+          MAX_WAIT=1800  # 30 minutes
           ELAPSED=0
           INTERVAL=30
 
@@ -105,7 +166,13 @@ jobs:
               --query 'InstanceRefreshes[0].Status' \
               --output text)
 
-            echo "  ⏳ Status: $STATUS (${ELAPSED}s elapsed)"
+            PROGRESS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query 'InstanceRefreshes[0].PercentageComplete' \
+              --output text 2>/dev/null || echo "0")
+
+            echo "  ⏳ Status: $STATUS | Progress: ${PROGRESS}% (${ELAPSED}s elapsed)"
 
             case "$STATUS" in
               Successful)
@@ -122,7 +189,33 @@ jobs:
                 exit 1
                 ;;
               *)
-                # Pending, InProgress, Cancelling, RollbackInProgress
+                # If stuck at 0% for 10+ minutes, try completing lifecycle hooks
+                if [ "$PROGRESS" = "0" ] && [ $ELAPSED -ge 600 ]; then
+                  echo "  ⚠️  Stuck at 0% — checking for lifecycle hooks..."
+                  PENDING=$(aws autoscaling describe-auto-scaling-groups \
+                    --auto-scaling-group-name "$ASG_NAME" \
+                    --query "AutoScalingGroups[0].Instances[?LifecycleState=='Pending:Wait'].InstanceId" \
+                    --output text 2>/dev/null || echo "")
+
+                  if [ -n "$PENDING" ] && [ "$PENDING" != "None" ]; then
+                    LAUNCH_HOOK=$(aws autoscaling describe-lifecycle-hooks \
+                      --auto-scaling-group-name "$ASG_NAME" \
+                      --query "LifecycleHooks[?LifecycleTransition=='autoscaling:EC2_INSTANCE_LAUNCHING'].LifecycleHookName | [0]" \
+                      --output text 2>/dev/null || echo "")
+
+                    if [ -n "$LAUNCH_HOOK" ] && [ "$LAUNCH_HOOK" != "None" ]; then
+                      for IID in $PENDING; do
+                        echo "  🔧 Auto-completing launch hook for $IID"
+                        aws autoscaling complete-lifecycle-action \
+                          --lifecycle-action-result CONTINUE \
+                          --instance-id "$IID" \
+                          --auto-scaling-group-name "$ASG_NAME" \
+                          --lifecycle-hook-name "$LAUNCH_HOOK" || true
+                      done
+                    fi
+                  fi
+                fi
+
                 sleep $INTERVAL
                 ELAPSED=$((ELAPSED + INTERVAL))
                 ;;
@@ -131,3 +224,15 @@ jobs:
 
           echo "❌ Timed out after ${MAX_WAIT}s waiting for instance refresh"
           exit 1
+
+      - name: Post Configure AWS Credentials
+        if: always()
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ matrix.region.aws_region }}
+
+      - name: Complete job
+        if: always()
+        run: echo "Deploy job for ${{ matrix.region.name }} finished with status ${{ job.status }}"
