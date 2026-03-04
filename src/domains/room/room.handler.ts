@@ -63,13 +63,13 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
 
       const rtpCapabilities = cluster.router?.rtpCapabilities;
 
-      // BL-003 FIX: Persist seatCount from frontend if different from default
-      if (seatCount !== 15) {
-        const state = await roomManager.state.get(roomId);
-        if (state && state.seatCount !== seatCount) {
-          state.seatCount = seatCount;
-          await roomManager.state.save(state);
-        }
+      // BL-003 FIX: Always sync seatCount from frontend to Redis state
+      // (Previously guarded by `seatCount !== 15`, which prevented syncing
+      // back to default after 15→10→15, causing stale SEAT_INVALID errors)
+      const state = await roomManager.state.get(roomId);
+      if (state && state.seatCount !== seatCount) {
+        state.seatCount = seatCount;
+        await roomManager.state.save(state);
       }
 
       // Cache room owner if provided by frontend

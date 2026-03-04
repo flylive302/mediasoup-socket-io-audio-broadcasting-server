@@ -66,7 +66,7 @@ export async function initializeSocket(
   // Initialize events system (Laravel pub/sub)
   const userSocketRepository = new UserSocketRepository(redis, logger);
   const userRoomRepository = new UserRoomRepository(redis, logger);
-  const eventRouter = new EventRouter(io, userSocketRepository, clientManager, logger);
+  const eventRouter = new EventRouter(io, userSocketRepository, clientManager, logger, roomManager.state);
 
 
 

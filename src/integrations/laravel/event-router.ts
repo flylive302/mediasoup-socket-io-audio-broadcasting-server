@@ -17,6 +17,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import { syncVipLevelOnSockets } from "@src/domains/seat/vip.guard.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
+import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 
 export class EventRouter {
   constructor(
@@ -24,6 +25,7 @@ export class EventRouter {
     private readonly userSocketRepo: UserSocketRepository,
     private readonly clientManager: ClientManager,
     private readonly logger: Logger,
+    private readonly roomStateRepo?: RoomStateRepository,
   ) {}
 
   /**
@@ -132,6 +134,15 @@ export class EventRouter {
         event.user_id !== null
       ) {
         this.syncUserProfile(event.user_id, event.payload);
+      }
+
+      // Post-relay side-effect: sync room settings (seatCount) to RoomState
+      if (
+        result.delivered &&
+        event.event === RELAY_EVENTS.room.ROOM_UPDATED &&
+        event.room_id !== null
+      ) {
+        this.syncRoomSettings(String(event.room_id), event.payload);
       }
 
       return result;
@@ -295,5 +306,41 @@ export class EventRouter {
         "Failed to sync user profile",
       );
     }
+  }
+
+  /**
+   * Sync room settings to RoomState when room.updated relay contains max_seats.
+   * Keeps MSAB's seat validation in sync without requiring a new user join.
+   */
+  private syncRoomSettings(
+    roomId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!this.roomStateRepo) return;
+
+    const room = payload.room as { max_seats?: number } | undefined;
+    const maxSeats = room?.max_seats;
+    if (typeof maxSeats !== "number" || maxSeats < 1 || maxSeats > 15) return;
+
+    this.roomStateRepo
+      .get(roomId)
+      .then((state) => {
+        if (!state || state.seatCount === maxSeats) return;
+        state.seatCount = maxSeats;
+        return this.roomStateRepo!.save(state);
+      })
+      .then(() => {
+        this.logger.info(
+          { roomId, maxSeats },
+          "Room seatCount synced from room.updated",
+        );
+      })
+      .catch((err) => {
+        // Non-blocking — seatCount sync failure should not break event routing
+        this.logger.warn(
+          { err, roomId },
+          "Failed to sync room seatCount from room.updated",
+        );
+      });
   }
 }
