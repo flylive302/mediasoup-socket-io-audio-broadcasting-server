@@ -187,4 +187,45 @@ describe("ClientManager", () => {
     cm.clearClientRoom("s1");
     expect(cm.getClient("s1")).toBeDefined();
   });
+
+  // ─── setClientRoom: mediasoup tracking reset ─────────────────────
+
+  it("setClientRoom clears transport/producer/consumer tracking", () => {
+    const cm = new ClientManager();
+    cm.addClient(createMockSocket("s1", 1));
+    cm.setClientRoom("s1", "roomA");
+
+    // Simulate stale transports from old room session
+    const client = cm.getClient("s1")!;
+    client.transports.set("t1", "consumer");
+    client.transports.set("t2", "producer");
+    client.producers.set("audio", "p1");
+    client.consumers.set("p1", "c1");
+    client.isSpeaker = true;
+
+    // Re-assign to new room — should reset tracking
+    cm.setClientRoom("s1", "roomB");
+
+    expect(client.transports.size).toBe(0);
+    expect(client.producers.size).toBe(0);
+    expect(client.consumers.size).toBe(0);
+    expect(client.isSpeaker).toBe(false);
+    expect(client.roomId).toBe("roomB");
+  });
+
+  it("setClientRoom clears tracking even when re-joining same room", () => {
+    const cm = new ClientManager();
+    cm.addClient(createMockSocket("s1", 1));
+    cm.setClientRoom("s1", "roomA");
+
+    const client = cm.getClient("s1")!;
+    client.transports.set("t1", "consumer");
+    client.transports.set("t2", "producer");
+
+    // Re-join same room
+    cm.setClientRoom("s1", "roomA");
+
+    expect(client.transports.size).toBe(0);
+    expect(client.roomId).toBe("roomA");
+  });
 });

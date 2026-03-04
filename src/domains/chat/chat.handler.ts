@@ -34,6 +34,7 @@ const handleChatMessage = createHandler(
       userId,
       userName: socket.data.user.name,
       avatar: socket.data.user.avatar,
+      frame: socket.data.user.frame,
       content: payload.content,
       type: payload.type,
       timestamp: Date.now(),

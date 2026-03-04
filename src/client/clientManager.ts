@@ -71,6 +71,15 @@ export class ClientManager {
       }
     }
 
+    // Reset mediasoup tracking — old transports/producers/consumers belong to
+    // the previous room session and are invalid for new room routers.
+    // Without this, transport:create rejects with "Transport limit reached"
+    // when the user re-joins or switches rooms without explicit room:leave.
+    client.transports.clear();
+    client.producers.clear();
+    client.consumers.clear();
+    client.isSpeaker = false;
+
     // Set new room
     client.roomId = roomId;
 
