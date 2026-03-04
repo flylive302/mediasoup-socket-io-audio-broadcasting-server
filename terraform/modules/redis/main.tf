@@ -2,6 +2,14 @@
 # Redis Module — ElastiCache Valkey/Redis
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 # --- Subnet Group ---
 resource "aws_elasticache_subnet_group" "main" {
   name       = "${var.project_name}-redis-subnet"

@@ -2,6 +2,14 @@
 # SSL Module — ACM Certificate
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 # --- Request Certificate (covers both base domain and regional subdomains) ---
 resource "aws_acm_certificate" "main" {
   domain_name               = var.audio_domain

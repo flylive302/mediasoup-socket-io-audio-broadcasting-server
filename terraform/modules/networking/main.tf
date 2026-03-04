@@ -2,6 +2,14 @@
 # Networking Module — VPC, Subnets, Security Groups
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }

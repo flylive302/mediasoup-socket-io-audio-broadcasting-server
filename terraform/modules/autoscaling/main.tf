@@ -8,6 +8,14 @@
 #   - Lifecycle hooks for graceful launch/terminate
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 # --- Get latest Ubuntu 24.04 AMI ---
 data "aws_ami" "ubuntu" {
   most_recent = true

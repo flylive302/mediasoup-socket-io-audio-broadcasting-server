@@ -6,6 +6,14 @@
 # Dashboard provides at-a-glance operational visibility across all regions.
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 # --- SNS Topic for Alerts ---
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-alerts"

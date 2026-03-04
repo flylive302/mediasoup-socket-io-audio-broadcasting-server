@@ -2,6 +2,14 @@
 # Load Balancer Module — NLB for TCP/UDP
 # =============================================================================
 
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
 # --- Network Load Balancer ---
 resource "aws_lb" "main" {
   name               = "${var.project_name}-nlb"
