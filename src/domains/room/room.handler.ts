@@ -99,6 +99,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
         date_of_birth: string;
         wealth_xp: string;
         charm_xp: string;
+        vip_level: number;
         isSpeaker: boolean;
       }[] = [];
       const existingProducers: { producerId: string; userId: number }[] = [];
@@ -131,6 +132,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
           date_of_birth: c.user.date_of_birth,
           wealth_xp: c.user.wealth_xp,
           charm_xp: c.user.charm_xp,
+          vip_level: c.user.vip_level,
           isSpeaker: c.isSpeaker,
         });
 

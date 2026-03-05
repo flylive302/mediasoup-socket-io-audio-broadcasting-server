@@ -119,6 +119,19 @@ export class EventRouter {
               ? event.payload.vip_level
               : 0;
           syncVipLevelOnSockets(this.io, event.user_id, vipLevel);
+
+          // Broadcast to rooms so other participants see the VIP change
+          const vipProfile = { vip_level: vipLevel } as Partial<User>;
+          const affectedRooms = this.clientManager.updateUserProfile(
+            event.user_id,
+            vipProfile,
+          );
+          for (const roomId of affectedRooms) {
+            this.io.to(roomId).emit("user:profile_updated", {
+              user_id: event.user_id,
+              profile: vipProfile,
+            });
+          }
         } catch (syncErr) {
           // Non-blocking — VIP sync failure should not break event routing
           this.logger.warn(
