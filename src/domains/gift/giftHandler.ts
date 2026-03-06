@@ -10,9 +10,8 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { Errors } from "@src/shared/errors.js";
 import type { AppContext } from "@src/context.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { config } from "@src/config/index.js";
 
-const GIFT_RATE_LIMIT = 330; // 330 gifts per minute
-const GIFT_RATE_WINDOW = 60; // 60 seconds
 
 export class GiftHandler {
   private readonly buffer: GiftBuffer;
@@ -46,8 +45,8 @@ export class GiftHandler {
         // GF-009 FIX: Use shared context.rateLimiter instead of duplicate instance
         const allowed = await context.rateLimiter.isAllowed(
           `gift:${user.id}`,
-          GIFT_RATE_LIMIT,
-          GIFT_RATE_WINDOW,
+          config.GIFT_RATE_LIMIT,
+          config.GIFT_RATE_WINDOW,
         );
         if (!allowed) {
           // GF-010 FIX: Use shared error constant instead of plain string
@@ -105,8 +104,8 @@ export class GiftHandler {
         // GF-009 FIX: Use shared context.rateLimiter instead of duplicate instance
         const allowed = await context.rateLimiter.isAllowed(
           `gift:prepare:${user.id}`,
-          GIFT_RATE_LIMIT,
-          GIFT_RATE_WINDOW,
+          config.GIFT_RATE_LIMIT,
+          config.GIFT_RATE_WINDOW,
         );
         if (!allowed) {
           return { success: false, error: Errors.RATE_LIMITED };
