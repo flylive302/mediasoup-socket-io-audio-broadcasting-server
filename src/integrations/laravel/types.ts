@@ -118,6 +118,13 @@ export const RELAY_EVENTS = {
   user: {
     PROFILE_UPDATED: "user.profile.updated",
   },
+
+  /** Lucky draw: cashback results, room/app announcements */
+  lucky: {
+    LUCKY_RESULT: "lucky:result",
+    LUCKY_ROOM_ANNOUNCEMENT: "lucky:room_announcement",
+    LUCKY_APP_ANNOUNCEMENT: "lucky:app_announcement",
+  },
 } as const;
 
 /**
