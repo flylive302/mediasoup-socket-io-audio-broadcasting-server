@@ -4,7 +4,7 @@
  */
 export interface GiftTransaction {
   transaction_id: string;
-  room_id?: string; // Optional per protocol
+  room_id?: number; // Numeric room ID (parsed from socket string)
   sender_id: number;
   recipient_id: number;
   gift_id: number; // Changed from string to number per protocol

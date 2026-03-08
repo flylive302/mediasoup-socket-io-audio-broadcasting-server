@@ -55,7 +55,7 @@ export class GiftHandler {
 
         const transaction = {
           transaction_id: randomUUID(),
-          room_id: payload.roomId,
+          room_id: parseInt(payload.roomId, 10),
           sender_id: user.id,
           recipient_id: payload.recipientId,
           gift_id: payload.giftId,
