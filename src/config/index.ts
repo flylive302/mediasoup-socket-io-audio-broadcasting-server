@@ -40,7 +40,7 @@ const configSchema = z.object({
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
   LARAVEL_INTERNAL_KEY: z.string().min(32), // For server-to-server auth
-  LARAVEL_API_TIMEOUT_MS: z.coerce.number().default(10_000), // 10 seconds
+  LARAVEL_API_TIMEOUT_MS: z.coerce.number().default(30_000), // 30 seconds
 
   // MediaSoup
   MEDIASOUP_LISTEN_IP: z.string().default("0.0.0.0"),

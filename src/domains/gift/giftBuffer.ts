@@ -28,6 +28,7 @@ export class GiftBuffer {
   private readonly DEAD_LETTER_KEY = "gifts:dead_letter";
   private timer: NodeJS.Timeout | null = null;
   private flushCount = 0;
+  private isFlushing = false;
 
   constructor(
     private readonly redis: Redis,
@@ -67,6 +68,13 @@ export class GiftBuffer {
 
   /** Flush buffer to Laravel */
   private async flush(): Promise<void> {
+    // Prevent concurrent flushes — if a previous batch is still processing
+    // (e.g., slow Laravel response), skip this interval tick instead of
+    // creating parallel HTTP requests that compound DB contention
+    if (this.isFlushing) return;
+    this.isFlushing = true;
+
+    try {
     this.flushCount++;
     // GF-007 FIX: Include process.pid for instance-unique key in horizontal scaling
     const processingKey = `${this.QUEUE_KEY}:processing:${process.pid}:${Date.now()}`;
@@ -186,6 +194,9 @@ export class GiftBuffer {
       // Delete processing key in the same pipeline
       pipeline.del(processingKey);
       await pipeline.exec();
+    }
+    } finally {
+      this.isFlushing = false;
     }
   }
 }
