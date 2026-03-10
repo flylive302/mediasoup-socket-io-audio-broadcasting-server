@@ -114,7 +114,10 @@ export const RELAY_EVENTS = {
     ASSET_INVALIDATE: "asset:invalidate",
   },
 
-
+  /** User: profile updates */
+  user: {
+    PROFILE_UPDATED: "user.profile.updated",
+  },
 
 
   /** Lucky draw: cashback results, room/app announcements */
