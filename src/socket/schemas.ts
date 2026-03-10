@@ -264,3 +264,19 @@ export const getUserRoomSchema = z.object({
   userId: z.number(),
 });
 
+/**
+ * Schema for user:profileSync — frontend pushes updated profile fields
+ * directly through the socket for immediate room propagation.
+ * Only visual/identity fields are accepted; financial data is excluded.
+ */
+export const profileSyncSchema = z.object({
+  profile: z.object({
+    name: z.string().optional(),
+    signature: z.string().optional(),
+    avatar: z.string().optional(),
+    frame: z.string().nullable().optional(),
+    gender: z.union([z.string(), z.number()]).optional(),
+    vip_level: z.number().optional(),
+  }),
+});
+

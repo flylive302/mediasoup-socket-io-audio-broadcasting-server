@@ -141,13 +141,7 @@ export class EventRouter {
         }
       }
 
-      // Post-relay side-effect: update in-memory user data on profile change
-      if (
-        event.event === RELAY_EVENTS.user.PROFILE_UPDATED &&
-        event.user_id !== null
-      ) {
-        this.syncUserProfile(event.user_id, event.payload);
-      }
+
 
       // Post-relay side-effect: sync room settings (seatCount) to RoomState
       if (
@@ -269,57 +263,7 @@ export class EventRouter {
     return { delivered: true, targetCount: localCount };
   }
 
-  /**
-   * Sync user profile data across all in-memory stores and broadcast to rooms.
-   * Called as a post-relay side-effect for `user.profile.updated` events.
-   */
-  private syncUserProfile(
-    userId: number,
-    payload: Record<string, unknown>,
-  ): void {
-    const profile = payload.profile as Partial<User> | undefined;
-    if (!profile || typeof profile !== "object") {
-      this.logger.warn(
-        { userId },
-        "user.profile.updated: missing or invalid profile in payload",
-      );
-      return;
-    }
 
-    try {
-      // 1. Update ClientManager in-memory user data
-      const affectedRooms = this.clientManager.updateUserProfile(
-        userId,
-        profile,
-      );
-
-      // 2. Sync socket.data.user on all live sockets for this user
-      for (const [, socket] of this.io.sockets.sockets) {
-        if (socket.data?.user?.id === userId) {
-          socket.data.user = { ...socket.data.user, ...profile };
-        }
-      }
-
-      // 3. Broadcast to rooms so other clients can refresh UI
-      for (const roomId of affectedRooms) {
-        this.io.to(roomId).emit("user:profile_updated", {
-          user_id: userId,
-          profile,
-        });
-      }
-
-      this.logger.info(
-        { userId, rooms: affectedRooms.size },
-        "User profile synced",
-      );
-    } catch (err) {
-      // Non-blocking — profile sync failure should not break event routing
-      this.logger.warn(
-        { err, userId },
-        "Failed to sync user profile",
-      );
-    }
-  }
 
   /**
    * Sync room settings to RoomState when room.updated relay contains max_seats.
