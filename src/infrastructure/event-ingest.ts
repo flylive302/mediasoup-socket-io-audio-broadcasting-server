@@ -96,6 +96,16 @@ export const createEventIngestRoutes = (
         }
       }
 
+      // SNS standard delivery wraps the actual message in a Message field.
+      // Unwrap it so the schema validates the inner event, not the envelope.
+      if (isSnsNotification && typeof (raw as Record<string, unknown>)?.Message === "string") {
+        try {
+          raw = JSON.parse((raw as Record<string, unknown>).Message as string);
+        } catch {
+          return reply.code(400).send({ status: "error", message: "Invalid SNS Message JSON" });
+        }
+      }
+
       const result = EventPayloadSchema.safeParse(raw);
       if (!result.success) {
         fastify.log.warn(
