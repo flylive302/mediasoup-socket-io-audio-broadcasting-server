@@ -6,14 +6,23 @@ import type { GiftTransaction } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
-// Atomic rename that returns 0 (empty queue) or 1 (renamed)
-// Eliminates fragile string matching on Redis error messages
-const ATOMIC_RENAME_LUA = `
-  if redis.call('exists', KEYS[1]) == 1 then
-    redis.call('rename', KEYS[1], KEYS[2])
-    return 1
+/**
+ * Max transactions per flush — prevents large accumulated batches from
+ * causing HTTP timeouts. Remaining items stay in the queue for the next tick.
+ */
+const MAX_BATCH_SIZE = 50;
+
+/**
+ * Lua script: atomically pop up to N items from the left of a list.
+ * Returns the popped items as an array, or an empty array if the list is empty.
+ * This is more efficient than LPOP in a loop (single round-trip).
+ */
+const ATOMIC_LPOP_N_LUA = `
+  local items = redis.call('lrange', KEYS[1], 0, ARGV[1] - 1)
+  if #items > 0 then
+    redis.call('ltrim', KEYS[1], #items, -1)
   end
-  return 0
+  return items
 `;
 
 interface BufferedGift extends GiftTransaction {
@@ -76,23 +85,18 @@ export class GiftBuffer {
 
     try {
     this.flushCount++;
-    // GF-007 FIX: Include process.pid for instance-unique key in horizontal scaling
-    const processingKey = `${this.QUEUE_KEY}:processing:${process.pid}:${Date.now()}`;
 
-    const renamed = await this.redis.eval(
-      ATOMIC_RENAME_LUA,
-      2,
+    // Atomically pop up to MAX_BATCH_SIZE items from the queue.
+    // Remaining items stay in the queue for the next flush tick.
+    // This prevents unbounded batch sizes that cause HTTP timeouts.
+    const items = await this.redis.eval(
+      ATOMIC_LPOP_N_LUA,
+      1,
       this.QUEUE_KEY,
-      processingKey,
-    ) as number;
+      MAX_BATCH_SIZE,
+    ) as string[];
 
-    if (renamed === 0) return; // Empty queue, nothing to flush
-
-    const items = await this.redis.lrange(processingKey, 0, -1);
-    if (!items || items.length === 0) {
-      await this.redis.del(processingKey);
-      return;
-    }
+    if (!items || items.length === 0) return;
 
     // GF-003 FIX: Per-item JSON parsing with error handling
     // Corrupted entries go to dead-letter instead of poisoning the entire batch
@@ -111,7 +115,6 @@ export class GiftBuffer {
     }
 
     if (transactions.length === 0) {
-      await this.redis.del(processingKey);
       return;
     }
 
@@ -146,11 +149,9 @@ export class GiftBuffer {
         metrics.giftsProcessed.inc({ status: "success" }, successCount);
       }
 
-      // Success! Delete the temporary key
-      await this.redis.del(processingKey);
     } catch (error) {
       this.logger.error(
-        { error },
+        { error, batchSize: transactions.length },
         "Gift batch failed, re-queuing items with retry count",
       );
 
@@ -191,8 +192,6 @@ export class GiftBuffer {
         pipeline.ltrim(this.DEAD_LETTER_KEY, -DEAD_LETTER_MAX_LENGTH, -1);
       }
 
-      // Delete processing key in the same pipeline
-      pipeline.del(processingKey);
       await pipeline.exec();
     }
     } finally {
