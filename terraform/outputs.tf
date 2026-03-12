@@ -18,9 +18,6 @@ output "nlb_dns_mumbai" {
   value = module.loadbalancer_mumbai.nlb_dns_name
 }
 
-output "nlb_dns_uae" {
-  value = module.loadbalancer_uae.nlb_dns_name
-}
 
 output "nlb_dns_frankfurt" {
   value = module.loadbalancer_frankfurt.nlb_dns_name
@@ -31,9 +28,6 @@ output "redis_host_mumbai" {
   value = module.redis_mumbai.redis_host
 }
 
-output "redis_host_uae" {
-  value = module.redis_uae.redis_host
-}
 
 output "redis_host_frankfurt" {
   value = module.redis_frankfurt.redis_host
@@ -45,10 +39,6 @@ output "asg_name_mumbai" {
   value       = module.autoscaling_mumbai.asg_name
 }
 
-output "asg_name_uae" {
-  description = "UAE Auto Scaling Group name"
-  value       = module.autoscaling_uae.asg_name
-}
 
 output "asg_name_frankfurt" {
   description = "Frankfurt Auto Scaling Group name"

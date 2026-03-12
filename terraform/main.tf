@@ -42,19 +42,6 @@ provider "aws" {
   }
 }
 
-provider "aws" {
-  alias  = "uae"
-  region = "me-south-1"
-
-  default_tags {
-    tags = {
-      Project     = var.project_name
-      ManagedBy   = "terraform"
-      Environment = "production"
-      Region      = "uae"
-    }
-  }
-}
 
 provider "aws" {
   alias  = "frankfurt"
@@ -127,49 +114,6 @@ module "loadbalancer_mumbai" {
   # instance_id omitted — ASG manages target group registration
 }
 
-# =============================================================================
-# Region: UAE / Bahrain (me-south-1)
-# =============================================================================
-
-module "networking_uae" {
-  source    = "./modules/networking"
-  providers = { aws = aws.uae }
-
-  project_name = var.project_name
-  app_port     = var.app_port
-  rtc_min_port = var.rtc_min_port
-  rtc_max_port = var.rtc_max_port
-}
-
-module "redis_uae" {
-  source    = "./modules/redis"
-  providers = { aws = aws.uae }
-
-  project_name            = var.project_name
-  redis_node_type         = "cache.t3.micro" # t4g (Graviton) not available in me-south-1
-  private_subnet_ids      = module.networking_uae.private_subnet_ids
-  redis_security_group_id = module.networking_uae.redis_security_group_id
-}
-
-module "ssl_uae" {
-  source    = "./modules/ssl"
-  providers = { aws = aws.uae }
-
-  project_name = var.project_name
-  audio_domain = var.audio_domain
-}
-
-module "loadbalancer_uae" {
-  source    = "./modules/loadbalancer"
-  providers = { aws = aws.uae }
-
-  project_name      = var.project_name
-  vpc_id            = module.networking_uae.vpc_id
-  public_subnet_ids = module.networking_uae.public_subnet_ids
-  app_port          = var.app_port
-  certificate_arn   = module.ssl_uae.certificate_arn
-  # instance_id omitted — ASG manages target group registration
-}
 
 # =============================================================================
 # Region: Frankfurt (eu-central-1)
@@ -226,7 +170,6 @@ module "global_accelerator" {
 
   regional_endpoints = {
     "ap-south-1"   = { nlb_arn = module.loadbalancer_mumbai.nlb_arn }
-    "me-south-1"   = { nlb_arn = module.loadbalancer_uae.nlb_arn }
     "eu-central-1" = { nlb_arn = module.loadbalancer_frankfurt.nlb_arn }
   }
 }
@@ -303,37 +246,6 @@ module "autoscaling_mumbai" {
   cascade_enabled        = true
 }
 
-module "autoscaling_uae" {
-  source    = "./modules/autoscaling"
-  providers = { aws = aws.uae }
-
-  region                 = "me-south-1"
-  project_name           = var.project_name
-  instance_type          = "c5a.xlarge" # Baseline for launch template config
-  ssh_public_key_path    = var.ssh_public_key_path
-  instance_profile_name  = module.iam.instance_profile_name
-  msab_security_group_id = module.networking_uae.msab_security_group_id
-  public_subnet_ids      = module.networking_uae.public_subnet_ids
-  target_group_arn       = module.loadbalancer_uae.target_group_arn
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_uae.redis_host
-  redis_port             = module.redis_uae.redis_port
-  redis_password         = ""
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-  cascade_enabled        = true
-
-  # me-south-1 has limited instance capacity — use mixed instances policy
-  # to try multiple types in priority order (prioritized allocation strategy).
-  # All compute-optimized 4-vCPU variants, with t3.xlarge as last resort.
-  instance_type_overrides = ["c5a.xlarge", "c5.xlarge", "c5n.xlarge", "t3.xlarge"]
-}
 
 module "autoscaling_frankfurt" {
   source    = "./modules/autoscaling"
