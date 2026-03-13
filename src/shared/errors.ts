@@ -8,6 +8,7 @@ export const Errors = {
   NOT_AUTHORIZED: "Not authorized",
   RATE_LIMITED: "Too many requests",
   CANNOT_GIFT_SELF: "Cannot send gift to yourself",
+  RECIPIENT_NOT_SEATED: "Recipient is not seated",
 
   // Room
   NOT_IN_ROOM: "Not in room",

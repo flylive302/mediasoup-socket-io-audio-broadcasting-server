@@ -41,6 +41,15 @@ export class GiftHandler {
           return { success: false, error: Errors.CANNOT_GIFT_SELF };
         }
 
+        // GF-017 FIX: Verify recipient is seated in the room
+        const recipientSeat = await context.seatRepository.getUserSeat(
+          payload.roomId,
+          String(payload.recipientId),
+        );
+        if (recipientSeat === null) {
+          return { success: false, error: Errors.RECIPIENT_NOT_SEATED };
+        }
+
         // Rate limit check
         // GF-009 FIX: Use shared context.rateLimiter instead of duplicate instance
         const allowed = await context.rateLimiter.isAllowed(

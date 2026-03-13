@@ -141,6 +141,9 @@ function createMockContext() {
     userSocketRepository: {
       getSocketIds: vi.fn().mockResolvedValue(["recipient-socket-1"]),
     },
+    seatRepository: {
+      getUserSeat: vi.fn().mockResolvedValue(3), // Default: recipient is seated at index 3
+    },
     io: {
       to: vi.fn().mockReturnValue({ emit: ioEmit }),
       _emit: ioEmit,
@@ -314,6 +317,41 @@ describe("GiftHandler", () => {
       expect(
         (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
       ).not.toHaveBeenCalled();
+    });
+
+    it("rejects gift:send when recipient is not seated (GF-017)", async () => {
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(null);
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      const result = await sendGift(payload);
+
+      expect(result).toEqual({
+        success: false,
+        error: Errors.RECIPIENT_NOT_SEATED,
+      });
+      // Should NOT enqueue or broadcast
+      expect(
+        (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
+      ).not.toHaveBeenCalled();
+      expect(socket._emit).not.toHaveBeenCalled();
+    });
+
+    it("allows gift:send when recipient is seated (GF-017)", async () => {
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(5);
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      const result = await sendGift(payload);
+
+      expect(result).toEqual({ success: true });
+      expect(
+        (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
+      ).toHaveBeenCalled();
     });
   });
 
