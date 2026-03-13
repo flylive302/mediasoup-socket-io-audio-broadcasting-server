@@ -77,8 +77,7 @@ resource "aws_launch_template" "msab" {
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     region               = var.region
     project_name         = var.project_name
-    github_repo          = var.github_repo
-    github_branch        = var.github_branch
+    ecr_repo_url         = var.ecr_repo_url
     app_port             = var.app_port
     rtc_min_port         = var.rtc_min_port
     rtc_max_port         = var.rtc_max_port

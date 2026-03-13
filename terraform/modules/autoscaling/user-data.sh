@@ -2,7 +2,7 @@
 # =============================================================================
 # FlyLive Audio Server — EC2 User Data (ASG Bootstrap Script)
 # =============================================================================
-# Runs on first boot to install Docker, clone repo, build, start the app,
+# Runs on first boot to install Docker, pull the image from ECR, start the app,
 # and install the lifecycle drain service for graceful ASG termination.
 # Variables are injected by Terraform templatefile().
 # =============================================================================
@@ -21,13 +21,7 @@ curl -fsSL https://get.docker.com | sh
 systemctl enable docker
 systemctl start docker
 
-# --- Install Docker Compose ---
-apt-get install -y docker-compose-plugin
-
-# --- Install Git ---
-apt-get install -y git
-
-# --- Install AWS CLI v2 (for lifecycle hook completion) ---
+# --- Install AWS CLI v2 (for ECR login + lifecycle hook completion) ---
 apt-get install -y unzip
 curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
 cd /tmp && unzip -q awscliv2.zip && ./aws/install && cd /
@@ -77,12 +71,19 @@ PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254
 
 echo "Public IP: $PUBLIC_IP"
 
-# --- Clone and Build ---
+# --- Pull Image from ECR ---
 APP_DIR="/opt/msab"
 mkdir -p "$APP_DIR"
-
-git clone --depth 1 --branch ${github_branch} ${github_repo} "$APP_DIR"
 cd "$APP_DIR"
+
+# Extract ECR registry from repo URL (everything before the first /)
+ECR_REGISTRY=$(echo "${ecr_repo_url}" | cut -d'/' -f1)
+
+# Authenticate Docker with ECR (uses instance IAM role)
+aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+# Pull the latest image
+docker pull ${ecr_repo_url}:latest
 
 # --- Create .env file ---
 cat > .env << ENVEOF
@@ -138,19 +139,22 @@ INTERNAL_API_KEY=${laravel_internal_key}
 PUBLIC_IP=$PUBLIC_IP
 ENVEOF
 
-# --- Build Docker Image (use host network for DNS resolution in VPC) ---
-docker build --network=host -t msab:latest -f docker/Dockerfile .
-
 # --- Run Container ---
 docker run -d \
   --name msab \
   --restart unless-stopped \
   --network host \
   --env-file .env \
-  msab:latest
+  ${ecr_repo_url}:latest
 
 # --- Install Lifecycle Drain Service ---
-# This script polls ASG lifecycle state and triggers drain mode before termination
+# Clone just the drain script (lightweight — no full repo needed)
+apt-get install -y git
+git clone --depth 1 --branch master https://github.com/flylive302/mediasoup-socket-io-audio-broadcasting-server.git /tmp/msab-scripts
+cp -r /tmp/msab-scripts/scripts "$APP_DIR/scripts"
+rm -rf /tmp/msab-scripts
+apt-get remove -y git && apt-get autoremove -y
+
 cat > /etc/systemd/system/msab-lifecycle.service << 'SVCEOF'
 [Unit]
 Description=MSAB ASG Lifecycle Drain Monitor

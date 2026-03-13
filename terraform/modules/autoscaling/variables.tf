@@ -43,15 +43,9 @@ variable "target_group_arn" {
 
 # --- App Configuration ---
 
-variable "github_repo" {
-  description = "GitHub repository URL"
+variable "ecr_repo_url" {
+  description = "ECR repository URL for the MSAB Docker image"
   type        = string
-}
-
-variable "github_branch" {
-  description = "Git branch to deploy"
-  type        = string
-  default     = "master"
 }
 
 variable "app_port" {

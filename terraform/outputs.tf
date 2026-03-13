@@ -56,3 +56,9 @@ output "alerts_topic_arn" {
   description = "SNS topic ARN for CloudWatch operational alerts"
   value       = module.cloudwatch_mumbai.alerts_topic_arn
 }
+
+# --- ECR ---
+output "ecr_repository_url" {
+  description = "ECR repository URL — used by GitHub Actions to push images"
+  value       = module.ecr.repository_url
+}

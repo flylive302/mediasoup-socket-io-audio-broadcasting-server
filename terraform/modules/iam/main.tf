@@ -94,6 +94,34 @@ resource "aws_iam_role_policy" "ec2_describe" {
   })
 }
 
+# --- ECR Pull Policy ---
+resource "aws_iam_role_policy" "ecr_pull" {
+  name = "${var.project_name}-ecr-pull"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # --- Instance Profile ---
 resource "aws_iam_instance_profile" "msab" {
   name = "${var.project_name}-ec2-profile"

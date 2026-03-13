@@ -1,4 +1,4 @@
-name: Deploy via ASG Instance Refresh
+name: Deploy via ECR + ASG Instance Refresh
 
 on:
   push:
@@ -37,8 +37,68 @@ jobs:
       - name: Test
         run: npm test
 
-  deploy:
+  build-and-push:
     needs: ci
+    runs-on: ubuntu-latest
+    environment: aws-production
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          ECR_REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          ECR_REPO="flylive-audio/msab"
+          SHA_TAG="sha-${GITHUB_SHA::8}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPO}"
+
+          echo "registry=${ECR_REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "repository=${ECR_REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
+
+          echo "📦 Image: ${FULL_IMAGE}:${SHA_TAG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.full_image }}:latest
+            ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Verify image in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name "${{ steps.meta.outputs.repository }}" \
+            --image-ids imageTag="${{ steps.meta.outputs.image_tag }}" \
+            --query 'imageDetails[0].{Size: imageSizeInBytes, Pushed: imagePushedAt, Tags: imageTags}' \
+            --output table
+          echo "✅ Image pushed and verified"
+
+  deploy:
+    needs: build-and-push
     runs-on: ubuntu-latest
     environment: aws-production
     strategy:
@@ -48,8 +108,6 @@ jobs:
         region:
           - name: mumbai
             aws_region: ap-south-1
-          - name: uae
-            aws_region: me-south-1
           - name: frankfurt
             aws_region: eu-central-1
 
@@ -141,6 +199,7 @@ jobs:
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           echo "🚀 Starting instance refresh for $ASG_NAME in ${{ matrix.region.aws_region }}..."
+          echo "📦 New instances will pull image tag: ${{ needs.build-and-push.outputs.image_tag }}"
 
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG_NAME" \

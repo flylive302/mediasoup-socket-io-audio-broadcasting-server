@@ -50,18 +50,6 @@ variable "rtc_max_port" {
   default     = 59999
 }
 
-variable "github_repo" {
-  description = "GitHub repository URL"
-  type        = string
-  default     = "https://github.com/flylive302/mediasoup-socket-io-audio-broadcasting-server.git"
-}
-
-variable "github_branch" {
-  description = "Git branch to deploy"
-  type        = string
-  default     = "master"
-}
-
 variable "audio_domain" {
   description = "Domain for the audio server"
   type        = string

@@ -175,6 +175,16 @@ module "global_accelerator" {
 }
 
 # =============================================================================
+# Global: ECR Container Registry (one repo, all regions pull from it)
+# =============================================================================
+
+module "ecr" {
+  source = "./modules/ecr"
+
+  project_name = var.project_name
+}
+
+# =============================================================================
 # Global: SNS Event Bus (stays in Mumbai, fans out to all regions)
 # =============================================================================
 
@@ -196,7 +206,6 @@ module "sns" {
   # If you need ALL regions to receive every event (not just nearest), uncomment:
   # msab_endpoint_urls = [
   #   "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events",
-  #   "https://${module.loadbalancer_uae.nlb_dns_name}/api/events",
   #   "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
   # ]
 }
@@ -231,8 +240,7 @@ module "autoscaling_mumbai" {
   msab_security_group_id = module.networking_mumbai.msab_security_group_id
   public_subnet_ids      = module.networking_mumbai.public_subnet_ids
   target_group_arn       = module.loadbalancer_mumbai.target_group_arn
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
+  ecr_repo_url           = module.ecr.repository_url
   app_port               = var.app_port
   rtc_min_port           = var.rtc_min_port
   rtc_max_port           = var.rtc_max_port
@@ -259,8 +267,7 @@ module "autoscaling_frankfurt" {
   msab_security_group_id = module.networking_frankfurt.msab_security_group_id
   public_subnet_ids      = module.networking_frankfurt.public_subnet_ids
   target_group_arn       = module.loadbalancer_frankfurt.target_group_arn
-  github_repo            = var.github_repo
-  github_branch          = var.github_branch
+  ecr_repo_url           = module.ecr.repository_url
   app_port               = var.app_port
   rtc_min_port           = var.rtc_min_port
   rtc_max_port           = var.rtc_max_port
