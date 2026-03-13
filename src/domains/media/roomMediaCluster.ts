@@ -38,11 +38,7 @@ export class RoomMediaCluster {
   /** Tracks sourceProducerIds for piping to new distribution routers */
   private readonly sourceProducerIds: Set<string> = new Set();
 
-  /** Maps consumerId → sourceProducerId (for active speaker forwarding) */
-  private readonly consumerSourceMap = new Map<string, string>();
 
-  /** Currently active source producer IDs (top N speakers) */
-  private activeSpeakerProducerIds = new Set<string>();
 
   /** ActiveSpeakerDetector reference for cleanup */
   private activeSpeakerDetector: { stop(): void } | null = null;
@@ -269,11 +265,9 @@ export class RoomMediaCluster {
     });
 
     // CQ-002 FIX: Combined cleanup for both close events (was 4 listeners, now 2)
-    this.consumerSourceMap.set(consumer.id, sourceProducerId);
     // PERF-MED-001: Track consumer ownership for O(1) lookup
     this.consumerOwnership.set(consumer.id, dist);
     const cleanup = () => {
-      this.consumerSourceMap.delete(consumer.id);
       this.consumerOwnership.delete(consumer.id);
       if (!consumer.closed) consumer.close();
     };
@@ -281,10 +275,6 @@ export class RoomMediaCluster {
     consumer.on("producerclose", cleanup);
 
     dist.routerManager.registerConsumer(consumer);
-
-    // Auto-pause if source producer is NOT an active speaker
-    // (consumers start paused anyway, but we also prevent resume
-    // from being effective until the speaker becomes active)
 
     return consumer;
   }
@@ -303,67 +293,7 @@ export class RoomMediaCluster {
     return undefined;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Active Speaker Forwarding
-  // ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Update the set of active speakers and pause/resume consumers accordingly.
-   * Called by ActiveSpeakerDetector when the active speaker set changes.
-   *
-   * Consumers for active speakers are RESUMED (if not already).
-   * Consumers for inactive speakers are PAUSED (saving CPU).
-   */
-  async updateActiveSpeakers(
-    activeProducerIds: string[],
-  ): Promise<void> {
-    const newActiveSet = new Set(activeProducerIds);
-    const oldActiveSet = this.activeSpeakerProducerIds;
-    this.activeSpeakerProducerIds = newActiveSet;
-
-    // Find consumers that need state changes
-    const pausePromises: Promise<void>[] = [];
-    const resumePromises: Promise<void>[] = [];
-
-    for (const [consumerId, sourceProducerId] of this.consumerSourceMap) {
-      const wasActive = oldActiveSet.has(sourceProducerId);
-      const isActive = newActiveSet.has(sourceProducerId);
-
-      if (wasActive && !isActive) {
-        // Speaker became inactive → pause consumer
-        const consumer = this.getConsumer(consumerId);
-        if (consumer && !consumer.paused) {
-          pausePromises.push(consumer.pause());
-        }
-      } else if (!wasActive && isActive) {
-        // Speaker became active → resume consumer
-        const consumer = this.getConsumer(consumerId);
-        if (consumer && consumer.paused) {
-          resumePromises.push(consumer.resume());
-        }
-      }
-    }
-
-    await Promise.all([...pausePromises, ...resumePromises]);
-
-    if (pausePromises.length > 0 || resumePromises.length > 0) {
-      this.logger.debug(
-        {
-          activeSpeakers: activeProducerIds.length,
-          paused: pausePromises.length,
-          resumed: resumePromises.length,
-        },
-        "RoomMediaCluster: active speaker consumers updated",
-      );
-    }
-  }
-
-  /** Check if a source producer is currently an active speaker */
-  isActiveSpeaker(sourceProducerId: string): boolean {
-    // If no active speakers tracked yet (room just started), all are active
-    if (this.activeSpeakerProducerIds.size === 0) return true;
-    return this.activeSpeakerProducerIds.has(sourceProducerId);
-  }
 
   // ─────────────────────────────────────────────────────────────────
   // Distribution Router Management
@@ -527,9 +457,7 @@ export class RoomMediaCluster {
 
     this.transportOwnership.clear();
     this.sourceProducerIds.clear();
-    this.consumerSourceMap.clear();
     this.consumerOwnership.clear();
-    this.activeSpeakerProducerIds.clear();
   }
 
   // ─────────────────────────────────────────────────────────────────

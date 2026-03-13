@@ -106,9 +106,7 @@ export class RoomManager {
         cluster.audioObserver,
         roomId,
         this.io,
-        logger,
       );
-      detector.setCluster(cluster);
       detector.start();
       cluster.setActiveSpeakerDetector(detector);
     }

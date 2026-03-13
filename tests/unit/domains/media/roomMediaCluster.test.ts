@@ -140,67 +140,7 @@ describe("RoomMediaCluster", () => {
     });
   });
 
-  describe("active speaker management", () => {
-    it("tracks active speaker producer IDs", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
 
-      // With no active speakers set, all are considered active (default)
-      expect(cluster.isActiveSpeaker("prod-1")).toBe(true);
-    });
-
-    it("updateActiveSpeakers pauses inactive and resumes active consumers", async () => {
-      const { RouterManager } = await import("@src/domains/media/routerManager.js");
-      const sourceRM = createMockRouterManager();
-      const distRM = createMockRouterManager();
-
-      let callCount = 0;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (RouterManager as any).mockImplementation(() => {
-        return callCount++ === 0 ? sourceRM : distRM;
-      });
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
-      await cluster.initialize();
-
-      // Create a listener transport to trigger distribution router creation
-      await cluster.createWebRtcTransport(false);
-
-      // Set up mock consumers
-      const consumer1 = {
-        id: "c1",
-        paused: false,
-        pause: vi.fn().mockResolvedValue(undefined),
-        resume: vi.fn().mockResolvedValue(undefined),
-      };
-      const consumer2 = {
-        id: "c2",
-        paused: true,
-        pause: vi.fn().mockResolvedValue(undefined),
-        resume: vi.fn().mockResolvedValue(undefined),
-      };
-
-      // Register consumers on the distribution router so getConsumer() finds them
-      distRM.registerConsumer(consumer1);
-      distRM.registerConsumer(consumer2);
-
-      // Set up consumer→producer mappings in the cluster
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const csMap = (cluster as any).consumerSourceMap as Map<string, string>;
-      csMap.set("c1", "prod-A");
-      csMap.set("c2", "prod-B");
-
-      // Set initial active speakers to prod-A and prod-B
-      await cluster.updateActiveSpeakers(["prod-A", "prod-B"]);
-
-      // Now update: only prod-B is active
-      await cluster.updateActiveSpeakers(["prod-B"]);
-
-      // consumer1 (prod-A) should be paused (was active, now inactive)
-      expect(consumer1.pause).toHaveBeenCalled();
-    });
-  });
 
   describe("cleanup", () => {
     it("stops active speaker detector on close", async () => {
@@ -250,8 +190,6 @@ describe("RoomMediaCluster", () => {
       // All internal sets should be cleared
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((cluster as any).sourceProducerIds.size).toBe(0);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((cluster as any).consumerSourceMap.size).toBe(0);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((cluster as any).transportOwnership.size).toBe(0);
     });

@@ -63,8 +63,7 @@ describe("ActiveSpeakerDetector", () => {
 
   describe("start()", () => {
     it("registers a dominantspeaker listener on the observer", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       expect(observer.on).toHaveBeenCalledWith("dominantspeaker", expect.any(Function));
@@ -72,7 +71,7 @@ describe("ActiveSpeakerDetector", () => {
 
     it("emits speaker:active to the room on first dominant speaker", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       observer._fire("prod-1", "user-1");
@@ -91,7 +90,7 @@ describe("ActiveSpeakerDetector", () => {
   describe("computeTopN()", () => {
     it("returns at most MAX_ACTIVE_SPEAKERS_FORWARDED speakers", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       // Fire 5 different speakers (config max is 3)
@@ -109,7 +108,7 @@ describe("ActiveSpeakerDetector", () => {
 
     it("evicts speakers older than 10 seconds", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       // Fire a speaker, then advance time past 10s stale cutoff
@@ -132,7 +131,7 @@ describe("ActiveSpeakerDetector", () => {
   describe("PERF-003: no-emit on unchanged set", () => {
     it("does not emit when the same speaker fires twice consecutively", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       observer._fire("prod-1", "user-1");
@@ -144,50 +143,12 @@ describe("ActiveSpeakerDetector", () => {
     });
   });
 
-  describe("cluster integration", () => {
-    it("calls cluster.updateActiveSpeakers when active set changes", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
 
-      const mockCluster = {
-        updateActiveSpeakers: vi.fn().mockResolvedValue(undefined),
-      };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      detector.setCluster(mockCluster as any);
-      detector.start();
-
-      observer._fire("prod-1", "user-1");
-
-      expect(mockCluster.updateActiveSpeakers).toHaveBeenCalledWith(["prod-1"]);
-    });
-
-    it("logs error if cluster.updateActiveSpeakers rejects", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
-
-      const mockCluster = {
-        updateActiveSpeakers: vi.fn().mockRejectedValue(new Error("fail")),
-      };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      detector.setCluster(mockCluster as any);
-      detector.start();
-
-      observer._fire("prod-1", "user-1");
-
-      // Wait for promise rejection to be handled
-      await vi.waitFor(() => {
-        expect(mockLogger.error).toHaveBeenCalledWith(
-          expect.objectContaining({ roomId: "room-1" }),
-          "Failed to update active speakers on cluster",
-        );
-      });
-    });
-  });
 
   describe("stop()", () => {
     it("removes all listeners and clears state", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any, mockLogger);
+      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
 
       observer._fire("prod-1", "user-1");

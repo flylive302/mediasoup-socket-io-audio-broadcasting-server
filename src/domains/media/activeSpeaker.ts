@@ -3,16 +3,10 @@
  *
  * Uses mediasoup's ActiveSpeakerObserver to detect dominant speakers,
  * maintains a sliding window of the top N most recent speakers,
- * and drives server-side consumer pause/resume via RoomMediaCluster.
- *
- * This is the core of the "Active Speaker Forwarding" optimization:
- * only the top N speakers' audio is forwarded to listeners, reducing
- * consumer CPU by ~5x (3 active vs 15 total speakers).
+ * and emits speaker:active events for the frontend UI.
  */
 import type * as mediasoup from "mediasoup";
 import type { Server as SocketServer } from "socket.io";
-import type { Logger } from "@src/infrastructure/logger.js";
-import type { RoomMediaCluster } from "./roomMediaCluster.js";
 import { config } from "@src/config/index.js";
 
 interface SpeakerEntry {
@@ -28,19 +22,15 @@ export class ActiveSpeakerDetector {
   /** Current top-N active speaker producer IDs */
   private currentActiveSpeakers: string[] = [];
 
-  private cluster: RoomMediaCluster | null = null;
+
 
   constructor(
     private readonly observer: mediasoup.types.ActiveSpeakerObserver,
     private readonly roomId: string,
     private readonly io: SocketServer,
-    private readonly logger: Logger,
   ) {}
 
-  /** Wire the cluster for consumer pause/resume updates */
-  setCluster(cluster: RoomMediaCluster): void {
-    this.cluster = cluster;
-  }
+
 
   start(): void {
     this.observer.on(
@@ -66,15 +56,7 @@ export class ActiveSpeakerDetector {
         if (changed) {
           this.currentActiveSpeakers = topNIds;
 
-          // Update consumer pause/resume on the cluster
-          if (this.cluster) {
-            this.cluster.updateActiveSpeakers(topNIds).catch((err) => {
-              this.logger.error(
-                { err, roomId: this.roomId },
-                "Failed to update active speakers on cluster",
-              );
-            });
-          }
+
 
           // Emit to frontend only when set changed
           this.io.to(this.roomId).emit("speaker:active", {

@@ -198,17 +198,6 @@ const consumerResumeHandler = createHandler(
       return { success: false, error: "Consumer not found" };
     }
 
-    // Only resume if the source producer is an active speaker
-    // (active speaker forwarding optimization)
-    const sourceProducerId = consumer.appData.sourceProducerId as
-      | string
-      | undefined;
-    if (sourceProducerId && !cluster.isActiveSpeaker(sourceProducerId)) {
-      // Don't resume — this speaker is not currently active
-      // The consumer will be auto-resumed when the speaker becomes active
-      return { success: true, data: { deferred: true } };
-    }
-
     await consumer.resume();
     return { success: true };
   },
