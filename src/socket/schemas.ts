@@ -280,3 +280,23 @@ export const profileSyncSchema = z.object({
   }),
 });
 
+// ─────────────────────────────────────────────────────────────────
+// Audio Player Schemas
+// ─────────────────────────────────────────────────────────────────
+
+export const audioPlayerPlaySchema = z.object({
+  roomId: roomIdSchema,
+  title: z.string().min(1).max(200),
+  duration: z.number().positive(), // Duration in seconds
+});
+
+export const audioPlayerStopSchema = z.object({
+  roomId: roomIdSchema,
+});
+
+export const audioPlayerStateUpdateSchema = z.object({
+  roomId: roomIdSchema,
+  position: z.number().min(0), // Current position in seconds
+  isPaused: z.boolean(),
+});
+

@@ -24,6 +24,9 @@ import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 
+// Audio player cleanup
+import { clearMusicPlayerOnDisconnect } from "@src/domains/audio-player/index.js";
+
 // Events module (Laravel pub/sub integration)
 import {
   UserSocketRepository,
@@ -120,6 +123,8 @@ export async function initializeSocket(
     // Disconnect
     socket.on("disconnect", (reason) =>
       handleDisconnect(socket, reason, {
+        io,
+        redis,
         clientManager,
         userSocketRepository,
         userRoomRepository,
@@ -139,6 +144,8 @@ export async function initializeSocket(
 // ─────────────────────────────────────────────────────────────────
 
 interface DisconnectDeps {
+  io: Server;
+  redis: Redis;
   clientManager: ClientManager;
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;
@@ -153,7 +160,7 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay } = deps;
+  const { io: ioServer, redis: redisClient, clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
@@ -202,6 +209,17 @@ async function handleDisconnect(
     }
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
+
+    // Clear music player mutex if this user was playing music
+    clearMusicPlayerOnDisconnect(
+      redisClient,
+      ioServer,
+      roomId,
+      client.userId,
+      cascadeRelay,
+    ).catch((err) =>
+      log.error({ err, roomId, userId: client.userId }, "Music player cleanup failed"),
+    );
   } else if (client?.userId) {
     // No room but has userId — just clean up socket registration
     await Promise.allSettled([

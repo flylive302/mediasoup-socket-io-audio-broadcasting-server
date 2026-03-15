@@ -14,6 +14,7 @@ export const Errors = {
   NOT_IN_ROOM: "Not in room",
   ROOM_NOT_FOUND: "Room not found",
   ROOM_CLOSED: "Room is closed",
+  MUSIC_ALREADY_PLAYING: "Music is already playing in this room",
 
   // Seat
   SEAT_TAKEN: "Seat is already taken",

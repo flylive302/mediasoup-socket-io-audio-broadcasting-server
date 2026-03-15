@@ -6,10 +6,12 @@ import { joinRoomSchema, leaveRoomSchema } from "@src/socket/schemas.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { Errors } from "@src/shared/errors.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
 
 export const roomHandler = (socket: Socket, context: AppContext) => {
   const {
     io,
+    redis,
     roomManager,
     clientManager,
     laravelClient,
@@ -170,10 +172,11 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
       socket.join(roomId);
 
       // BL-001 FIX: Parallelize Redis ops — don't block ack on sequential awaits
-      const [newCount] = await Promise.all([
+      const [newCount, , , musicPlayer] = await Promise.all([
         roomManager.state.adjustParticipantCount(roomId, 1),
         autoCloseService.recordActivity(roomId),
         userRoomRepository.setUserRoom(userId, roomId),
+        getMusicPlayerState(redis, roomId),
       ]);
 
       // BL-001 FIX: Laravel update is fire-and-forget — don't make user wait
@@ -217,6 +220,7 @@ export const roomHandler = (socket: Socket, context: AppContext) => {
           seats,
           lockedSeats,
           existingProducers,
+          musicPlayer,
         });
     } catch (err: unknown) {
       logger.error({ err }, "Failed to join room");

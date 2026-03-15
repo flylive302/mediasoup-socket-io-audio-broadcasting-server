@@ -16,6 +16,7 @@ import { roomHandler } from "./room/room.handler.js";
 import { mediaHandler } from "./media/media.handler.js";
 import { chatHandler } from "./chat/index.js";
 import { userHandler } from "./user/user.handler.js";
+import { audioPlayerHandler } from "./audio-player/index.js";
 
 /**
  * All registered domains - order may matter for initialization
@@ -26,6 +27,7 @@ export const domains: DomainRegistration[] = [
   mediaHandler,
   chatHandler,
   userHandler,
+  audioPlayerHandler,
 ] as const;
 
 /**
