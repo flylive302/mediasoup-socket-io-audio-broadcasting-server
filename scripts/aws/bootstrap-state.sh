@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REGION="ap-south-1"
-BUCKET_NAME="flylive-audio-terraform-state"
+BUCKET_NAME="flylive-audio-tfstate-778477255323"
 DYNAMO_TABLE="flylive-audio-terraform-locks"
 
 echo "🪣 Creating S3 bucket: $BUCKET_NAME"
