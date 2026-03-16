@@ -42,9 +42,7 @@ function createMockRedis() {
 
   return {
     rpush: vi.fn().mockResolvedValue(1),
-    eval: vi.fn().mockResolvedValue(1),
-    lrange: vi.fn().mockResolvedValue([]),
-    del: vi.fn().mockResolvedValue(1),
+    eval: vi.fn().mockResolvedValue([]),   // Lua script returns array of items (empty = no items)
     llen: vi.fn().mockResolvedValue(0),
     pipeline: vi.fn().mockReturnValue(pipeline),
     _pipeline: pipeline,
@@ -134,14 +132,13 @@ describe("GiftBuffer", () => {
 
   // ─── flush: empty queue ───────────────────────────────────────────
 
-  it("skips processing when queue is empty (rename returns 0)", async () => {
-    mockRedis.eval.mockResolvedValue(0);
+  it("skips processing when queue is empty (eval returns empty array)", async () => {
+    mockRedis.eval.mockResolvedValue([]);
 
     // Trigger flush via stop()
     await buffer.stop();
 
     expect(mockRedis.eval).toHaveBeenCalled();
-    expect(mockRedis.lrange).not.toHaveBeenCalled();
     expect(mockLaravel.processGiftBatch).not.toHaveBeenCalled();
   });
 
@@ -149,15 +146,14 @@ describe("GiftBuffer", () => {
 
   it("processes batch through Laravel and deletes processing key on success", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([giftJson]);
+    // Lua script returns items directly
+    mockRedis.eval.mockResolvedValue([giftJson]);
 
     await buffer.stop();
 
     expect(mockLaravel.processGiftBatch).toHaveBeenCalledWith([
       JSON.parse(giftJson),
     ]);
-    expect(mockRedis.del).toHaveBeenCalled(); // Delete processing key
     expect(metrics.giftBatchSize.observe).toHaveBeenCalledWith(1);
     expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith(
       { status: "success" },
@@ -169,8 +165,7 @@ describe("GiftBuffer", () => {
 
   it("emits gift:error for Laravel-reported failures", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([giftJson]);
+    mockRedis.eval.mockResolvedValue([giftJson]);
     mockLaravel.processGiftBatch.mockResolvedValue({
       failed: [
         {
@@ -199,8 +194,7 @@ describe("GiftBuffer", () => {
 
   it("re-queues items with incremented retryCount on Laravel error", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([giftJson]);
+    mockRedis.eval.mockResolvedValue([giftJson]);
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 
     await buffer.stop();
@@ -210,7 +204,6 @@ describe("GiftBuffer", () => {
       "gifts:pending",
       expect.stringContaining('"retryCount":1'),
     );
-    expect(pipeline.del).toHaveBeenCalled(); // Delete processing key
     expect(pipeline.exec).toHaveBeenCalled();
   });
 
@@ -218,8 +211,7 @@ describe("GiftBuffer", () => {
 
   it("moves to dead-letter queue when retryCount exceeds max", async () => {
     const giftJson = makeGiftJSON({ retryCount: 3 });
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([giftJson]);
+    mockRedis.eval.mockResolvedValue([giftJson]);
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 
     await buffer.stop();
@@ -252,8 +244,8 @@ describe("GiftBuffer", () => {
   it("handles corrupted JSON entries gracefully (GF-003)", async () => {
     const validJson = makeGiftJSON();
     const corruptedEntry = "{invalid_json!!!";
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([corruptedEntry, validJson]);
+    // Lua script returns both items directly
+    mockRedis.eval.mockResolvedValue([corruptedEntry, validJson]);
 
     await buffer.stop();
 
@@ -268,9 +260,9 @@ describe("GiftBuffer", () => {
     ]);
   });
 
-  it("cleans up processing key when all items are corrupted (GF-003)", async () => {
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue(["{corrupt1", "{corrupt2"]);
+  it("cleans up when all items are corrupted (GF-003)", async () => {
+    // Lua script returns corrupted items directly
+    mockRedis.eval.mockResolvedValue(["{corrupt1", "{corrupt2"]);
 
     await buffer.stop();
 
@@ -278,8 +270,6 @@ describe("GiftBuffer", () => {
     expect(mockRedis.rpush).toHaveBeenCalledTimes(2);
     // Laravel should NOT be called
     expect(mockLaravel.processGiftBatch).not.toHaveBeenCalled();
-    // Processing key should still be cleaned up
-    expect(mockRedis.del).toHaveBeenCalled();
   });
 
   // ─── GF-006 + GF-014: dead-letter queue size monitoring (sampled) ──
@@ -290,31 +280,17 @@ describe("GiftBuffer", () => {
 
     // GF-014: DLQ size is sampled every 10th flush.
     // Trigger 9 empty flushes via start() + advanceTimersByTime, then stop() for the 10th.
-    mockRedis.eval.mockResolvedValue(0); // empty queue for first 9 flushes
+    mockRedis.eval.mockResolvedValue([]); // empty queue for first 9 flushes
     buffer.start();
     for (let i = 0; i < 9; i++) {
       await vi.advanceTimersByTimeAsync(5000);
     }
 
     // 10th flush: has data
-    mockRedis.eval.mockResolvedValue(1);
-    mockRedis.lrange.mockResolvedValue([giftJson]);
+    mockRedis.eval.mockResolvedValue([giftJson]);
     await buffer.stop();
 
     expect(mockRedis.llen).toHaveBeenCalledWith("gifts:dead_letter");
     expect(metrics.giftDeadLetterSize.set).toHaveBeenCalledWith(42);
-  });
-
-  // ─── GF-007: instance-unique processing key ───────────────────────
-
-  it("includes process.pid in processing key (GF-007)", async () => {
-    mockRedis.eval.mockResolvedValue(0); // Empty queue
-
-    await buffer.stop();
-
-    const evalCall = mockRedis.eval.mock.calls[0];
-    // eval(lua, 2, QUEUE_KEY, processingKey) → index 3 is the processing key
-    const processingKey = evalCall[3] as string;
-    expect(processingKey).toContain(`:${process.pid}:`);
   });
 });
