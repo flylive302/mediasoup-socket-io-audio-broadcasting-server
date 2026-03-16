@@ -18,6 +18,8 @@ vi.mock("@src/config/index.js", () => ({
   config: {
     GIFT_BUFFER_FLUSH_INTERVAL_MS: 5000,
     GIFT_MAX_RETRIES: 3,
+    GIFT_RATE_LIMIT: 330,
+    GIFT_RATE_WINDOW: 60,
   },
 }));
 
