@@ -216,8 +216,7 @@ flylive-audio-server/
 │       └── rateLimiter.test.ts
 │
 ├── docker/
-│   ├── Dockerfile            # Multi-stage production build
-│   └── app.yaml              # Digital Ocean App Platform config
+│   └── Dockerfile            # Multi-stage production build
 │
 ├── docs/
 │   ├── DOCUMENTATION.md      # This file
@@ -493,119 +492,49 @@ npm start
 
 ## 9. Deployment Guide
 
-### Option 1: Digital Ocean App Platform (Recommended)
+### Option 1: AWS with Terraform (Production)
 
-The project includes a ready-to-use `docker/app.yaml` for DO App Platform.
+The project uses **Terraform** for infrastructure and **GitHub Actions** for CI/CD.
 
-#### Setup Steps
+#### Infrastructure (via Terraform)
 
-1. **Fork/Clone Repository** to your GitHub account
-
-2. **Update `docker/app.yaml`**:
-
-   ```yaml
-   services:
-     - name: audio-server
-       github:
-         repo: YOUR-ORG/flylive-audio-server # ← Update this
-         branch: main
-   ```
-
-3. **Create App in DO Console**:
-   - Go to Digital Ocean → Apps → Create App
-   - Choose "Deploy from GitHub"
-   - Select your repository
-   - Choose "Use app.yaml"
-
-4. **Set Secrets**:
-   - Add `LARAVEL_INTERNAL_KEY` as a secret in DO Console
-
-5. **Deploy**: Push to `main` triggers auto-deploy
-
-#### Important Notes
-
-> ⚠️ **UDP Port Limitation**: Digital Ocean App Platform does NOT support UDP ports required for WebRTC. You will need to use Droplets instead for audio streaming.
-
-### Option 2: Digital Ocean Droplets (Production)
-
-For actual WebRTC media, you need Droplets with UDP access.
-
-#### 1. Create Droplet
+Terraform manages all AWS resources across multiple regions (Mumbai, Frankfurt):
+- **EC2 Auto Scaling Groups** with CPU-optimized instances
+- **NLB (Network Load Balancer)** per region
+- **AWS Global Accelerator** for latency-based routing
+- **ElastiCache (Redis)** per region
+- **ECR** for Docker image storage
+- **SNS** for event delivery from Laravel
+- **CloudWatch** alarms for operational alerts
 
 ```bash
-# Recommended: CPU-Optimized
-doctl compute droplet create audio-server \
-  --size c-4 \
-  --image docker-22-04 \
-  --region sgp1
+# Initialize Terraform
+cd terraform
+terraform init
+
+# Review plan
+terraform plan
+
+# Apply infrastructure
+terraform apply
 ```
 
-#### 2. Setup Firewall
+#### CI/CD (via GitHub Actions)
 
-```bash
-# Create firewall
-doctl compute firewall create \
-  --name audio-server-fw \
-  --inbound-rules "protocol:tcp,ports:22,address:0.0.0.0/0 protocol:tcp,ports:3030,address:0.0.0.0/0 protocol:udp,ports:10000-59999,address:0.0.0.0/0 protocol:tcp,ports:10000-59999,address:0.0.0.0/0" \
-  --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0 protocol:udp,ports:all,address:0.0.0.0/0"
-```
+Pushing to `master` triggers the deploy workflow:
+1. **CI**: Typecheck → Build → Lint → Test
+2. **Build**: Docker image built and pushed to ECR
+3. **Deploy**: ASG Instance Refresh across all regions
 
-#### 3. Deploy via Docker
+Required GitHub Secrets:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
 
-SSH into your droplet and run:
+#### DNS Setup
 
-```bash
-# Install Docker
-curl -fsSL https://get.docker.com | sh
+Point `audio.flyliveapp.com` CNAME to the Global Accelerator DNS name from Terraform output.
 
-# Clone repo
-git clone https://github.com/your-org/flylive-audio-server.git
-cd flylive-audio-server
-
-# Create .env
-cat > .env << 'EOF'
-NODE_ENV=production
-PORT=3030
-LOG_LEVEL=info
-
-REDIS_HOST=your-redis-host
-REDIS_PORT=25060
-REDIS_PASSWORD=your-redis-password
-REDIS_DB=3
-
-LARAVEL_API_URL=https://api.flylive.app
-LARAVEL_INTERNAL_KEY=your_32_character_secret
-
-MEDIASOUP_LISTEN_IP=0.0.0.0
-MEDIASOUP_ANNOUNCED_IP=YOUR_DROPLET_PUBLIC_IP
-EOF
-
-# Build and run
-docker build -t audio-server -f docker/Dockerfile .
-docker run -d \
-  --name audio-server \
-  --restart unless-stopped \
-  --env-file .env \
-  -p 3030:3030 \
-  -p 10000-59999:10000-59999/udp \
-  -p 10000-59999:10000-59999/tcp \
-  audio-server
-```
-
-#### 4. Setup Managed Redis
-
-```bash
-# Create managed Redis
-doctl databases create audio-redis \
-  --engine redis \
-  --size db-s-1vcpu-1gb \
-  --region sgp1
-
-# Get connection details
-doctl databases get audio-redis
-```
-
-### Option 3: Docker Compose (Development/Staging)
+### Option 2: Docker Compose (Development/Staging)
 
 Create `docker-compose.yml`:
 

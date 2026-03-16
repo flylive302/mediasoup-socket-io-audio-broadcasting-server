@@ -28,7 +28,7 @@ const configSchema = z.object({
   // Redis
   REDIS_HOST: z.string().default("127.0.0.1"),
   REDIS_PORT: z.coerce.number().default(6379),
-  REDIS_USERNAME: z.string().optional(), // Digital Ocean ACL username (usually 'default')
+  REDIS_USERNAME: z.string().optional(),
   REDIS_PASSWORD: z.string().optional(),
   REDIS_DB: z.coerce.number().default(3), // Separate DB from Laravel
   REDIS_TLS: booleanEnvSchema,

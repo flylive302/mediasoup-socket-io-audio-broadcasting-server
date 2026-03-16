@@ -266,9 +266,8 @@ Key environment variables:
 | `JWT_MAX_AGE_SECONDS`    | ❌       | Default: 86400 (24h)               |
 | `LARAVEL_API_TIMEOUT_MS` | ❌       | Default: 10000 (10s)               |
 
-> **Production Redis**: MSAB uses **DigitalOcean Managed Valkey** (Redis-compatible) in production
-> with TLS, authentication, and DB index 3 (separate from Laravel). The deploy script
-> (`scripts/deploy/deploy-droplet.sh`) auto-provisions these values from the Valkey cluster.
+> **Production Redis**: MSAB uses **AWS ElastiCache** (Redis-compatible) in production,
+> provisioned by Terraform with DB index 3 (separate from Laravel).
 > Defaults (127.0.0.1:6379, no auth) are for local development only.
 
 See `src/config/index.ts` for complete schema.
