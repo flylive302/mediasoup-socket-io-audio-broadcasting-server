@@ -75,3 +75,17 @@ variable "session_secret" {
   sensitive   = true
   default     = ""
 }
+
+# Cloudflare Realtime TURN (for WebRTC relay)
+variable "cloudflare_turn_api_key" {
+  description = "Cloudflare Realtime TURN API bearer token — server fetches short-lived credentials dynamically"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cloudflare_turn_key_id" {
+  description = "Cloudflare Realtime TURN key ID (the short hex in the API URL)"
+  type        = string
+  default     = ""
+}

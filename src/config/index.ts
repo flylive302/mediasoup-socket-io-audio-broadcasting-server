@@ -81,14 +81,13 @@ const configSchema = z.object({
   // ICE Servers (STUN/TURN for WebRTC NAT traversal)
   ICE_STUN_URLS: z
     .string()
-    .default("stun:stun.cloudflare.com:3478")
+    .default("stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53")
     .transform((s) => s.split(",").map((u) => u.trim()).filter(Boolean)),
-  ICE_TURN_URLS: z
-    .string()
-    .default("")
-    .transform((s) => s.split(",").map((u) => u.trim()).filter(Boolean)),
-  ICE_TURN_USERNAME: z.string().optional(),
-  ICE_TURN_CREDENTIAL: z.string().optional(),
+
+  // Cloudflare Realtime TURN — dynamic credential generation (recommended)
+  // Get from: Cloudflare Dashboard → Calls → Overview → your TURN key
+  CLOUDFLARE_TURN_API_KEY: z.string().optional(),  // Bearer token (starts with the long hex)
+  CLOUDFLARE_TURN_KEY_ID: z.string().optional(),   // Key ID (short hex, part of the API URL)
 
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),

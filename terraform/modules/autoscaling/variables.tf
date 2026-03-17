@@ -168,3 +168,16 @@ variable "instance_type_overrides" {
   type        = list(string)
   default     = []
 }
+
+variable "cloudflare_turn_api_key" {
+  description = "Cloudflare Realtime TURN API bearer token for dynamic credential generation"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cloudflare_turn_key_id" {
+  description = "Cloudflare Realtime TURN key ID"
+  type        = string
+  default     = ""
+}

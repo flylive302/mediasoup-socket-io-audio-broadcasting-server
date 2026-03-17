@@ -252,6 +252,8 @@ module "autoscaling_mumbai" {
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
   cascade_enabled        = true
+  cloudflare_turn_api_key = var.cloudflare_turn_api_key
+  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 }
 
 
@@ -279,6 +281,8 @@ module "autoscaling_frankfurt" {
   session_secret         = var.session_secret
   audio_domain           = var.audio_domain
   cascade_enabled        = true
+  cloudflare_turn_api_key = var.cloudflare_turn_api_key
+  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 }
 
 # =============================================================================

@@ -137,6 +137,10 @@ CASCADE_ENABLED=${cascade_enabled}
 CASCADE_THRESHOLD=1800
 INTERNAL_API_KEY=${laravel_internal_key}
 PUBLIC_IP=$PUBLIC_IP
+
+# ICE Servers — Cloudflare Realtime TURN (dynamic credentials)
+CLOUDFLARE_TURN_API_KEY=${cloudflare_turn_api_key}
+CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 ENVEOF
 
 # --- Run Container ---

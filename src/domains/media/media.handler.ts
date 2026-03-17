@@ -54,7 +54,7 @@ const transportCreateHandler = createHandler(
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
-        iceServers: getIceServers(),
+        iceServers: await getIceServers(),
       },
     };
   },
