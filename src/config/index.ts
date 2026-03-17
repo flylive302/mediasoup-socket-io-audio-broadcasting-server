@@ -78,6 +78,18 @@ const configSchema = z.object({
     .default("https://flyliveapp.com,https://www.flyliveapp.com")
     .transform((s) => new Set(s.split(",").map((o) => o.trim()))),
 
+  // ICE Servers (STUN/TURN for WebRTC NAT traversal)
+  ICE_STUN_URLS: z
+    .string()
+    .default("stun:stun.cloudflare.com:3478")
+    .transform((s) => s.split(",").map((u) => u.trim()).filter(Boolean)),
+  ICE_TURN_URLS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((u) => u.trim()).filter(Boolean)),
+  ICE_TURN_USERNAME: z.string().optional(),
+  ICE_TURN_CREDENTIAL: z.string().optional(),
+
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
 

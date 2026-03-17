@@ -19,6 +19,7 @@ import {
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { getIceServers } from "@src/config/iceServers.js";
 import type { Socket } from "socket.io";
 
 // 1. Create Transport
@@ -53,6 +54,7 @@ const transportCreateHandler = createHandler(
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
+        iceServers: getIceServers(),
       },
     };
   },
