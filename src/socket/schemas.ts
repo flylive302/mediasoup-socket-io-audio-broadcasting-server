@@ -168,6 +168,11 @@ export const leaveRoomSchema = z.object({
   roomId: roomIdSchema,
 });
 
+export const roomKickSchema = z.object({
+  roomId: roomIdSchema,
+  userId: z.number().int().positive(),
+});
+
 // ─────────────────────────────────────────────────────────────────
 // Chat Schemas
 // ─────────────────────────────────────────────────────────────────

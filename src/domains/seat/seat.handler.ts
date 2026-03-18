@@ -20,6 +20,7 @@ import {
   inviteAcceptHandler,
   inviteDeclineHandler,
 } from "./handlers/invite-response.handler.js";
+import { kickUserHandler } from "@src/domains/room/handlers/kick-user.handler.js";
 
 /**
  * Register all seat-related socket event handlers
@@ -47,4 +48,7 @@ export function registerSeatHandlers(
   socket.on("seat:invite", inviteSeatHandler(socket, context));
   socket.on("seat:invite:accept", inviteAcceptHandler(socket, context));
   socket.on("seat:invite:decline", inviteDeclineHandler(socket, context));
+
+  // Room moderation (admin/owner) — kept here as it also clears seats
+  socket.on("room:kick", kickUserHandler(socket, context));
 }
