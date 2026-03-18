@@ -18,6 +18,10 @@ import { chatHandler } from "./chat/index.js";
 import { userHandler } from "./user/user.handler.js";
 import { audioPlayerHandler } from "./audio-player/index.js";
 
+// LT-5: Lifecycle hooks for domain-specific disconnect cleanup
+import { registerLifecycle } from "@src/shared/lifecycle.js";
+import { audioPlayerLifecycle } from "./audio-player/audio-player.lifecycle.js";
+
 /**
  * All registered domains - order may matter for initialization
  */
@@ -29,6 +33,12 @@ export const domains: DomainRegistration[] = [
   userHandler,
   audioPlayerHandler,
 ] as const;
+
+/**
+ * Register lifecycle hooks for domains that need disconnect cleanup.
+ * Called once at module load time.
+ */
+registerLifecycle(audioPlayerLifecycle);
 
 /**
  * Register all domain handlers for a socket connection

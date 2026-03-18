@@ -24,9 +24,6 @@ import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 
-// Audio player cleanup
-import { clearMusicPlayerOnDisconnect } from "@src/domains/audio-player/index.js";
-
 // Events module (Laravel pub/sub integration)
 import {
   UserSocketRepository,
@@ -34,6 +31,9 @@ import {
   EventRouter,
 } from "@src/integrations/laravel/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+
+// LT-5: Lifecycle hooks for domain-specific disconnect cleanup
+import { getLifecycleHooks, type DisconnectContext } from "@src/shared/lifecycle.js";
 
 export async function initializeSocket(
   io: Server,
@@ -117,10 +117,9 @@ export async function initializeSocket(
     // GiftHandler manages a GiftBuffer with start/stop lifecycle (setInterval timer).
     // Unlike stateless domain handlers in registerAllDomains(), it requires constructor
     // injection of Redis/IO/LaravelClient and its stop() must be called during shutdown.
-    // Future: introduce a DomainWithLifecycle interface to unify registration.
     giftHandler.handle(socket, appContext);
 
-    // Disconnect
+    // Disconnect — LT-5: uses lifecycle hooks for domain-specific cleanup
     socket.on("disconnect", (reason) =>
       handleDisconnect(socket, reason, {
         io,
@@ -132,6 +131,7 @@ export async function initializeSocket(
         roomManager,
         logger,
         cascadeRelay: appContext.cascadeRelay,
+        appContext,
       }),
     );
   });
@@ -153,6 +153,7 @@ interface DisconnectDeps {
   roomManager: RoomManager;
   logger: typeof logger;
   cascadeRelay: CascadeRelay | null;
+  appContext: AppContext;
 }
 
 async function handleDisconnect(
@@ -160,7 +161,7 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { io: ioServer, redis: redisClient, clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay, appContext } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
@@ -209,23 +210,37 @@ async function handleDisconnect(
     }
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
-
-    // Clear music player mutex if this user was playing music
-    clearMusicPlayerOnDisconnect(
-      redisClient,
-      ioServer,
-      roomId,
-      client.userId,
-      cascadeRelay,
-    ).catch((err) =>
-      log.error({ err, roomId, userId: client.userId }, "Music player cleanup failed"),
-    );
   } else if (client?.userId) {
     // No room but has userId — just clean up socket registration
     await Promise.allSettled([
       userSocketRepository.unregisterSocket(client.userId, socket.id),
       userRoomRepository.clearUserRoom(client.userId),
     ]);
+  }
+
+  // LT-5: Run registered domain lifecycle hooks in parallel
+  const lifecycleHooks = getLifecycleHooks();
+  if (lifecycleHooks.length > 0 && client?.userId) {
+    const disconnectCtx: DisconnectContext = {
+      socket,
+      userId: client.userId,
+      roomId: client.roomId ?? null,
+      reason,
+    };
+
+    const hookResults = await Promise.allSettled(
+      lifecycleHooks.map((hook) => hook.onDisconnect(disconnectCtx, appContext)),
+    );
+
+    // Log any lifecycle hook failures
+    hookResults.forEach((result, i) => {
+      if (result.status === "rejected") {
+        log.error(
+          { err: result.reason, hook: lifecycleHooks[i]!.name },
+          "Lifecycle hook failed during disconnect",
+        );
+      }
+    });
   }
 
   clientManager.removeClient(socket.id);
