@@ -169,7 +169,7 @@ export class GiftBuffer {
           // Handle individual failures from Laravel response
           if (result.failed.length > 0) {
             const fail = result.failed[0];
-            if (gift.sender_socket_id) {
+            if (fail && gift.sender_socket_id) {
               this.io.to(gift.sender_socket_id).emit("gift:error", {
                 transactionId: fail.transaction_id,
                 code: fail.code,
