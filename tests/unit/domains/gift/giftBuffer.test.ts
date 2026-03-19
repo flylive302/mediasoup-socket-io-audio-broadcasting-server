@@ -15,7 +15,7 @@ vi.mock("@src/infrastructure/logger.js", () => ({
 vi.mock("@src/config/index.js", () => ({
   config: {
     GIFT_BUFFER_FLUSH_INTERVAL_MS: 5000,
-    GIFT_MAX_RETRIES: 3,
+    GIFT_MAX_RETRIES: 5,
   },
 }));
 
@@ -210,7 +210,7 @@ describe("GiftBuffer", () => {
   // ─── flush: max retries → dead-letter ─────────────────────────────
 
   it("moves to dead-letter queue when retryCount exceeds max", async () => {
-    const giftJson = makeGiftJSON({ retryCount: 3 });
+    const giftJson = makeGiftJSON({ retryCount: 5 });
     mockRedis.eval.mockResolvedValue([giftJson]);
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 

@@ -152,13 +152,39 @@ export class GiftBuffer {
     } catch (error) {
       this.logger.error(
         { error, batchSize: transactions.length },
-        "Gift batch failed, re-queuing items with retry count",
+        "Gift batch failed, attempting per-item fallback",
       );
 
-      // BL-006 FIX: Pipeline all re-queues in a single round-trip
+      // Per-item fallback: try sending each item individually.
+      // Only items that still fail get re-queued with retryCount++.
+      // This prevents one slow/failed transaction from dooming the entire batch.
       const pipeline = this.redis.pipeline();
       let hasDeadLetterEntries = false;
+
       for (const gift of transactions) {
+        // Try sending as individual 1-item batch
+        try {
+          const result = await this.laravelClient.processGiftBatch([gift]);
+
+          // Handle individual failures from Laravel response
+          if (result.failed.length > 0) {
+            const fail = result.failed[0];
+            if (gift.sender_socket_id) {
+              this.io.to(gift.sender_socket_id).emit("gift:error", {
+                transactionId: fail.transaction_id,
+                code: fail.code,
+                reason: fail.reason,
+              });
+            }
+            metrics.giftsProcessed.inc({ status: "failed" });
+          } else {
+            metrics.giftsProcessed.inc({ status: "success" }, 1);
+          }
+          continue; // Item handled, don't re-queue
+        } catch {
+          // Individual item also failed — fall through to retry/dead-letter logic
+        }
+
         const retryCount = (gift.retryCount ?? 0) + 1;
 
         if (retryCount >= config.GIFT_MAX_RETRIES) {
