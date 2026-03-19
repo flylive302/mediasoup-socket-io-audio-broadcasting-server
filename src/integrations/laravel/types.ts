@@ -54,10 +54,11 @@ export interface EventRoutingResult {
  * 4. Coordinate with Frontend to handle the socket event
  */
 export const RELAY_EVENTS = {
-  /** Economy: balance changes, rewards */
+  /** Economy: balance changes, rewards, coin requests */
   economy: {
     BALANCE_UPDATED: "balance.updated",
     REWARD_EARNED: "reward.earned",
+    COIN_REQUEST_STATUS_CHANGED: "coin_request.status_changed",
   },
 
   /** Achievements: badges, levels */
