@@ -34,15 +34,7 @@ function base64UrlDecode(input: string): Buffer {
  *
  * @returns The validated User or null if verification fails
  */
-export function verifyJwt(
-  token: string,
-  redis: Redis,
-  logger: Logger,
-): Promise<User | null> {
-  return verifyJwtInternal(token, redis, logger);
-}
-
-async function verifyJwtInternal(
+export async function verifyJwt(
   token: string,
   redis: Redis,
   logger: Logger,

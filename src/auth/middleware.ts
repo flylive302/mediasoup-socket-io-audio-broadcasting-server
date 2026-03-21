@@ -11,7 +11,7 @@ export async function authMiddleware(
   socket: Socket,
   next: (err?: Error) => void,
 ) {
-  // Validate WebSocket origin against CORS origins.
+  // ── GATE: Validate origin ──────────────────────────────
   // Connections without an Origin header are allowed intentionally —
   // native mobile apps and server-to-server clients do not send Origin.
   const origin = socket.handshake.headers.origin;
@@ -21,6 +21,7 @@ export async function authMiddleware(
     return next(new Error(Errors.ORIGIN_NOT_ALLOWED));
   }
 
+  // ── GATE: Extract token ────────────────────────────────
   const token =
     socket.handshake.auth.token || socket.handshake.headers["authorization"];
 
@@ -33,6 +34,7 @@ export async function authMiddleware(
   // Handle "Bearer " prefix if present in header
   const cleanToken = token.replace(/^Bearer\s+/i, "");
 
+  // ── EXECUTE: Verify JWT ────────────────────────────────
   const redis = getRedisClient();
 
   try {
