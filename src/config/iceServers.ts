@@ -79,6 +79,9 @@ export async function getIceServers(): Promise<IceServer[]> {
 
   if (!hasTurnConfig) {
     // STUN only — no credentials needed, no expiry
+    logger.warn(
+      "No TURN credentials configured — STUN-only mode. Users behind Symmetric NAT (common in India) will fail to connect.",
+    );
     if (config.ICE_STUN_URLS.length === 0) return [];
     return [{ urls: config.ICE_STUN_URLS }];
   }
