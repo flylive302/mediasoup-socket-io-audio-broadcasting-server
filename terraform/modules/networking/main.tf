@@ -90,13 +90,13 @@ resource "aws_security_group" "msab" {
   description = "Security group for MediaSoup audio server"
   vpc_id      = aws_vpc.main.id
 
-  # SSH
+  # SSH — AUDIT-007 FIX: restricted to admin IP only (was 0.0.0.0/0)
   ingress {
     description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["103.188.92.67/32"]
   }
 
   # Application HTTP/WebSocket

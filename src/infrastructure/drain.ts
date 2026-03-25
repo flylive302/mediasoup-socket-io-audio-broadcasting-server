@@ -177,9 +177,14 @@ export const createAdminRoutes = (
 
     /**
      * GET /admin/status
-     * Current instance status (no auth required — internal network only)
+     * Current instance status. AUDIT-008 FIX: requires X-Internal-Key.
      */
-    fastify.get("/admin/status", async () => {
+    fastify.get("/admin/status", async (request, reply) => {
+      const internalKey = request.headers["x-internal-key"] as string | undefined;
+      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+        return reply.code(401).send({ status: "error", message: "Unauthorized" });
+      }
+
       return {
         draining,
         drained,

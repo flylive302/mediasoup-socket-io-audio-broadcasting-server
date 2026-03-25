@@ -58,7 +58,8 @@ const configSchema = z.object({
   MEDIASOUP_NUM_WORKERS: z.coerce.number().optional(), // If not set, uses os.cpus().length
 
   // Room Auto-Close (inactivity timer)
-  ROOM_INACTIVITY_TIMEOUT_MS: z.coerce.number().default(30_000), // 30 seconds
+  // AUDIT-021 FIX: increased from 30s to 120s — 30s was too aggressive during network blips
+  ROOM_INACTIVITY_TIMEOUT_MS: z.coerce.number().default(120_000), // 2 minutes
   ROOM_AUTO_CLOSE_POLL_INTERVAL_MS: z.coerce.number().default(30_000), // 30 seconds
 
   // Gift Buffer
@@ -91,6 +92,9 @@ const configSchema = z.object({
 
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
+
+  // SNS Topic ARN for event ingest validation (optional — if set, validates TopicArn on inbound SNS)
+  MSAB_SNS_TOPIC_ARN: z.string().optional(),
 
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false

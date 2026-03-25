@@ -149,7 +149,7 @@ describe("JwtValidator", () => {
     expect(mockRedis.exists).toHaveBeenCalled();
   });
 
-  it("returns null (fail-closed) on Redis error during revocation check", async () => {
+  it("returns user (fail-open) on Redis error during revocation check", async () => {
     mockRedis.exists.mockRejectedValue(new Error("Redis connection lost"));
 
     const payload = validUserPayload();
@@ -157,7 +157,10 @@ describe("JwtValidator", () => {
 
     const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
-    expect(user).toBeNull();
+    // Fail-open: user with valid HMAC-signed JWT is allowed through
+    // even when Redis is unreachable for revocation check
+    expect(user).not.toBeNull();
+    expect(user!.id).toBe(42);
     expect(mockAuthAttempts.inc).toHaveBeenCalledWith({ result: "redis_error" });
   });
 

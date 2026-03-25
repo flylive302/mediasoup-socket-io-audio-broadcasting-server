@@ -254,6 +254,10 @@ module "autoscaling_mumbai" {
   cascade_enabled        = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
+
+  # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
+  min_instances     = 2
+  desired_instances = 2
 }
 
 
@@ -283,6 +287,10 @@ module "autoscaling_frankfurt" {
   cascade_enabled        = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
+
+  # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
+  min_instances     = 2
+  desired_instances = 2
 }
 
 # =============================================================================

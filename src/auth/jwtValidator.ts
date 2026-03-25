@@ -112,7 +112,10 @@ export async function verifyJwt(
 
   const user = parseResult.data;
 
-  // 6. Check revocation (fail-closed on Redis error)
+  // 6. Check revocation (fail-OPEN on Redis error for availability)
+  // HMAC signature verification above is the primary auth gate.
+  // Revocation is defense-in-depth — we accept the risk of allowing a
+  // recently-revoked token during a Redis blip rather than blocking ALL users.
   try {
     const revokedKey = `auth:revoked:${hashToken(token)}`;
     const isRevoked = await redis.exists(revokedKey);
@@ -121,10 +124,12 @@ export async function verifyJwt(
       return null;
     }
   } catch (err) {
-    logger.error({ err }, "JWT: Redis error during revocation check");
+    logger.warn(
+      { err, userId: user.id },
+      "JWT: Redis unreachable during revocation check — skipping (fail-open)",
+    );
     metrics.authAttempts.inc({ result: "redis_error" });
-    // Fail closed for security
-    return null;
+    // Continue — user has a valid HMAC-signed JWT, allow connection
   }
 
   return user;

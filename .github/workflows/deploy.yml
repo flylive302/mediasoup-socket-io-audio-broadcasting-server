@@ -103,7 +103,8 @@ jobs:
     environment: aws-production
     strategy:
       fail-fast: false # Don't cancel other regions if one fails
-      max-parallel: 3 # Deploy all regions in parallel
+      # AUDIT-005 FIX: Deploy sequentially — if Mumbai breaks, Frankfurt stays healthy
+      max-parallel: 1
       matrix:
         region:
           - name: mumbai

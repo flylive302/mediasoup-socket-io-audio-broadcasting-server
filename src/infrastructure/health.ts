@@ -23,12 +23,18 @@ export const createHealthRoutes = (
       }
 
       const redis = getRedisClient();
-      // SEC-001 FIX: redis.status check is sufficient — no need for redundant ping
+      // AUDIT-012 FIX: actual PING probe with timeout instead of trusting status property
       let redisOk = false;
       try {
-        redisOk = redis.status === "ready";
+        const pingResult = await Promise.race([
+          redis.ping(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Redis ping timeout")), 2_000),
+          ),
+        ]);
+        redisOk = pingResult === "PONG";
       } catch {
-        // Redis unreachable
+        // Redis unreachable or timed out
       }
 
       const workerCount = workerManager.getWorkerCount();

@@ -129,6 +129,9 @@ MSAB_EVENTS_ENABLED=true
 # CloudWatch (enabled in production)
 CLOUDWATCH_ENABLED=true
 
+# Node.js memory limit (prevents OOM from killing the entire host)
+NODE_OPTIONS=--max-old-space-size=2048
+
 # AWS Region (for cross-region room routing)
 AWS_REGION=${region}
 
@@ -143,21 +146,103 @@ CLOUDFLARE_TURN_API_KEY=${cloudflare_turn_api_key}
 CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 ENVEOF
 
-# --- Run Container ---
+# --- Run Container (AUDIT-016 FIX: memory limit prevents OOM killing entire host) ---
 docker run -d \
   --name msab \
   --restart unless-stopped \
   --network host \
+  --memory=7g \
+  --memory-swap=7g \
   --env-file .env \
   ${ecr_repo_url}:latest
 
 # --- Install Lifecycle Drain Service ---
-# Clone just the drain script (lightweight — no full repo needed)
-apt-get install -y git
-git clone --depth 1 --branch master https://github.com/flylive302/mediasoup-socket-io-audio-broadcasting-server.git /tmp/msab-scripts
-cp -r /tmp/msab-scripts/scripts "$APP_DIR/scripts"
-rm -rf /tmp/msab-scripts
-apt-get remove -y git && apt-get autoremove -y
+# AUDIT-017 FIX: Embed drain script inline (removes GitHub and Docker cp dependencies)
+mkdir -p "$APP_DIR/scripts/aws"
+cat > "$APP_DIR/scripts/aws/lifecycle-drain.sh" << 'DRAINEOF'
+#!/bin/bash
+set -euo pipefail
+
+APP_PORT="${MSAB_PORT:-3030}"
+INTERNAL_KEY="${LARAVEL_INTERNAL_KEY:-}"
+POLL_INTERVAL=10
+DRAIN_POLL=5
+MAX_DRAIN_WAIT=900
+LOG_TAG="lifecycle-drain"
+
+log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] [$LOG_TAG] $*"; }
+
+get_metadata() {
+  local path="$1"
+  local token
+  token=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null)
+  curl -s -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/$path" 2>/dev/null
+}
+
+INSTANCE_ID=$(get_metadata "instance-id")
+REGION=$(get_metadata "placement/region")
+
+if [ -z "$INSTANCE_ID" ] || [ -z "$REGION" ]; then
+  log "ERROR: Could not get instance metadata. Not running on EC2?"
+  exit 1
+fi
+
+log "Started lifecycle drain monitor for instance=$INSTANCE_ID region=$REGION"
+
+while true; do
+  LIFECYCLE_STATE=$(aws autoscaling describe-auto-scaling-instances \
+    --instance-ids "$INSTANCE_ID" --region "$REGION" \
+    --query 'AutoScalingInstances[0].LifecycleState' --output text 2>/dev/null || echo "Unknown")
+
+  if [ "$LIFECYCLE_STATE" = "Terminating:Wait" ]; then
+    log "Termination detected! Lifecycle state: $LIFECYCLE_STATE"
+
+    ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
+      --instance-ids "$INSTANCE_ID" --region "$REGION" \
+      --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null)
+
+    log "ASG: $ASG_NAME — triggering drain on MSAB..."
+
+    DRAIN_RESPONSE=$(curl -s -X POST \
+      -H "X-Internal-Key: $INTERNAL_KEY" \
+      "http://localhost:$APP_PORT/admin/drain?timeout=$((MAX_DRAIN_WAIT - 60))" 2>/dev/null || echo '{"status":"error"}')
+    log "Drain response: $DRAIN_RESPONSE"
+
+    ELAPSED=0
+    while [ $ELAPSED -lt $MAX_DRAIN_WAIT ]; do
+      STATUS=$(curl -s "http://localhost:$APP_PORT/admin/status" 2>/dev/null || echo '{}')
+      DRAINED=$(echo "$STATUS" | grep -o '"drained":true' || true)
+      ROOMS=$(echo "$STATUS" | grep -o '"rooms":[0-9]*' | grep -o '[0-9]*' || echo "?")
+
+      if [ -n "$DRAINED" ]; then
+        log "Instance drained (rooms=$ROOMS) — completing lifecycle action"
+        break
+      fi
+
+      log "Waiting for drain... rooms=$ROOMS elapsed=${ELAPSED}s/${MAX_DRAIN_WAIT}s"
+      sleep $DRAIN_POLL
+      ELAPSED=$((ELAPSED + DRAIN_POLL))
+    done
+
+    if [ $ELAPSED -ge $MAX_DRAIN_WAIT ]; then
+      log "Drain timeout reached — force-completing lifecycle action"
+    fi
+
+    aws autoscaling complete-lifecycle-action \
+      --lifecycle-hook-name "msab-terminate-hook" \
+      --auto-scaling-group-name "$ASG_NAME" \
+      --lifecycle-action-result "CONTINUE" \
+      --instance-id "$INSTANCE_ID" --region "$REGION" 2>/dev/null
+
+    log "Lifecycle action completed — ASG will terminate this instance"
+    exit 0
+  fi
+
+  sleep $POLL_INTERVAL
+done
+DRAINEOF
 
 cat > /etc/systemd/system/msab-lifecycle.service << 'SVCEOF'
 [Unit]

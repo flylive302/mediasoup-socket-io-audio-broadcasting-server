@@ -13,6 +13,7 @@ import {
 } from "prom-client";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
+import { config } from "@src/config/index.js";
 
 // Create a custom registry
 export const metricsRegistry = new Registry();
@@ -154,8 +155,14 @@ export const createMetricsRoutes = (
   workerManager: WorkerManager,
 ): FastifyPluginAsync => {
   return async (fastify) => {
+    // AUDIT-008 FIX: Require X-Internal-Key for all metrics endpoints
     // Prometheus format endpoint
-    fastify.get("/metrics/prometheus", async (_request, reply) => {
+    fastify.get("/metrics/prometheus", async (request, reply) => {
+      const internalKey = request.headers["x-internal-key"] as string | undefined;
+      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+        return reply.code(401).send({ status: "error", message: "Unauthorized" });
+      }
+
       // Update per-worker metrics before collecting
       updateWorkerMetrics(workerManager);
 
@@ -164,7 +171,12 @@ export const createMetricsRoutes = (
     });
 
     // JSON format endpoint (backwards compatible)
-    fastify.get("/metrics", async () => {
+    fastify.get("/metrics", async (request, reply) => {
+      const internalKey = request.headers["x-internal-key"] as string | undefined;
+      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+        return reply.code(401).send({ status: "error", message: "Unauthorized" });
+      }
+
       const memoryUsage = process.memoryUsage();
       const cpuUsage = process.cpuUsage();
       const uptime = process.uptime();

@@ -41,11 +41,6 @@ const start = async () => {
 
       logger.info({ signal }, "Graceful shutdown initiated");
 
-      // Enter drain mode if not already draining
-      if (!isDraining()) {
-        startDrain(roomManager, { timeoutMs: 30_000 });
-      }
-
       const timeoutMs = 30_000;
       const shutdownTimeout = setTimeout(() => {
         logger.error("Shutdown timeout exceeded, forcing exit");
@@ -53,7 +48,22 @@ const start = async () => {
       }, timeoutMs);
 
       try {
-        // 1. Close Socket.IO (disconnect clients)
+        // 1. Enter drain mode and wait for rooms to close (or timeout)
+        if (!isDraining()) {
+          await new Promise<void>((resolve) => {
+            const drainTimeout = setTimeout(resolve, 15_000); // max 15s drain wait
+            startDrain(roomManager, {
+              timeoutMs: 15_000,
+              onComplete: () => {
+                clearTimeout(drainTimeout);
+                resolve();
+              },
+            });
+          });
+          logger.info("Drain completed, proceeding with shutdown");
+        }
+
+        // 2. Close Socket.IO (disconnect remaining clients)
         io.close();
 
         // 2. Stop auto-close job
@@ -99,11 +109,42 @@ const start = async () => {
   }
 };
 
-// Handle unhandled rejections
+// ─── Process Error Handlers ──────────────────────────────────────
+// Counter-based circuit breaker: tolerate transient rejections,
+// only exit if errors are systemic (5 within 30 seconds).
+
+const REJECTION_THRESHOLD = 5;
+const REJECTION_WINDOW_MS = 30_000;
+const rejectionTimestamps: number[] = [];
+
 process.on("unhandledRejection", (err) => {
-  logger.fatal({ err }, "Unhandled Rejection");
-  process.exit(1);
+  const now = Date.now();
+  rejectionTimestamps.push(now);
+
+  // Trim timestamps outside the sliding window
+  while (rejectionTimestamps.length > 0 && rejectionTimestamps[0]! < now - REJECTION_WINDOW_MS) {
+    rejectionTimestamps.shift();
+  }
+
+  if (rejectionTimestamps.length >= REJECTION_THRESHOLD) {
+    logger.fatal(
+      { err, count: rejectionTimestamps.length, windowMs: REJECTION_WINDOW_MS },
+      `Unhandled Rejection: ${REJECTION_THRESHOLD} rejections in ${REJECTION_WINDOW_MS / 1000}s — shutting down`,
+    );
+    process.exit(1);
+  } else {
+    logger.error(
+      { err, count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+      "Unhandled Rejection (transient — process continues)",
+    );
+  }
+});
+
+process.on("uncaughtException", (err) => {
+  logger.fatal({ err }, "Uncaught Exception — initiating graceful shutdown");
+  // Give a brief moment for the log to flush, then exit
+  // The process is in an undefined state — we cannot recover, but we can exit cleanly
+  setTimeout(() => process.exit(1), 3_000);
 });
 
 start();
-

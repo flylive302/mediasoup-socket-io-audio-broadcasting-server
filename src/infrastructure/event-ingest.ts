@@ -76,11 +76,20 @@ export const createEventIngestRoutes = (
 
       // --- Authentication ---
       const internalKey = request.headers["x-internal-key"] as string | undefined;
-
-      // Allow SNS notifications (they come with SNS headers, not our key)
       const isSnsNotification = snsMessageType === "Notification";
 
-      if (!isSnsNotification && internalKey !== config.LARAVEL_INTERNAL_KEY) {
+      if (isSnsNotification) {
+        // AUDIT-009 FIX: Validate SNS TopicArn to prevent spoofed notifications.
+        // AWS SNS always includes the TopicArn in the notification body.
+        const body = request.body as Record<string, unknown>;
+        const topicArn = body?.TopicArn as string | undefined;
+        const expectedTopicArn = config.MSAB_SNS_TOPIC_ARN;
+
+        if (expectedTopicArn && topicArn !== expectedTopicArn) {
+          fastify.log.warn({ topicArn, expectedTopicArn }, "SNS notification with unexpected TopicArn — rejected");
+          return reply.code(403).send({ status: "error", message: "Invalid SNS TopicArn" });
+        }
+      } else if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 
