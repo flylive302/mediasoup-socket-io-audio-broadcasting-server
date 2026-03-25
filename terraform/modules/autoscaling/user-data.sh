@@ -132,6 +132,9 @@ CLOUDWATCH_ENABLED=true
 # Node.js memory limit (prevents OOM from killing the entire host)
 NODE_OPTIONS=--max-old-space-size=2048
 
+# SNS Topic ARN for event ingest validation
+MSAB_SNS_TOPIC_ARN=arn:aws:sns:ap-south-1:778477255323:flylive-audio-msab-events
+
 # AWS Region (for cross-region room routing)
 AWS_REGION=${region}
 

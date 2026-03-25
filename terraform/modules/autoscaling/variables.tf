@@ -181,3 +181,15 @@ variable "cloudflare_turn_key_id" {
   type        = string
   default     = ""
 }
+
+variable "target_group_arn_suffix" {
+  description = "ARN suffix of the NLB target group (for CloudWatch dimensions)"
+  type        = string
+  default     = ""
+}
+
+variable "load_balancer_arn_suffix" {
+  description = "ARN suffix of the NLB (for CloudWatch dimensions)"
+  type        = string
+  default     = ""
+}

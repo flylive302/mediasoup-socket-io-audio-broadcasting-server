@@ -219,33 +219,24 @@ resource "aws_autoscaling_lifecycle_hook" "terminating" {
   default_result         = "CONTINUE" # Terminate even if drain fails
 }
 
-# --- Scaling Policy: Scale Up ---
-resource "aws_autoscaling_policy" "scale_up" {
-  name                   = "${var.project_name}-scale-up"
+# --- Scaling Policy: Target Tracking (CPU) ---
+# AUDIT-010 FIX: Replaces StepScaling with TargetTracking.
+# AWS automatically adds/removes instances to maintain ~60% CPU.
+resource "aws_autoscaling_policy" "target_tracking_cpu" {
+  name                   = "${var.project_name}-target-tracking-cpu"
   autoscaling_group_name = aws_autoscaling_group.msab.name
-  policy_type            = "StepScaling"
-  adjustment_type        = "ChangeInCapacity"
+  policy_type            = "TargetTrackingScaling"
 
-  step_adjustment {
-    scaling_adjustment          = 1
-    metric_interval_lower_bound = 0
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+    target_value     = 60.0
+    disable_scale_in = false
   }
 }
 
-# --- Scaling Policy: Scale Down ---
-resource "aws_autoscaling_policy" "scale_down" {
-  name                   = "${var.project_name}-scale-down"
-  autoscaling_group_name = aws_autoscaling_group.msab.name
-  policy_type            = "StepScaling"
-  adjustment_type        = "ChangeInCapacity"
-
-  step_adjustment {
-    scaling_adjustment          = -1
-    metric_interval_upper_bound = 0
-  }
-}
-
-# --- CloudWatch Alarm: High Connections (triggers scale up) ---
+# --- CloudWatch Alarm: High Connections (visibility only — no action) ---
 resource "aws_cloudwatch_metric_alarm" "high_connections" {
   alarm_name          = "${var.project_name}-high-connections"
   comparison_operator = "GreaterThanThreshold"
@@ -255,16 +246,15 @@ resource "aws_cloudwatch_metric_alarm" "high_connections" {
   period              = 60
   statistic           = "Average"
   threshold           = var.scale_up_threshold
-  alarm_description   = "Scale up when ActiveConnections > ${var.scale_up_threshold} for 3 minutes"
+  alarm_description   = "WARNING: ActiveConnections > ${var.scale_up_threshold} for 3 minutes"
 
-  alarm_actions = [aws_autoscaling_policy.scale_up.arn]
+  # No alarm_actions — Target Tracking handles scaling
+  alarm_actions = []
 
   dimensions = {}
-  # Note: No InstanceId dimension — we want the aggregate across all instances in the ASG
-  # CloudWatch will aggregate across all instances publishing to FlyLive/MSAB
 }
 
-# --- CloudWatch Alarm: Low Connections (triggers scale down) ---
+# --- CloudWatch Alarm: Low Connections (visibility only) ---
 resource "aws_cloudwatch_metric_alarm" "low_connections" {
   alarm_name          = "${var.project_name}-low-connections"
   comparison_operator = "LessThanThreshold"
@@ -274,9 +264,33 @@ resource "aws_cloudwatch_metric_alarm" "low_connections" {
   period              = 60
   statistic           = "Average"
   threshold           = var.scale_down_threshold
-  alarm_description   = "Scale down when ActiveConnections < ${var.scale_down_threshold} for 10 minutes"
+  alarm_description   = "INFO: ActiveConnections < ${var.scale_down_threshold} for 10 minutes"
 
-  alarm_actions = [aws_autoscaling_policy.scale_down.arn]
+  alarm_actions = []
 
   dimensions = {}
+}
+
+# --- CloudWatch Alarm: Zero Healthy Hosts (total outage detector) ---
+# AUDIT-024: Fires when ALL instances behind the NLB are unhealthy.
+# This is the earliest warning of a complete audio service outage.
+resource "aws_cloudwatch_metric_alarm" "zero_healthy_hosts" {
+  alarm_name          = "${var.project_name}-zero-healthy-hosts"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "HealthyHostCount"
+  namespace           = "AWS/NetworkELB"
+  period              = 60
+  statistic           = "Minimum"
+  threshold           = 1
+  alarm_description   = "CRITICAL: No healthy instances behind NLB — total audio outage!"
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    TargetGroup  = var.target_group_arn_suffix
+    LoadBalancer = var.load_balancer_arn_suffix
+  }
+
+  # TODO: Add SNS alarm_actions to get notified (email/SMS)
+  alarm_actions = []
 }

@@ -127,12 +127,13 @@ resource "aws_security_group" "msab" {
   }
 
   # SFU cascade: allow cross-region UDP for plainTransport RTP pipes
+  # AUDIT-010 FIX: restricted to VPC CIDRs only (was 0.0.0.0/0)
   ingress {
     description = "SFU cascade plainTransport (RTP/SRTP cross-region)"
     from_port   = 40000
     to_port     = 49999
     protocol    = "udp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.10.0.0/16"]
   }
 
   # All outbound

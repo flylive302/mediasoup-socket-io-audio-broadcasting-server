@@ -258,6 +258,10 @@ module "autoscaling_mumbai" {
   # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
   min_instances     = 2
   desired_instances = 2
+
+  # Zero Healthy Hosts alarm dimensions
+  target_group_arn_suffix  = module.loadbalancer_mumbai.target_group_arn_suffix
+  load_balancer_arn_suffix = module.loadbalancer_mumbai.nlb_arn_suffix
 }
 
 
@@ -291,6 +295,10 @@ module "autoscaling_frankfurt" {
   # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
   min_instances     = 2
   desired_instances = 2
+
+  # Zero Healthy Hosts alarm dimensions
+  target_group_arn_suffix  = module.loadbalancer_frankfurt.target_group_arn_suffix
+  load_balancer_arn_suffix = module.loadbalancer_frankfurt.nlb_arn_suffix
 }
 
 # =============================================================================
