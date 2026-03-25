@@ -31,7 +31,7 @@ export class GiftHandler {
       createHandler("gift:send", sendGiftSchema, async (payload, sock) => {
         const user = sock.data.user;
 
-        // GF-001 FIX: Verify sender is actually in the target room
+        // ── GATE ─────────────────────────────────────────────────
         if (!sock.rooms.has(payload.roomId)) {
           return { success: false, error: Errors.NOT_IN_ROOM };
         }
@@ -62,6 +62,8 @@ export class GiftHandler {
           return { success: false, error: Errors.RATE_LIMITED };
         }
 
+        // ── EXECUTE ──────────────────────────────────────────────
+
         const transaction = {
           transaction_id: randomUUID(),
           room_id: parseInt(payload.roomId, 10),
@@ -72,6 +74,8 @@ export class GiftHandler {
           timestamp: Date.now(),
           sender_socket_id: sock.id,
         };
+
+        // ── REACT ────────────────────────────────────────────────
 
         // GF-008 FIX: Explicitly pick emitted fields instead of spreading payload
         emitToRoom(sock, payload.roomId, "gift:received", {
