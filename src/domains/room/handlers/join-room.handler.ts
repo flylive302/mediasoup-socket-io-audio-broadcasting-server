@@ -76,8 +76,10 @@ async function processJoin(
   const userId = socket.data.user.id;
   clientManager.setClientRoom(socket.id, roomId);
 
-  // Build participant list from connected clients
-  const allClients = clientManager.getClientsInRoom(roomId);
+  // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
+  // sharing the same Redis adapter, not just the local process.
+  // This replaces the old clientManager.getClientsInRoom() which was in-memory only.
+  const remoteSockets = await io.in(roomId).fetchSockets();
   const participants: {
     id: number;
     name: string;
@@ -96,36 +98,54 @@ async function processJoin(
   }[] = [];
   const existingProducers: { producerId: string; userId: number }[] = [];
 
-  for (const c of allClients) {
+  // Deduplicate by userId (same user may have stale sockets across instances)
+  const seenUserIds = new Set<number>();
+
+  for (const rs of remoteSockets) {
+    const remoteUser = rs.data?.user;
+    if (!remoteUser || rs.id === socket.id) continue;
+    if (seenUserIds.has(remoteUser.id)) continue;
+    seenUserIds.add(remoteUser.id);
+
+    participants.push({
+      id: remoteUser.id,
+      name: remoteUser.name,
+      signature: remoteUser.signature,
+      avatar: remoteUser.avatar,
+      frame: remoteUser.frame,
+      gender: remoteUser.gender,
+      country: remoteUser.country,
+      phone: remoteUser.phone,
+      email: remoteUser.email,
+      date_of_birth: remoteUser.date_of_birth,
+      wealth_xp: remoteUser.wealth_xp,
+      charm_xp: remoteUser.charm_xp,
+      vip_level: remoteUser.vip_level ?? 0,
+      isSpeaker: false, // Will be updated below from local clientManager
+    });
+  }
+
+  // Producer tracking remains local — mediasoup producers only exist on the local instance
+  const allLocalClients = clientManager.getClientsInRoom(roomId);
+  for (const c of allLocalClients) {
     if (c.socketId === socket.id) continue;
 
-    // Verify socket is still connected
+    // BUG-2 FIX: Only verify local sockets (remote ones are validated by fetchSockets)
     const clientSocket = io.sockets.sockets.get(c.socketId);
     if (!clientSocket?.connected) {
       logger.warn(
         { socketId: c.socketId, userId: c.userId, roomId },
-        "Removing stale client",
+        "Removing stale local client",
       );
       clientManager.removeClient(c.socketId);
       continue;
     }
 
-    participants.push({
-      id: c.userId,
-      name: c.user.name,
-      signature: c.user.signature,
-      avatar: c.user.avatar,
-      frame: c.user.frame,
-      gender: c.user.gender,
-      country: c.user.country,
-      phone: c.user.phone,
-      email: c.user.email,
-      date_of_birth: c.user.date_of_birth,
-      wealth_xp: c.user.wealth_xp,
-      charm_xp: c.user.charm_xp,
-      vip_level: c.user.vip_level,
-      isSpeaker: c.isSpeaker,
-    });
+    // Update isSpeaker for local participants
+    const participant = participants.find((p) => p.id === c.userId);
+    if (participant) {
+      participant.isSpeaker = c.isSpeaker;
+    }
 
     const audioProducerId = c.producers.get("audio");
     if (audioProducerId) {

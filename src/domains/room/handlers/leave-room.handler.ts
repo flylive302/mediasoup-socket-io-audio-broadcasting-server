@@ -34,9 +34,6 @@ async function processLeave(
   // Clear user's seat if seated (using Redis)
   const seatResult = await seatRepository.leaveSeat(roomId, userId);
 
-  // Leave socket room
-  socket.leave(roomId);
-
   // Clear client from room index
   clientManager.clearClientRoom(socket.id);
 
@@ -46,6 +43,10 @@ async function processLeave(
     userRoomRepository.clearUserRoom(socket.data.user.id),
     autoCloseService.recordActivity(roomId),
   ]);
+
+  // BUG-5 FIX: Do NOT call socket.leave(roomId) here.
+  // It must happen AFTER emitToRoom in afterLeave(), otherwise
+  // the broadcast has no room to target and becomes a no-op.
 
   return { roomId, userId, seatResult, newCount };
 }
@@ -99,6 +100,9 @@ function afterLeave(
     { userId: socket.data.user.id },
     context.cascadeRelay,
   );
+
+  // BUG-5 FIX: Leave Socket.IO room AFTER emitting events so they reach members
+  socket.leave(roomId);
 }
 
 // ── Exported Handler ────────────────────────────────────────
