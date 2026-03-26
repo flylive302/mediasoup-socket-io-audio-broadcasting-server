@@ -93,6 +93,7 @@ resource "aws_launch_template" "msab" {
     cascade_enabled         = var.cascade_enabled
     cloudflare_turn_api_key = var.cloudflare_turn_api_key
     cloudflare_turn_key_id  = var.cloudflare_turn_key_id
+    image_tag               = var.image_tag
   }))
 
   # Metadata options (IMDSv2 required)
