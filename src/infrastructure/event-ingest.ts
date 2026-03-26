@@ -75,43 +75,25 @@ export const createEventIngestRoutes = (
       }
 
       // --- Authentication ---
-      const internalKey = request.headers["x-internal-key"] as string | undefined;
-      const isSnsNotification = snsMessageType === "Notification";
+      // Direct POST from Laravel sends X-Internal-Key header.
+      // SNS sends the key as ?key= query parameter (SNS cannot send custom headers).
+      const internalKey =
+        (request.headers["x-internal-key"] as string | undefined) ??
+        (request.query as Record<string, string>)?.key;
 
-      if (isSnsNotification) {
-        // AUDIT-009 FIX: Validate SNS TopicArn to prevent spoofed notifications.
-        // AWS SNS always includes the TopicArn in the notification body.
-        const body = request.body as Record<string, unknown>;
-        const topicArn = body?.TopicArn as string | undefined;
-        const expectedTopicArn = config.MSAB_SNS_TOPIC_ARN;
-
-        if (expectedTopicArn && topicArn !== expectedTopicArn) {
-          fastify.log.warn({ topicArn, expectedTopicArn }, "SNS notification with unexpected TopicArn — rejected");
-          return reply.code(403).send({ status: "error", message: "Invalid SNS TopicArn" });
-        }
-      } else if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 
       // --- Parse Event ---
       let raw: unknown = request.body;
 
-      // If body is a string (SNS raw message), parse it
+      // If body is a string (SNS raw message or text/plain), parse it
       if (typeof raw === "string") {
         try {
           raw = JSON.parse(raw);
         } catch {
           return reply.code(400).send({ status: "error", message: "Invalid JSON" });
-        }
-      }
-
-      // SNS standard delivery wraps the actual message in a Message field.
-      // Unwrap it so the schema validates the inner event, not the envelope.
-      if (isSnsNotification && typeof (raw as Record<string, unknown>)?.Message === "string") {
-        try {
-          raw = JSON.parse((raw as Record<string, unknown>).Message as string);
-        } catch {
-          return reply.code(400).send({ status: "error", message: "Invalid SNS Message JSON" });
         }
       }
 

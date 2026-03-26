@@ -291,6 +291,6 @@ resource "aws_cloudwatch_metric_alarm" "zero_healthy_hosts" {
     LoadBalancer = var.load_balancer_arn_suffix
   }
 
-  # TODO: Add SNS alarm_actions to get notified (email/SMS)
-  alarm_actions = []
+  alarm_actions = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
+  ok_actions    = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
 }

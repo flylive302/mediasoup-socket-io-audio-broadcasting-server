@@ -13,12 +13,16 @@ resource "aws_sns_topic" "msab_events" {
 }
 
 # --- HTTPS Subscription (one per regional MSAB endpoint) ---
+# Each endpoint URL includes the internal key as a query parameter for authentication.
+# SNS HTTPS subscriptions do not support custom request headers, so the key is passed
+# in the URL. The /api/events route reads it from either the X-Internal-Key header
+# (for direct Laravel POST) or the ?key= query parameter (for SNS delivery).
 resource "aws_sns_topic_subscription" "msab_endpoints" {
   for_each = toset(var.msab_endpoint_urls)
 
   topic_arn = aws_sns_topic.msab_events.arn
   protocol  = "https"
-  endpoint  = each.value
+  endpoint  = "${each.value}?key=${var.laravel_internal_key}"
 
   # Raw message delivery = skip SNS envelope, send just the JSON body
   raw_message_delivery = true

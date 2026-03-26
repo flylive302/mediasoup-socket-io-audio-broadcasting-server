@@ -110,7 +110,7 @@ variable "audio_domain" {
 variable "cors_origins" {
   description = "CORS origins for the app"
   type        = string
-  default     = "https://flyliveapp.com,https://api.flyliveapp.com"
+  default     = "https://flyliveapp.com,https://www.flyliveapp.com"
 }
 
 variable "laravel_api_url" {
@@ -130,7 +130,7 @@ variable "min_instances" {
 variable "max_instances" {
   description = "Maximum number of instances in the ASG"
   type        = number
-  default     = 3
+  default     = 15
 }
 
 variable "desired_instances" {
@@ -190,6 +190,18 @@ variable "target_group_arn_suffix" {
 
 variable "load_balancer_arn_suffix" {
   description = "ARN suffix of the NLB (for CloudWatch dimensions)"
+  type        = string
+  default     = ""
+}
+
+variable "image_tag" {
+  description = "Docker image tag to deploy (SHA for production, latest for dev)"
+  type        = string
+  default     = "latest"
+}
+
+variable "alarm_notification_topic_arn" {
+  description = "SNS topic ARN for alarm notifications (zero healthy hosts, etc.)"
   type        = string
   default     = ""
 }

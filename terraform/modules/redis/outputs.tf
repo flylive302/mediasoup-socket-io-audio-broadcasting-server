@@ -1,9 +1,10 @@
 # Redis Module — Outputs
 
 output "redis_host" {
-  value = aws_elasticache_cluster.main.cache_nodes[0].address
+  description = "Primary endpoint for the Redis replication group"
+  value       = aws_elasticache_replication_group.main.primary_endpoint_address
 }
 
 output "redis_port" {
-  value = aws_elasticache_cluster.main.cache_nodes[0].port
+  value = 6379
 }

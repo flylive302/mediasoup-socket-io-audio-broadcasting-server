@@ -94,6 +94,28 @@ resource "aws_iam_role_policy" "ec2_describe" {
   })
 }
 
+# --- CloudWatch Logs Policy (for Docker awslogs driver) ---
+resource "aws_iam_role_policy" "cloudwatch_logs" {
+  name = "${var.project_name}-cloudwatch-logs"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = "arn:aws:logs:*:*:log-group:/flylive-audio/*"
+      }
+    ]
+  })
+}
+
 # --- ECR Pull Policy ---
 resource "aws_iam_role_policy" "ecr_pull" {
   name = "${var.project_name}-ecr-pull"
@@ -120,6 +142,32 @@ resource "aws_iam_role_policy" "ecr_pull" {
       }
     ]
   })
+}
+
+# --- SSM Parameter Store — fetch secrets at boot ---
+resource "aws_iam_role_policy" "ssm_parameters" {
+  name = "${var.project_name}-ssm-parameters"
+  role = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = "arn:aws:ssm:*:*:parameter/${var.project_name}/*"
+      }
+    ]
+  })
+}
+
+# --- SSM Session Manager — replaces SSH (browser-based shell via AWS Console) ---
+resource "aws_iam_role_policy_attachment" "ssm_session_manager" {
+  role       = aws_iam_role.msab.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 # --- Instance Profile ---

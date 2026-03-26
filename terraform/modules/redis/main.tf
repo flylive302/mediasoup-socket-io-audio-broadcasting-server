@@ -1,5 +1,5 @@
 # =============================================================================
-# Redis Module — ElastiCache Valkey/Redis
+# Redis Module — ElastiCache Replication Group (Multi-AZ, TLS, AUTH)
 # =============================================================================
 
 terraform {
@@ -35,17 +35,31 @@ resource "aws_elasticache_parameter_group" "main" {
   }
 }
 
-# --- ElastiCache Cluster ---
-resource "aws_elasticache_cluster" "main" {
-  cluster_id           = "${var.project_name}-redis"
+# --- ElastiCache Replication Group (Multi-AZ, TLS, AUTH) ---
+resource "aws_elasticache_replication_group" "main" {
+  replication_group_id = "${var.project_name}-redis"
+  description          = "${var.project_name} Redis — Multi-AZ with TLS and AUTH"
+
   engine               = "redis"
   engine_version       = "7.1"
   node_type            = var.redis_node_type
-  num_cache_nodes      = 1
+  num_cache_clusters   = 2 # Primary + 1 replica in different AZ
   parameter_group_name = aws_elasticache_parameter_group.main.name
   subnet_group_name    = aws_elasticache_subnet_group.main.name
   security_group_ids   = [var.redis_security_group_id]
   port                 = 6379
+
+  # High Availability
+  automatic_failover_enabled = true
+  multi_az_enabled           = true
+
+  # Encryption
+  transit_encryption_enabled = true
+  at_rest_encryption_enabled = true
+  auth_token                 = var.redis_auth_token
+
+  # Maintenance
+  apply_immediately = true
 
   tags = {
     Name    = "${var.project_name}-redis"

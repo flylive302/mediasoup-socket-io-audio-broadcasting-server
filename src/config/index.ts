@@ -93,9 +93,6 @@ const configSchema = z.object({
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
 
-  // SNS Topic ARN for event ingest validation (optional — if set, validates TopicArn on inbound SNS)
-  MSAB_SNS_TOPIC_ARN: z.string().optional(),
-
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge

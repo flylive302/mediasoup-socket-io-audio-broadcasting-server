@@ -29,7 +29,13 @@ variable "ssh_public_key_path" {
 variable "redis_node_type" {
   description = "ElastiCache node type"
   type        = string
-  default     = "cache.t4g.micro"
+  default     = "cache.r7g.large"
+}
+
+variable "redis_auth_token" {
+  description = "AUTH token for ElastiCache Redis (16-128 chars, no @, /, or quotes)"
+  type        = string
+  sensitive   = true
 }
 
 variable "app_port" {

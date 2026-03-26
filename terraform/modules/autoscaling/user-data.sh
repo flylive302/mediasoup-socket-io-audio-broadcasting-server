@@ -82,28 +82,44 @@ ECR_REGISTRY=$(echo "${ecr_repo_url}" | cut -d'/' -f1)
 # Authenticate Docker with ECR (uses instance IAM role)
 aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-# Pull the latest image
-docker pull ${ecr_repo_url}:latest
+# Pull the pinned image
+docker pull ${ecr_repo_url}:${image_tag}
 
-# --- Create .env file ---
+# --- Fetch Secrets from SSM Parameter Store ---
+# Secrets are KMS-encrypted in SSM and never written to disk.
+# They are passed directly to Docker via -e flags.
+SSM_PREFIX="/${project_name}"
+REGION="${region}"
+
+fetch_ssm() {
+  aws ssm get-parameter \
+    --name "$SSM_PREFIX/$1" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text \
+    --region "$REGION" 2>/dev/null || echo ""
+}
+
+SECRET_JWT=$(fetch_ssm "jwt-secret")
+SECRET_INTERNAL_KEY=$(fetch_ssm "laravel-internal-key")
+SECRET_SESSION=$(fetch_ssm "session-secret")
+SECRET_TURN_API_KEY=$(fetch_ssm "cloudflare-turn-api-key")
+SECRET_REDIS_AUTH=$(fetch_ssm "redis-auth-token")
+
+# --- Create .env file (NON-SENSITIVE config only) ---
 cat > .env << ENVEOF
 NODE_ENV=production
 PORT=${app_port}
 LOG_LEVEL=info
 
-# Redis
+# Redis (host/port only — password passed via docker -e)
 REDIS_HOST=${redis_host}
 REDIS_PORT=${redis_port}
-REDIS_PASSWORD=${redis_password}
 REDIS_DB=3
-REDIS_TLS=false
-
-# JWT
-JWT_SECRET=${jwt_secret}
+REDIS_TLS=true
 
 # Laravel
 LARAVEL_API_URL=${laravel_api_url}
-LARAVEL_INTERNAL_KEY=${laravel_internal_key}
 
 # MediaSoup
 MEDIASOUP_LISTEN_IP=0.0.0.0
@@ -120,7 +136,6 @@ MAX_LISTENERS_PER_DISTRIBUTION_ROUTER=700
 
 # Security
 CORS_ORIGINS=${cors_origins}
-SESSION_SECRET=${session_secret}
 
 # Laravel Events
 MSAB_EVENTS_CHANNEL=flylive:msab:events
@@ -132,32 +147,40 @@ CLOUDWATCH_ENABLED=true
 # Node.js memory limit (prevents OOM from killing the entire host)
 NODE_OPTIONS=--max-old-space-size=2048
 
-# SNS Topic ARN for event ingest validation
-MSAB_SNS_TOPIC_ARN=arn:aws:sns:ap-south-1:778477255323:flylive-audio-msab-events
-
 # AWS Region (for cross-region room routing)
 AWS_REGION=${region}
 
-# SFU Cascade (Phase 5)
+# SFU Cascade
 CASCADE_ENABLED=${cascade_enabled}
 CASCADE_THRESHOLD=1800
-INTERNAL_API_KEY=${laravel_internal_key}
 PUBLIC_IP=$PUBLIC_IP
 
 # ICE Servers — Cloudflare Realtime TURN (dynamic credentials)
-CLOUDFLARE_TURN_API_KEY=${cloudflare_turn_api_key}
 CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 ENVEOF
 
-# --- Run Container (AUDIT-016 FIX: memory limit prevents OOM killing entire host) ---
+# --- Run Container ---
+# Secrets passed via -e flags (from SSM), non-sensitive config via --env-file
+# Log shipping via CloudWatch Logs driver — no local log files
 docker run -d \
   --name msab \
   --restart unless-stopped \
   --network host \
   --memory=7g \
   --memory-swap=7g \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=${region} \
+  --log-opt awslogs-group=/flylive-audio/msab \
+  --log-opt awslogs-stream-prefix=msab \
+  --log-opt awslogs-create-group=true \
   --env-file .env \
-  ${ecr_repo_url}:latest
+  -e "JWT_SECRET=$SECRET_JWT" \
+  -e "LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY" \
+  -e "INTERNAL_API_KEY=$SECRET_INTERNAL_KEY" \
+  -e "SESSION_SECRET=$SECRET_SESSION" \
+  -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
+  -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
+  ${ecr_repo_url}:${image_tag}
 
 # --- Install Lifecycle Drain Service ---
 # AUDIT-017 FIX: Embed drain script inline (removes GitHub and Docker cp dependencies)
@@ -166,8 +189,8 @@ cat > "$APP_DIR/scripts/aws/lifecycle-drain.sh" << 'DRAINEOF'
 #!/bin/bash
 set -euo pipefail
 
-APP_PORT="${MSAB_PORT:-3030}"
-INTERNAL_KEY="${LARAVEL_INTERNAL_KEY:-}"
+APP_PORT="$${MSAB_PORT:-3030}"
+INTERNAL_KEY="$${LARAVEL_INTERNAL_KEY:-}"
 POLL_INTERVAL=10
 DRAIN_POLL=5
 MAX_DRAIN_WAIT=900
@@ -215,7 +238,7 @@ while true; do
 
     ELAPSED=0
     while [ $ELAPSED -lt $MAX_DRAIN_WAIT ]; do
-      STATUS=$(curl -s "http://localhost:$APP_PORT/admin/status" 2>/dev/null || echo '{}')
+      STATUS=$(curl -s -H "X-Internal-Key: $INTERNAL_KEY" "http://localhost:$APP_PORT/admin/status" 2>/dev/null || echo '{}')
       DRAINED=$(echo "$STATUS" | grep -o '"drained":true' || true)
       ROOMS=$(echo "$STATUS" | grep -o '"rooms":[0-9]*' | grep -o '[0-9]*' || echo "?")
 
@@ -224,7 +247,7 @@ while true; do
         break
       fi
 
-      log "Waiting for drain... rooms=$ROOMS elapsed=${ELAPSED}s/${MAX_DRAIN_WAIT}s"
+      log "Waiting for drain... rooms=$ROOMS elapsed=$${ELAPSED}s/$${MAX_DRAIN_WAIT}s"
       sleep $DRAIN_POLL
       ELAPSED=$((ELAPSED + DRAIN_POLL))
     done

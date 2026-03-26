@@ -5,6 +5,10 @@ import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
 import { startDrain, isDraining } from "./infrastructure/drain.js";
 
+// ─── Module-Level Shutdown Reference ─────────────────────────────
+// Set after bootstrap so process error handlers can invoke graceful shutdown.
+let shutdownFn: ((signal: string) => Promise<void>) | null = null;
+
 const start = async () => {
   try {
     // Validate config and connect to Redis early
@@ -66,21 +70,20 @@ const start = async () => {
         // 2. Close Socket.IO (disconnect remaining clients)
         io.close();
 
-        // 2. Stop auto-close job
+        // 3. Stop auto-close job
         autoCloseJob.stop();
-
 
         if (giftHandler) {
           await giftHandler.stop();
         }
 
-        // 5. Shutdown mediasoup workers
+        // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
 
-        // 6. Stop CloudWatch publisher
+        // 5. Stop CloudWatch publisher
         stopCloudWatchPublisher();
 
-        // 7. Close Redis connections (both pub and sub clients)
+        // 6. Close Redis connections (both pub and sub clients)
         const pubClient = getRedisClient();
         if (pubClient.status === "ready") {
           await pubClient.quit();
@@ -89,7 +92,7 @@ const start = async () => {
           await subClient.quit();
         }
 
-        // 8. Close Fastify
+        // 7. Close Fastify
         await server.close();
 
         clearTimeout(shutdownTimeout);
@@ -100,6 +103,9 @@ const start = async () => {
         process.exit(1);
       }
     };
+
+    // Expose to module-level error handlers
+    shutdownFn = gracefulShutdown;
 
     process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
     process.on("SIGINT", () => gracefulShutdown("SIGINT"));
@@ -131,7 +137,11 @@ process.on("unhandledRejection", (err) => {
       { err, count: rejectionTimestamps.length, windowMs: REJECTION_WINDOW_MS },
       `Unhandled Rejection: ${REJECTION_THRESHOLD} rejections in ${REJECTION_WINDOW_MS / 1000}s — shutting down`,
     );
-    process.exit(1);
+    if (shutdownFn) {
+      void shutdownFn("unhandledRejection_threshold");
+    } else {
+      process.exit(1);
+    }
   } else {
     logger.error(
       { err, count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
@@ -142,9 +152,18 @@ process.on("unhandledRejection", (err) => {
 
 process.on("uncaughtException", (err) => {
   logger.fatal({ err }, "Uncaught Exception — initiating graceful shutdown");
-  // Give a brief moment for the log to flush, then exit
-  // The process is in an undefined state — we cannot recover, but we can exit cleanly
-  setTimeout(() => process.exit(1), 3_000);
+  // Process is in undefined state after uncaughtException.
+  // Attempt graceful drain if possible, with a hard 3s deadline.
+  if (shutdownFn) {
+    const forceExit = setTimeout(() => process.exit(1), 3_000);
+    void shutdownFn("uncaughtException").finally(() => {
+      clearTimeout(forceExit);
+      process.exit(1);
+    });
+  } else {
+    // Server hasn't bootstrapped yet — just exit
+    setTimeout(() => process.exit(1), 1_000);
+  }
 });
 
 start();

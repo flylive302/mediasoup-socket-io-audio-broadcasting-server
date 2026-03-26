@@ -285,6 +285,42 @@ jobs:
           echo "❌ Timed out after ${MAX_WAIT}s waiting for instance refresh"
           exit 1
 
+      - name: Health Soak — Verify stability (${{ matrix.region.name }})
+        run: |
+          echo "🕐 Starting 3-minute health soak for ${{ matrix.region.name }}..."
+          echo "   New instances must stay healthy for 180s before proceeding to next region."
+
+          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
+          SOAK_DURATION=180
+          INTERVAL=30
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $SOAK_DURATION ]; do
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+
+            # Check healthy instance count
+            HEALTHY=$(aws autoscaling describe-auto-scaling-groups \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --query "AutoScalingGroups[0].Instances[?HealthStatus=='Healthy'] | length(@)" \
+              --output text 2>/dev/null || echo "0")
+
+            TOTAL=$(aws autoscaling describe-auto-scaling-groups \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --query "AutoScalingGroups[0].Instances | length(@)" \
+              --output text 2>/dev/null || echo "0")
+
+            echo "  ⏳ Health soak: ${ELAPSED}s/${SOAK_DURATION}s — ${HEALTHY}/${TOTAL} instances healthy"
+
+            if [ "$HEALTHY" -lt 1 ]; then
+              echo "❌ SOAK FAILED: Zero healthy instances at ${ELAPSED}s — aborting deploy!"
+              echo "   ⛔ Next region will NOT be deployed."
+              exit 1
+            fi
+          done
+
+          echo "✅ Health soak passed — all instances stable for ${SOAK_DURATION}s"
+
       - name: Post Configure AWS Credentials
         if: always()
         uses: aws-actions/configure-aws-credentials@v4

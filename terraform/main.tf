@@ -92,6 +92,7 @@ module "redis_mumbai" {
   redis_node_type         = var.redis_node_type
   private_subnet_ids      = module.networking_mumbai.private_subnet_ids
   redis_security_group_id = module.networking_mumbai.redis_security_group_id
+  redis_auth_token        = var.redis_auth_token
 }
 
 module "ssl_mumbai" {
@@ -137,6 +138,7 @@ module "redis_frankfurt" {
   redis_node_type         = var.redis_node_type
   private_subnet_ids      = module.networking_frankfurt.private_subnet_ids
   redis_security_group_id = module.networking_frankfurt.redis_security_group_id
+  redis_auth_token        = var.redis_auth_token
 }
 
 module "ssl_frankfurt" {
@@ -193,21 +195,16 @@ data "aws_caller_identity" "current" {}
 module "sns" {
   source = "./modules/sns"
 
-  project_name   = var.project_name
-  aws_account_id = data.aws_caller_identity.current.account_id
+  project_name         = var.project_name
+  aws_account_id       = data.aws_caller_identity.current.account_id
+  laravel_internal_key = var.laravel_internal_key
+
+  # Fan-out to BOTH regional NLB endpoints directly (not via GA)
+  # GA would route to nearest region only — we need ALL regions to receive every event
   msab_endpoint_urls = [
-    "https://${var.audio_domain}/api/events",
+    "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events",
+    "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
   ]
-  # Note: SNS delivers to audio.flyliveapp.com which resolves to Global Accelerator.
-  # GA routes to the nearest healthy NLB → EC2. Since SNS publishes from ap-south-1,
-  # it will hit the Mumbai endpoint. For multi-region fan-out, we use a single
-  # subscription because GA routes to the nearest region from the SNS publish location.
-  #
-  # If you need ALL regions to receive every event (not just nearest), uncomment:
-  # msab_endpoint_urls = [
-  #   "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events",
-  #   "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
-  # ]
 }
 
 # =============================================================================
@@ -218,6 +215,21 @@ module "iam" {
   source = "./modules/iam"
 
   project_name = var.project_name
+}
+
+# =============================================================================
+# Secrets: SSM Parameter Store (encrypted at rest, fetched at boot via IAM)
+# =============================================================================
+
+module "ssm" {
+  source = "./modules/ssm"
+
+  project_name            = var.project_name
+  jwt_secret              = var.jwt_secret
+  laravel_internal_key    = var.laravel_internal_key
+  session_secret          = var.session_secret
+  cloudflare_turn_api_key = var.cloudflare_turn_api_key
+  redis_auth_token        = var.redis_auth_token
 }
 
 # =============================================================================
@@ -246,7 +258,7 @@ module "autoscaling_mumbai" {
   rtc_max_port           = var.rtc_max_port
   redis_host             = module.redis_mumbai.redis_host
   redis_port             = module.redis_mumbai.redis_port
-  redis_password         = ""
+  redis_password         = var.redis_auth_token
   laravel_internal_key   = var.laravel_internal_key
   jwt_secret             = var.jwt_secret
   session_secret         = var.session_secret
@@ -260,8 +272,9 @@ module "autoscaling_mumbai" {
   desired_instances = 2
 
   # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix  = module.loadbalancer_mumbai.target_group_arn_suffix
-  load_balancer_arn_suffix = module.loadbalancer_mumbai.nlb_arn_suffix
+  target_group_arn_suffix       = module.loadbalancer_mumbai.target_group_arn_suffix
+  load_balancer_arn_suffix      = module.loadbalancer_mumbai.nlb_arn_suffix
+  alarm_notification_topic_arn  = module.cloudwatch_mumbai.alerts_topic_arn
 }
 
 
@@ -283,7 +296,7 @@ module "autoscaling_frankfurt" {
   rtc_max_port           = var.rtc_max_port
   redis_host             = module.redis_frankfurt.redis_host
   redis_port             = module.redis_frankfurt.redis_port
-  redis_password         = ""
+  redis_password         = var.redis_auth_token
   laravel_internal_key   = var.laravel_internal_key
   jwt_secret             = var.jwt_secret
   session_secret         = var.session_secret
@@ -297,8 +310,9 @@ module "autoscaling_frankfurt" {
   desired_instances = 2
 
   # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix  = module.loadbalancer_frankfurt.target_group_arn_suffix
-  load_balancer_arn_suffix = module.loadbalancer_frankfurt.nlb_arn_suffix
+  target_group_arn_suffix       = module.loadbalancer_frankfurt.target_group_arn_suffix
+  load_balancer_arn_suffix      = module.loadbalancer_frankfurt.nlb_arn_suffix
+  alarm_notification_topic_arn  = module.cloudwatch_frankfurt.alerts_topic_arn
 }
 
 # =============================================================================
@@ -311,4 +325,12 @@ module "cloudwatch_mumbai" {
 
   project_name = var.project_name
   aws_region   = "ap-south-1"
+}
+
+module "cloudwatch_frankfurt" {
+  source    = "./modules/cloudwatch"
+  providers = { aws = aws.frankfurt }
+
+  project_name = var.project_name
+  aws_region   = "eu-central-1"
 }
