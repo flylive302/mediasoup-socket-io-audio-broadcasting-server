@@ -37,7 +37,7 @@ resource "aws_elasticache_parameter_group" "main" {
 
 # --- ElastiCache Replication Group (Multi-AZ, TLS, AUTH) ---
 resource "aws_elasticache_replication_group" "main" {
-  replication_group_id = "${var.project_name}-redis"
+  replication_group_id = "${var.project_name} - Redis"
   description          = "${var.project_name} Redis - Multi-AZ with TLS and AUTH"
 
   engine               = "redis"
