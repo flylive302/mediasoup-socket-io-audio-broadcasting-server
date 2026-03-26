@@ -161,18 +161,17 @@ ENVEOF
 
 # --- Run Container ---
 # Secrets passed via -e flags (from SSM), non-sensitive config via --env-file
-# Log shipping via CloudWatch Logs driver — no local log files
+# NOTE: awslogs Docker log driver rejected awslogs-stream-prefix on Docker 29.x/Ubuntu 24.04.
+# Using json-file with rotation instead. CloudWatch shipping via CW Agent can be added later.
 docker run -d \
   --name msab \
   --restart unless-stopped \
   --network host \
   --memory=7g \
   --memory-swap=7g \
-  --log-driver=awslogs \
-  --log-opt awslogs-region=${region} \
-  --log-opt awslogs-group=/flylive-audio/msab \
-  --log-opt awslogs-stream-prefix=msab \
-  --log-opt awslogs-create-group=true \
+  --log-driver=json-file \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
   --env-file .env \
   -e "JWT_SECRET=$SECRET_JWT" \
   -e "LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY" \
