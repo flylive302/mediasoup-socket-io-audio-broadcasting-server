@@ -15,6 +15,7 @@
  */
 import type { Socket, Server, Namespace } from "socket.io";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 // ─── Relay Helper ───────────────────────────────────────────────
 
@@ -25,8 +26,8 @@ function relayCrossRegion(
   data: unknown,
 ): void {
   if (cascadeRelay?.hasRemotes(roomId)) {
-    cascadeRelay.relayToRemote(roomId, event, data).catch(() => {
-      // Relay errors are logged inside CascadeRelay — suppress here
+    cascadeRelay.relayToRemote(roomId, event, data).catch((err) => {
+      logger.warn({ err, roomId, event }, "Cross-region relay failed");
     });
   }
 }

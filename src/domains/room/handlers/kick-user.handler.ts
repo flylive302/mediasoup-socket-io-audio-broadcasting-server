@@ -61,28 +61,27 @@ export const kickUserHandler = createHandler(
       );
     }
 
-    // 5. Find the target user's socket(s) and emit kick event
-    const targetSocketIds = await context.userSocketRepository.getSocketIds(targetUserId);
-    for (const socketId of targetSocketIds) {
-      const targetSocket = context.io.sockets.sockets.get(socketId);
-      if (targetSocket) {
-        // Emit kick notification to the target user
-        targetSocket.emit("room:kicked", {
-          roomId,
-          reason: "kicked_by_admin",
-        });
+    // 5. Find all target sockets in this room (cross-node safe) and emit kick event
+    const targetUserSockets = (await context.io.in(roomId).fetchSockets()).filter(
+      (memberSocket) => String(memberSocket.data?.user?.id) === targetUserIdStr,
+    );
 
-        // Force-leave the user from the Socket.IO room
-        targetSocket.leave(roomId);
+    for (const targetSocket of targetUserSockets) {
+      targetSocket.emit("room:kicked", {
+        roomId,
+        reason: "kicked_by_admin",
+      });
 
-        // Clean up client manager state
-        context.clientManager.clearClientRoom(socketId);
-      }
+      targetSocket.leave(roomId);
+
+      // Local-only cleanup; remote sockets may not be tracked by this process.
+      context.clientManager.clearClientRoom(targetSocket.id);
     }
 
     // 6. Update room state
+    const removedParticipants = targetUserSockets.length;
     const [newCount] = await Promise.all([
-      context.roomManager.state.adjustParticipantCount(roomId, -1),
+      context.roomManager.state.adjustParticipantCount(roomId, removedParticipants > 0 ? -removedParticipants : 0),
       context.userRoomRepository.clearUserRoom(targetUserId),
     ]);
 
@@ -103,10 +102,12 @@ export const kickUserHandler = createHandler(
     }
 
     // 8. Broadcast to remaining room members (cascade-aware)
-    emitToRoom(socket, roomId, "room:userLeft", { userId: targetUserId }, context.cascadeRelay);
+    if (removedParticipants > 0) {
+      emitToRoom(socket, roomId, "room:userLeft", { userId: targetUserId }, context.cascadeRelay);
+    }
 
     logger.info(
-      { roomId, targetUserId, kickedBy: requesterId },
+      { roomId, targetUserId, kickedBy: requesterId, removedParticipants },
       "User kicked from room",
     );
 

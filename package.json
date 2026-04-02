@@ -15,7 +15,8 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src",
     "format": "prettier --write src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "architecture:check": "./scripts/architecture-check.sh"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.998.0",

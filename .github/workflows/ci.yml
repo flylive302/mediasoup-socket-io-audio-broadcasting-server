@@ -34,6 +34,9 @@ jobs:
       
     - name: Lint
       run: npm run lint --if-present
+
+    - name: Architecture Guardrails
+      run: npm run architecture:check
       
     - name: Test
       run: npm test

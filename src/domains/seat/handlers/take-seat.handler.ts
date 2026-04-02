@@ -40,7 +40,9 @@ export const takeSeatHandler = createHandler(
     }, context.cascadeRelay);
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
-    context.autoCloseService.recordActivity(roomId).catch(() => {});
+    context.autoCloseService
+      .recordActivity(roomId)
+      .catch((err) => logger.warn({ err, roomId, userId }, "Failed to record seat activity"));
 
     return { success: true };
   },

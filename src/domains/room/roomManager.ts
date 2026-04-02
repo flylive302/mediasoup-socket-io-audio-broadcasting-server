@@ -190,7 +190,9 @@ export class RoomManager {
     const closePayload = { roomId, reason, timestamp: Date.now() };
     this.io.to(roomId).emit("room:closed", closePayload);
     if (this.cascadeRelay?.hasRemotes(roomId)) {
-      this.cascadeRelay.relayToRemote(roomId, "room:closed", closePayload).catch(() => {});
+      this.cascadeRelay
+        .relayToRemote(roomId, "room:closed", closePayload)
+        .catch((err) => logger.error({ err, roomId }, "Failed to relay room close event"));
     }
 
     // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel)
