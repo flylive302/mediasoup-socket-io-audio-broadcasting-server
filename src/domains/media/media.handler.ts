@@ -19,6 +19,7 @@ import {
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { Errors } from "@src/shared/errors.js";
 import { getIceServers } from "@src/config/iceServers.js";
 import type { Socket } from "socket.io";
 
@@ -32,12 +33,12 @@ const transportCreateHandler = createHandler(
     // SEC-MED-001: Limit transports per client (1 producer + 1 consumer max)
     const client = context.clientManager.getClient(socket.id);
     if (client && client.transports.size >= 2) {
-      return { success: false, error: "Transport limit reached" };
+      return { success: false, error: Errors.TRANSPORT_LIMIT };
     }
 
     const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
-      return { success: false, error: "Room not found" };
+      return { success: false, error: Errors.ROOM_NOT_FOUND };
     }
 
     const transport = await cluster.createWebRtcTransport(type === "producer");
@@ -70,7 +71,7 @@ const transportConnectHandler = createHandler(
     const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
-      return { success: false, error: "Transport not found" };
+      return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
     }
 
     await transport.connect({
@@ -90,7 +91,7 @@ const audioProduceHandler = createHandler(
     const transport = cluster?.getTransport(transportId);
 
     if (!transport) {
-      return { success: false, error: "Transport not found" };
+      return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
     }
 
     const producer = await transport.produce({
@@ -152,7 +153,7 @@ const audioConsumeHandler = createHandler(
     const { roomId, transportId, producerId, rtpCapabilities } = payload;
     const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
-      return { success: false, error: "Room not found" };
+      return { success: false, error: Errors.ROOM_NOT_FOUND };
     }
 
     // Check if the source producer can be consumed
@@ -162,7 +163,7 @@ const audioConsumeHandler = createHandler(
         rtpCapabilities as mediasoup.types.RtpCapabilities,
       )
     ) {
-      return { success: false, error: "Cannot consume" };
+      return { success: false, error: Errors.CANNOT_CONSUME };
     }
 
     // cluster.consume() resolves piped producer ID and creates consumer
@@ -192,12 +193,12 @@ const consumerResumeHandler = createHandler(
     const { roomId, consumerId } = payload;
     const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
-      return { success: false, error: "Room not found" };
+      return { success: false, error: Errors.ROOM_NOT_FOUND };
     }
 
     const consumer = cluster.getConsumer(consumerId);
     if (!consumer) {
-      return { success: false, error: "Consumer not found" };
+      return { success: false, error: Errors.CONSUMER_NOT_FOUND };
     }
 
     await consumer.resume();
@@ -215,12 +216,12 @@ const selfMuteHandler = createHandler(
     const producer = cluster?.getProducer(producerId);
 
     if (!producer) {
-      return { success: false, error: "Producer not found" };
+      return { success: false, error: Errors.PRODUCER_NOT_FOUND };
     }
 
     // RT-LOW-001: Verify requesting socket owns this producer
     if (producer.appData.userId !== socket.data.user.id) {
-      return { success: false, error: "Not your producer" };
+      return { success: false, error: Errors.NOT_PRODUCER_OWNER };
     }
 
     await producer.pause();
@@ -250,12 +251,12 @@ const selfUnmuteHandler = createHandler(
     const producer = cluster?.getProducer(producerId);
 
     if (!producer) {
-      return { success: false, error: "Producer not found" };
+      return { success: false, error: Errors.PRODUCER_NOT_FOUND };
     }
 
     // RT-LOW-001: Verify requesting socket owns this producer
     if (producer.appData.userId !== socket.data.user.id) {
-      return { success: false, error: "Not your producer" };
+      return { success: false, error: Errors.NOT_PRODUCER_OWNER };
     }
 
     await producer.resume();

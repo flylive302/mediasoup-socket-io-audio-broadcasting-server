@@ -13,6 +13,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { getUserRoomSchema, profileSyncSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { Errors } from "@src/shared/errors.js";
+import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
 import type { User } from "@src/auth/types.js";
 
 /**
@@ -54,26 +55,13 @@ const profileSyncHandler = createHandler(
 
     const { profile } = payload;
 
-    // 1. Update ClientManager in-memory user data
-    const affectedRooms = clientManager.updateUserProfile(
+    // A-2 FIX: Use shared profile sync utility (DRY with event-router)
+    const affectedRooms = await syncUserProfileInMemory(
+      io,
+      clientManager,
       user.id,
       profile as Partial<User>,
     );
-
-    // 2. Sync socket.data.user on all live sockets for this user
-    for (const [, s] of io.sockets.sockets) {
-      if (s.data?.user?.id === user.id) {
-        s.data.user = { ...s.data.user, ...profile };
-      }
-    }
-
-    // 3. Broadcast to rooms so other clients can refresh UI
-    for (const roomId of affectedRooms) {
-      io.to(roomId).emit("user:profile_updated", {
-        user_id: user.id,
-        profile,
-      });
-    }
 
     logger.info(
       { userId: user.id, rooms: affectedRooms.size, fields: Object.keys(profile) },

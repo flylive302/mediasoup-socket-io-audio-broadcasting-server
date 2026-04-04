@@ -57,6 +57,11 @@ export async function isVipAntiKickProtected(
 /**
  * Retrieve the VIP level for a target user from their active socket data.
  * Returns 0 if user has no active sockets or vip_level is not set.
+ *
+ * P-5 FIX: First checks local sockets (O(k), zero network cost), then falls
+ * back to cross-instance fetchSockets() via the Redis adapter. This ensures
+ * VIP protection works in multi-instance deployments where the target user
+ * may be connected to a different MSAB instance.
  */
 async function getTargetVipLevel(
   io: Server,
@@ -69,12 +74,28 @@ async function getTargetVipLevel(
     return 0;
   }
 
-  // Read from first available socket — all sockets for same user share vip_level
+  // Fast path: check local sockets first (O(k), no Redis adapter call)
   for (const socketId of socketIds) {
     const socket = io.sockets.sockets.get(socketId);
     if (socket?.data?.user?.vip_level !== undefined) {
       return socket.data.user.vip_level as number;
     }
+  }
+
+  // P-5 FIX: Slow path — user is on a remote instance.
+  // Use fetchSockets() which queries across all instances via Redis adapter.
+  try {
+    const remoteSockets = await io.in(socketIds).fetchSockets();
+    for (const rs of remoteSockets) {
+      if (rs.data?.user?.id === targetUserId && rs.data.user.vip_level !== undefined) {
+        return rs.data.user.vip_level as number;
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      { err, targetUserId },
+      "VIP guard: fetchSockets failed, defaulting to unprotected",
+    );
   }
 
   logger.debug(
@@ -87,15 +108,31 @@ async function getTargetVipLevel(
 /**
  * Sync vip_level on all sockets belonging to a user.
  * Called as a post-relay side-effect when a `vip.updated` event is received.
+ *
+ * A-3 FIX: Uses userSocketRepo for targeted lookup instead of iterating
+ * every connected socket. O(k) where k = user's sockets, not O(totalConnections).
  */
-export function syncVipLevelOnSockets(
+export async function syncVipLevelOnSockets(
   io: Server,
   userId: number,
   vipLevel: number,
-): void {
-  for (const [, socket] of io.sockets.sockets) {
-    if (socket.data?.user?.id === userId) {
-      socket.data.user.vip_level = vipLevel;
+  userSocketRepo?: UserSocketRepository,
+): Promise<void> {
+  if (userSocketRepo) {
+    // Targeted path: only touch this user's sockets
+    const socketIds = await userSocketRepo.getSocketIds(userId);
+    for (const socketId of socketIds) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket?.data?.user) {
+        socket.data.user.vip_level = vipLevel;
+      }
+    }
+  } else {
+    // Fallback: iterate all sockets (legacy callers without repo reference)
+    for (const [, socket] of io.sockets.sockets) {
+      if (socket.data?.user?.id === userId) {
+        socket.data.user.vip_level = vipLevel;
+      }
     }
   }
 

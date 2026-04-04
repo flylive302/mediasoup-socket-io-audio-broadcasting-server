@@ -15,7 +15,7 @@ import {
   audioPlayerStateUpdateSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
-import { broadcastToRoom } from "@src/shared/room-emit.js";
+import { broadcastToRoom, emitToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -24,6 +24,9 @@ import { Errors } from "@src/shared/errors.js";
 
 const musicPlayerKey = (roomId: string) => `room:${roomId}:musicPlayer`;
 const musicStateKey = (roomId: string) => `room:${roomId}:musicState`;
+
+// B-5 FIX: TTL for music player keys — safety net if server crashes without cleanup
+const MUSIC_PLAYER_TTL_SECONDS = 7200; // 2 hours
 
 // ─────────────────────────────────────────────────────────────────
 // Handlers
@@ -46,9 +49,12 @@ const playHandler = createHandler(
     }
 
     // Acquire mutex — only one music player per room
+    // B-5 FIX: Added EX TTL so mutex auto-expires if server crashes without cleanup
     const acquired = await context.redis.set(
       musicPlayerKey(roomId),
       String(userId),
+      "EX",
+      MUSIC_PLAYER_TTL_SECONDS,
       "NX",
     );
 
@@ -65,7 +71,7 @@ const playHandler = createHandler(
       isPaused: false,
       position: 0,
     });
-    await context.redis.set(musicStateKey(roomId), state);
+    await context.redis.setex(musicStateKey(roomId), MUSIC_PLAYER_TTL_SECONDS, state);
 
     // Broadcast to all room members (including sender for UI confirmation)
     broadcastToRoom(
@@ -158,15 +164,15 @@ const stateUpdateHandler = createHandler(
       const state = JSON.parse(stateRaw) as Record<string, unknown>;
       state.position = position;
       state.isPaused = isPaused;
-      await context.redis.set(musicStateKey(roomId), JSON.stringify(state));
+      await context.redis.setex(musicStateKey(roomId), MUSIC_PLAYER_TTL_SECONDS, JSON.stringify(state));
     }
 
-    // Broadcast to room (excluding sender — they already know)
-    socket.to(roomId).emit("audioPlayer:stateChanged", {
+    // V-4 FIX: Use cascade-aware emit so cross-region users see playback updates
+    emitToRoom(socket, roomId, "audioPlayer:stateChanged", {
       state: isPaused ? "paused" : "playing",
       userId,
       position,
-    });
+    }, context.cascadeRelay);
 
     return { success: true };
   },

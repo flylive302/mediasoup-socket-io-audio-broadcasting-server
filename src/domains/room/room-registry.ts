@@ -72,32 +72,56 @@ export class RoomRegistry {
   /**
    * Atomically adjust the listener count for an instance (origin or edge).
    * Returns the new listener count.
+   *
+   * P-3 FIX: Uses Lua script for atomic read-modify-write to prevent
+   * lost-update race under concurrent listener count adjustments.
    */
   async updateListenerCount(
     roomId: string,
     instanceId: string,
     delta: number,
   ): Promise<number> {
-    // Try origin first
-    const origin = await this.getOrigin(roomId);
-    if (origin && origin.instanceId === instanceId) {
-      origin.listenerCount = Math.max(0, origin.listenerCount + delta);
-      await this.registerOrigin(roomId, origin);
-      return origin.listenerCount;
+    const originKey = `${KEY_PREFIX}${roomId}:origin`;
+    const edgesKey = `${KEY_PREFIX}${roomId}:edges`;
+
+    // Lua script: try origin key first, then edge hash field
+    const result = await this.redis.eval(
+      `
+      -- Try origin first
+      local originData = redis.call('GET', KEYS[1])
+      if originData then
+        local origin = cjson.decode(originData)
+        if origin.instanceId == ARGV[1] then
+          origin.listenerCount = math.max(0, origin.listenerCount + tonumber(ARGV[2]))
+          redis.call('SETEX', KEYS[1], ${TTL_SECONDS}, cjson.encode(origin))
+          return origin.listenerCount
+        end
+      end
+
+      -- Try edge hash
+      local edgeData = redis.call('HGET', KEYS[2], ARGV[1])
+      if edgeData then
+        local edge = cjson.decode(edgeData)
+        edge.listenerCount = math.max(0, edge.listenerCount + tonumber(ARGV[2]))
+        redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(edge))
+        return edge.listenerCount
+      end
+
+      return -1
+      `,
+      2,
+      originKey,
+      edgesKey,
+      instanceId,
+      delta.toString(),
+    ) as number;
+
+    if (result === -1) {
+      this.logger.warn({ roomId, instanceId }, "RoomRegistry: instance not found for listener count update");
+      return 0;
     }
 
-    // Try edges
-    const edgeKey = `${KEY_PREFIX}${roomId}:edges`;
-    const raw = await this.redis.hget(edgeKey, instanceId);
-    if (raw) {
-      const edge = JSON.parse(raw) as InstanceInfo;
-      edge.listenerCount = Math.max(0, edge.listenerCount + delta);
-      await this.redis.hset(edgeKey, instanceId, JSON.stringify(edge));
-      return edge.listenerCount;
-    }
-
-    this.logger.warn({ roomId, instanceId }, "RoomRegistry: instance not found for listener count update");
-    return 0;
+    return result;
   }
 
   /** Get total listener count across origin + all edges */

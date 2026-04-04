@@ -60,13 +60,6 @@ async function processJoin(
 
   const rtpCapabilities = cluster.router?.rtpCapabilities;
 
-  // Sync seatCount from frontend to Redis state
-  const state = await roomManager.state.get(roomId);
-  if (state && state.seatCount !== seatCount) {
-    state.seatCount = seatCount;
-    await roomManager.state.save(state);
-  }
-
   // Cache room owner if provided
   if (ownerId) {
     setRoomOwner(roomId, String(ownerId));
@@ -88,9 +81,6 @@ async function processJoin(
     frame: string;
     gender: number;
     country: string;
-    phone: string;
-    email: string;
-    date_of_birth: string;
     wealth_xp: string;
     charm_xp: string;
     vip_level: number;
@@ -107,6 +97,7 @@ async function processJoin(
     if (seenUserIds.has(remoteUser.id)) continue;
     seenUserIds.add(remoteUser.id);
 
+    // B-1 FIX: Only include visual/identity fields — exclude PII (phone, email, date_of_birth)
     participants.push({
       id: remoteUser.id,
       name: remoteUser.name,
@@ -115,9 +106,6 @@ async function processJoin(
       frame: remoteUser.frame,
       gender: remoteUser.gender,
       country: remoteUser.country,
-      phone: remoteUser.phone,
-      email: remoteUser.email,
-      date_of_birth: remoteUser.date_of_birth,
       wealth_xp: remoteUser.wealth_xp,
       charm_xp: remoteUser.charm_xp,
       vip_level: remoteUser.vip_level ?? 0,
@@ -126,6 +114,8 @@ async function processJoin(
   }
 
   // Producer tracking remains local — mediasoup producers only exist on the local instance
+  // P-2 FIX: Build Map for O(1) participant lookup (was O(n²) with .find() in loop)
+  const participantMap = new Map(participants.map((p) => [p.id, p]));
   const allLocalClients = clientManager.getClientsInRoom(roomId);
   for (const c of allLocalClients) {
     if (c.socketId === socket.id) continue;
@@ -142,7 +132,7 @@ async function processJoin(
     }
 
     // Update isSpeaker for local participants
-    const participant = participants.find((p) => p.id === c.userId);
+    const participant = participantMap.get(c.userId);
     if (participant) {
       participant.isSpeaker = c.isSpeaker;
     }
@@ -170,7 +160,17 @@ async function processJoin(
   // Join socket room
   socket.join(roomId);
 
-  // Parallel Redis operations
+  // Sync seatCount from frontend to Redis state
+  // NOTE: Must run BEFORE adjustParticipantCount since both operate on the same
+  // room:state key. Running in parallel would cause save() to overwrite the
+  // adjusted participant count (lost-update race).
+  const state = await roomManager.state.get(roomId);
+  if (state && state.seatCount !== seatCount) {
+    state.seatCount = seatCount;
+    await roomManager.state.save(state);
+  }
+
+  // Parallel Redis operations (safe — these use different Redis keys)
   const [newCount, , , musicPlayer] = await Promise.all([
     roomManager.state.adjustParticipantCount(roomId, 1),
     context.autoCloseService.recordActivity(roomId),

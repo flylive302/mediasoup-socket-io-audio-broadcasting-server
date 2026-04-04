@@ -41,6 +41,15 @@ export class RoomStateRepository {
     return data ? JSON.parse(data) : null;
   }
 
+  /**
+   * Delete room state from Redis.
+   *
+   * B-3 FIX: Must be called AFTER all adjustParticipantCount() calls are complete.
+   * The Lua script in adjustParticipants safely returns nil when the key is absent,
+   * so a concurrent adjust after delete is a no-op (not a zombie resurrection).
+   * However, callers must NOT call adjustParticipantCount after delete to avoid
+   * re-creating the key via SETEX in a theoretical race window.
+   */
   async delete(roomId: string): Promise<void> {
     const key = `${this.PREFIX}${roomId}`;
     await this.redis.del(key);

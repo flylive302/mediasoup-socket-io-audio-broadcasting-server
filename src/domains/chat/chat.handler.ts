@@ -6,6 +6,7 @@ import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
+import { Errors } from "@src/shared/errors.js";
 
 const handleChatMessage = createHandler(
   "chat:message",
@@ -15,7 +16,7 @@ const handleChatMessage = createHandler(
 
     // CF-001: Verify sender belongs to this room (O(1) Set lookup, zero Redis cost)
     if (!socket.rooms.has(payload.roomId)) {
-      return { success: false, error: "Not in room" };
+      return { success: false, error: Errors.NOT_IN_ROOM };
     }
 
     // Rate limit check FIRST (cheap Redis op should run before handler logic)
@@ -26,7 +27,7 @@ const handleChatMessage = createHandler(
     );
 
     if (!allowed) {
-      return { success: false, error: "Too many messages" };
+      return { success: false, error: Errors.RATE_LIMITED };
     }
 
     const message = {

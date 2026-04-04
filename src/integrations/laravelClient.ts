@@ -8,10 +8,45 @@ import type {
 } from "./types.js";
 
 const ROLE_CACHE_TTL_MS = 30_000; // 30 seconds
+// B-6 FIX: Prevent unbounded growth of roleCache
+const ROLE_CACHE_MAX_SIZE = 5_000;
+const ROLE_CACHE_PRUNE_INTERVAL_MS = 60_000; // 1 minute
 
 export class LaravelClient {
   private readonly roleCache = new Map<string, { role: string; expiresAt: number }>();
-  constructor(private readonly logger: Logger) {}
+  private roleCachePruneTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly logger: Logger) {
+    // B-6 FIX: Periodic pruner to evict stale entries (same pattern as seat.owner.ts SEAT-004)
+    this.roleCachePruneTimer = setInterval(() => {
+      this.pruneRoleCache();
+    }, ROLE_CACHE_PRUNE_INTERVAL_MS);
+    // Allow process to exit without waiting for pruner
+    if (this.roleCachePruneTimer.unref) this.roleCachePruneTimer.unref();
+  }
+
+  /** Stop the cache pruner (called during graceful shutdown) */
+  stopPruner(): void {
+    if (this.roleCachePruneTimer) {
+      clearInterval(this.roleCachePruneTimer);
+      this.roleCachePruneTimer = null;
+    }
+  }
+
+  /** Evict expired entries from the role cache */
+  private pruneRoleCache(): void {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [key, entry] of this.roleCache) {
+      if (entry.expiresAt <= now) {
+        this.roleCache.delete(key);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      this.logger.debug({ pruned, remaining: this.roleCache.size }, "LaravelClient: roleCache pruned");
+    }
+  }
 
   /**
    * Send a batch of gifts to Laravel for processing
@@ -256,10 +291,16 @@ export class LaravelClient {
 
     const role = await this.getMemberRole(roomId, userId);
     if (role) {
-      this.roleCache.set(cacheKey, {
-        role,
-        expiresAt: Date.now() + ROLE_CACHE_TTL_MS,
-      });
+      // B-6 FIX: Enforce hard cap — prune first, then only cache if under limit
+      if (this.roleCache.size >= ROLE_CACHE_MAX_SIZE) {
+        this.pruneRoleCache();
+      }
+      if (this.roleCache.size < ROLE_CACHE_MAX_SIZE) {
+        this.roleCache.set(cacheKey, {
+          role,
+          expiresAt: Date.now() + ROLE_CACHE_TTL_MS,
+        });
+      }
     }
     return role === "owner" || role === "admin";
   }

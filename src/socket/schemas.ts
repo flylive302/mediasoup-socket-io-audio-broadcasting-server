@@ -155,7 +155,6 @@ export const audioConsumeSchema = z.object({
 // Room Schemas
 // ─────────────────────────────────────────────────────────────────
 
-export const lockedSeatsSchema = z.array(z.number());
 
 export const joinRoomSchema = z.object({
   roomId: roomIdSchema,

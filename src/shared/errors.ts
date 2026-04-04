@@ -39,8 +39,10 @@ export const Errors = {
 
   // Media
   TRANSPORT_NOT_FOUND: "Transport not found",
+  TRANSPORT_LIMIT: "Transport limit reached",
   CONSUMER_NOT_FOUND: "Consumer not found",
   PRODUCER_NOT_FOUND: "Producer not found",
+  NOT_PRODUCER_OWNER: "Not your producer",
   CANNOT_CONSUME: "Cannot consume",
 
   // Auth

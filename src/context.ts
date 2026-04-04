@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import type { WorkerManager } from "./infrastructure/worker.manager.js";
 import type { RoomManager } from "./domains/room/roomManager.js";
 import type { ClientManager } from "./client/clientManager.js";
-import type { RateLimiter } from "./utils/rateLimiter.js";
+import type { RateLimiter } from "./infrastructure/rateLimiter.js";
 import type { GiftHandler } from "./domains/gift/giftHandler.js";
 import type { LaravelClient } from "./integrations/laravelClient.js";
 import type {

@@ -105,6 +105,3 @@ export type Config = z.infer<typeof configSchema>;
 /** Validated configuration object - fails fast on invalid config */
 export const config: Config = configSchema.parse(process.env);
 
-/** Type-safe config access */
-export const isDev = config.NODE_ENV === "development";
-export const isProd = config.NODE_ENV === "production";

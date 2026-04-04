@@ -18,6 +18,7 @@ import { syncVipLevelOnSockets } from "@src/domains/seat/vip.guard.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
+import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
 
 export class EventRouter {
   constructor(
@@ -107,7 +108,11 @@ export class EventRouter {
         delivered: result.delivered ? "true" : "false",
       });
 
-      // Post-relay side-effect: sync socket.data.user when VIP status changes
+      // ─── REACT Stage: Post-relay side-effects (fire-and-forget) ───────────
+      // These are the REACT layer of the INTENT → GATE → EXECUTE → REACT pipeline.
+      // They run after the main relay (EXECUTE) and must be non-blocking.
+
+      // REACT: sync socket.data.user when VIP status changes
       if (
         result.delivered &&
         event.event === RELAY_EVENTS.vip.VIP_UPDATED &&
@@ -118,7 +123,7 @@ export class EventRouter {
             typeof event.payload.vip_level === "number"
               ? event.payload.vip_level
               : 0;
-          syncVipLevelOnSockets(this.io, event.user_id, vipLevel);
+          syncVipLevelOnSockets(this.io, event.user_id, vipLevel, this.userSocketRepo);
 
           // Broadcast to rooms so other participants see the VIP change
           const vipProfile = { vip_level: vipLevel } as Partial<User>;
@@ -273,6 +278,8 @@ export class EventRouter {
   /**
    * Sync user profile data across all in-memory stores and broadcast to rooms.
    * Called as a post-relay side-effect for `user.profile.updated` events.
+   *
+   * A-2 FIX: Delegates to shared syncUserProfileInMemory() utility (DRY with user.handler.ts)
    */
   private syncUserProfile(
     userId: number,
@@ -287,39 +294,26 @@ export class EventRouter {
       return;
     }
 
-    try {
-      // 1. Update ClientManager in-memory user data
-      const affectedRooms = this.clientManager.updateUserProfile(
-        userId,
-        profile,
-      );
-
-      // 2. Sync socket.data.user on all live sockets for this user
-      for (const [, socket] of this.io.sockets.sockets) {
-        if (socket.data?.user?.id === userId) {
-          socket.data.user = { ...socket.data.user, ...profile };
-        }
-      }
-
-      // 3. Broadcast to rooms so other clients can refresh UI
-      for (const roomId of affectedRooms) {
-        this.io.to(roomId).emit("user:profile_updated", {
-          user_id: userId,
-          profile,
-        });
-      }
-
-      this.logger.info(
-        { userId, rooms: affectedRooms.size },
-        "User profile synced",
-      );
-    } catch (err) {
-      // Non-blocking — profile sync failure should not break event routing
-      this.logger.warn(
-        { err, userId },
-        "Failed to sync user profile",
-      );
-    }
+    syncUserProfileInMemory(
+      this.io,
+      this.clientManager,
+      userId,
+      profile,
+      this.userSocketRepo,
+    )
+      .then((affectedRooms) => {
+        this.logger.info(
+          { userId, rooms: affectedRooms.size },
+          "User profile synced",
+        );
+      })
+      .catch((err) => {
+        // Non-blocking — profile sync failure should not break event routing
+        this.logger.warn(
+          { err, userId },
+          "Failed to sync user profile",
+        );
+      });
   }
 
   /**

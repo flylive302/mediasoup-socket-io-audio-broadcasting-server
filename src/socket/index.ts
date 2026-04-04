@@ -12,7 +12,7 @@ import { ClientManager } from "@src/client/clientManager.js";
 // Handlers
 import { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
-import { RateLimiter } from "@src/utils/rateLimiter.js";
+import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
 import type { AppContext } from "@src/context.js";
 
 // Domain Registry - registers all domain handlers

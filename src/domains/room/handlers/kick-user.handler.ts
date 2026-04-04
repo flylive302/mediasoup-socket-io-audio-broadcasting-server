@@ -66,6 +66,11 @@ export const kickUserHandler = createHandler(
       (memberSocket) => String(memberSocket.data?.user?.id) === targetUserIdStr,
     );
 
+    // B-4 FIX: Track locally kicked sockets separately. fetchSockets() returns
+    // cross-instance results, but clearClientRoom() only works on local sockets.
+    // Delta must reflect only locally-processed sockets to avoid over-decrement.
+    let locallyKicked = 0;
+
     for (const targetSocket of targetUserSockets) {
       targetSocket.emit("room:kicked", {
         roomId,
@@ -75,13 +80,16 @@ export const kickUserHandler = createHandler(
       targetSocket.leave(roomId);
 
       // Local-only cleanup; remote sockets may not be tracked by this process.
-      context.clientManager.clearClientRoom(targetSocket.id);
+      const localClient = context.clientManager.getClient(targetSocket.id);
+      if (localClient) {
+        context.clientManager.clearClientRoom(targetSocket.id);
+        locallyKicked++;
+      }
     }
 
     // 6. Update room state
-    const removedParticipants = targetUserSockets.length;
     const [newCount] = await Promise.all([
-      context.roomManager.state.adjustParticipantCount(roomId, removedParticipants > 0 ? -removedParticipants : 0),
+      context.roomManager.state.adjustParticipantCount(roomId, locallyKicked > 0 ? -locallyKicked : 0),
       context.userRoomRepository.clearUserRoom(targetUserId),
     ]);
 
@@ -102,12 +110,12 @@ export const kickUserHandler = createHandler(
     }
 
     // 8. Broadcast to remaining room members (cascade-aware)
-    if (removedParticipants > 0) {
+    if (targetUserSockets.length > 0) {
       emitToRoom(socket, roomId, "room:userLeft", { userId: targetUserId }, context.cascadeRelay);
     }
 
     logger.info(
-      { roomId, targetUserId, kickedBy: requesterId, removedParticipants },
+      { roomId, targetUserId, kickedBy: requesterId, locallyKicked },
       "User kicked from room",
     );
 

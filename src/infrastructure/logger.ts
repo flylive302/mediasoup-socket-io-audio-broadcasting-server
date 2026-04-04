@@ -1,5 +1,5 @@
 import { pino } from "pino";
-import { config, isDev } from "@src/config/index.js";
+import { config } from "@src/config/index.js";
 
 const devTransport = {
   target: "pino-pretty",
@@ -12,7 +12,7 @@ const devTransport = {
 
 export const logger = pino({
   level: config.LOG_LEVEL,
-  ...(isDev && { transport: devTransport }),
+  ...(config.NODE_ENV === "development" && { transport: devTransport }),
 });
 
 export type Logger = typeof logger;

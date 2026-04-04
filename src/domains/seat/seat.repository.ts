@@ -27,6 +27,9 @@ const INVITE_USER_KEY = (roomId: string, userId: string) =>
 const USER_SEAT_KEY = (roomId: string, userId: string) =>
   `room:${roomId}:seat:user:${userId}`;
 
+// M-3 FIX: TTL for seat Redis keys — safety net if clearRoom() is never called (e.g. server crash)
+const SEAT_KEY_TTL_SECONDS = 86400; // 24 hours, matches RoomStateRepository.TTL
+
 // ─────────────────────────────────────────────────────────────────
 // Lua Scripts (registered via defineCommand for auto EVALSHA)
 // ─────────────────────────────────────────────────────────────────
@@ -72,6 +75,10 @@ const TAKE_SEAT_SCRIPT = `
   -- SEAT-005: Maintain user→seat reverse index
   redis.call('SET', userSeatKey, tostring(seatIndex))
   
+  -- M-3 FIX: Ensure TTL on seat keys as crash safety net
+  redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
+  redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
+  
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 
@@ -80,20 +87,23 @@ const LEAVE_SEAT_SCRIPT = `
   local userSeatKey = KEYS[2]
   local userId = ARGV[1]
   
-  -- Find and remove user's seat
-  local allSeats = redis.call('HGETALL', seatsKey)
-  for i = 1, #allSeats, 2 do
-    local currentIndex = allSeats[i]
-    local data = cjson.decode(allSeats[i + 1])
+  -- P-4 FIX: O(1) lookup via reverse index instead of HGETALL linear scan
+  local seatIndex = redis.call('GET', userSeatKey)
+  if not seatIndex then
+    return cjson.encode({success = false, error = "NOT_SEATED"})
+  end
+  
+  -- Verify the seat actually belongs to this user (defensive)
+  local seatData = redis.call('HGET', seatsKey, seatIndex)
+  if seatData then
+    local data = cjson.decode(seatData)
     if data.userId == userId then
-      redis.call('HDEL', seatsKey, currentIndex)
-      -- SEAT-005: Clean up reverse index
-      redis.call('DEL', userSeatKey)
-      return cjson.encode({success = true, seatIndex = tonumber(currentIndex)})
+      redis.call('HDEL', seatsKey, seatIndex)
     end
   end
   
-  return cjson.encode({success = false, error = "NOT_SEATED"})
+  redis.call('DEL', userSeatKey)
+  return cjson.encode({success = true, seatIndex = tonumber(seatIndex)})
 `;
 
 const ASSIGN_SEAT_SCRIPT = `
@@ -140,6 +150,10 @@ const ASSIGN_SEAT_SCRIPT = `
   -- SEAT-005: Maintain user→seat reverse index
   redis.call('SET', userSeatKey, tostring(seatIndex))
   
+  -- M-3 FIX: Ensure TTL on seat keys as crash safety net
+  redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
+  redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
+  
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 
@@ -175,6 +189,8 @@ const LOCK_SEAT_SCRIPT = `
     redis.call('DEL', roomPrefix .. kicked)
   end
   redis.call('SADD', lockedKey, seatIndex)
+  -- M-3 FIX: Ensure TTL on lock keys
+  redis.call('EXPIRE', lockedKey, ${SEAT_KEY_TTL_SECONDS})
   if kicked then
     return cjson.encode({success = true, kicked = kicked})
   end
