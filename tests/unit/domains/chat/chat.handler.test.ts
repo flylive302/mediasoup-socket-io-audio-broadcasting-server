@@ -121,7 +121,7 @@ describe("chat:message handler", () => {
     const cb = vi.fn();
     await handler({ roomId: "room-7", content: "spam" }, cb);
 
-    expect(cb).toHaveBeenCalledWith({ success: false, error: "Too many messages" });
+    expect(cb).toHaveBeenCalledWith({ success: false, error: "Too many requests" });
     expect(socket.nsp.to).not.toHaveBeenCalled();
   });
 

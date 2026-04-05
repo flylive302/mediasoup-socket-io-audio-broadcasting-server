@@ -36,6 +36,35 @@ function createMockRedis() {
       return result;
     }),
     expire: vi.fn(async () => {}),
+    // Simulate redis.eval() for the Lua script used in updateListenerCount
+    eval: vi.fn(async (_script: string, _numKeys: number, originKey: string, edgesKey: string, instanceId: string, deltaStr: string) => {
+      const delta = Number(deltaStr);
+
+      // Try origin first
+      const originData = store.get(originKey);
+      if (originData) {
+        const origin = JSON.parse(originData);
+        if (origin.instanceId === instanceId) {
+          origin.listenerCount = Math.max(0, origin.listenerCount + delta);
+          store.set(originKey, JSON.stringify(origin));
+          return origin.listenerCount;
+        }
+      }
+
+      // Try edge hash
+      const edgeMap = hashStore.get(edgesKey);
+      if (edgeMap) {
+        const edgeData = edgeMap.get(instanceId);
+        if (edgeData) {
+          const edge = JSON.parse(edgeData);
+          edge.listenerCount = Math.max(0, edge.listenerCount + delta);
+          edgeMap.set(instanceId, JSON.stringify(edge));
+          return edge.listenerCount;
+        }
+      }
+
+      return -1;
+    }),
     // Expose internals for assertions
     _store: store,
     _hashStore: hashStore,

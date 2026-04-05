@@ -63,6 +63,7 @@ function createMockContext() {
       leaveSeat: vi.fn().mockResolvedValue({ success: false }),
     },
     clientManager: {
+      getClient: vi.fn().mockReturnValue({ id: "local-client" }),
       clearClientRoom: vi.fn(),
     },
     roomManager: {
