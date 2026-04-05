@@ -499,6 +499,7 @@ The project uses **Terraform** for infrastructure and **GitHub Actions** for CI/
 #### Infrastructure (via Terraform)
 
 Terraform manages all AWS resources across multiple regions (Mumbai, Frankfurt):
+
 - **EC2 Auto Scaling Groups** with CPU-optimized instances
 - **NLB (Network Load Balancer)** per region
 - **AWS Global Accelerator** for latency-based routing
@@ -522,11 +523,13 @@ terraform apply
 #### CI/CD (via GitHub Actions)
 
 Pushing to `master` triggers the deploy workflow:
+
 1. **CI**: Typecheck → Build → Lint → Test
 2. **Build**: Docker image built and pushed to ECR
 3. **Deploy**: ASG Instance Refresh across all regions
 
 Required GitHub Secrets:
+
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 
