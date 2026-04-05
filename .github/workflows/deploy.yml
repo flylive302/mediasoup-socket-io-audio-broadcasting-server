@@ -215,9 +215,12 @@ jobs:
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
-          MAX_WAIT=1800  # 30 minutes
+          MAX_WAIT=2400  # 40 minutes (increased from 30 for cross-region ECR pulls)
           ELAPSED=0
           INTERVAL=30
+          LAST_PROGRESS=""
+          STALL_COUNT=0
+          STALL_THRESHOLD=6  # 6 polls × 30s = 3 minutes of no progress change
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             STATUS=$(aws autoscaling describe-instance-refreshes \
@@ -249,9 +252,35 @@ jobs:
                 exit 1
                 ;;
               *)
-                # If stuck at 0% for 10+ minutes, try completing lifecycle hooks
-                if [ "$PROGRESS" = "0" ] && [ $ELAPSED -ge 600 ]; then
-                  echo "  ⚠️  Stuck at 0% — checking for lifecycle hooks..."
+                # Track progress stalls at ANY percentage (not just 0%)
+                if [ "$PROGRESS" = "$LAST_PROGRESS" ]; then
+                  STALL_COUNT=$((STALL_COUNT + 1))
+                else
+                  STALL_COUNT=0
+                  LAST_PROGRESS="$PROGRESS"
+                fi
+
+                # If progress hasn't changed for STALL_THRESHOLD polls, investigate and rescue
+                if [ $STALL_COUNT -ge $STALL_THRESHOLD ]; then
+                  echo ""
+                  echo "  ⚠️  Progress stuck at ${PROGRESS}% for $((STALL_COUNT * INTERVAL))s — running diagnostics..."
+
+                  # Diagnostic: Show instance lifecycle states
+                  echo "  📊 Instance states:"
+                  aws autoscaling describe-auto-scaling-groups \
+                    --auto-scaling-group-name "$ASG_NAME" \
+                    --query "AutoScalingGroups[0].Instances[].{Id:InstanceId,State:LifecycleState,Health:HealthStatus}" \
+                    --output table 2>/dev/null || true
+
+                  # Diagnostic: Show recent scaling activities
+                  echo "  📊 Recent scaling activities:"
+                  aws autoscaling describe-scaling-activities \
+                    --auto-scaling-group-name "$ASG_NAME" \
+                    --max-items 3 \
+                    --query "Activities[].{Status:StatusCode,Cause:Cause}" \
+                    --output table 2>/dev/null || true
+
+                  # Rescue: Complete any stuck launch lifecycle hooks
                   PENDING=$(aws autoscaling describe-auto-scaling-groups \
                     --auto-scaling-group-name "$ASG_NAME" \
                     --query "AutoScalingGroups[0].Instances[?LifecycleState=='Pending:Wait'].InstanceId" \
@@ -273,7 +302,13 @@ jobs:
                           --lifecycle-hook-name "$LAUNCH_HOOK" || true
                       done
                     fi
+                  else
+                    echo "  ℹ️  No instances in Pending:Wait — stall likely caused by health check failures"
                   fi
+
+                  # Reset stall counter so diagnostics don't spam every poll
+                  STALL_COUNT=0
+                  echo ""
                 fi
 
                 sleep $INTERVAL

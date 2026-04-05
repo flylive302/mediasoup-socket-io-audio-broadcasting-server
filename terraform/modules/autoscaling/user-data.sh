@@ -181,6 +181,49 @@ docker run -d \
   -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
   ${ecr_repo_url}:${image_tag}
 
+# --- Wait for app health + complete launch lifecycle hook ---
+# Ensures ASG only marks instance InService AFTER the app is confirmed healthy.
+# Without this, the 300s hook timeout may expire before the app is ready (especially
+# with cross-region ECR pulls), causing health-check-fail → replace loops.
+echo "Waiting for /health endpoint..."
+HEALTH_MAX_WAIT=120
+HEALTH_ELAPSED=0
+
+while [ $HEALTH_ELAPSED -lt $HEALTH_MAX_WAIT ]; do
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${app_port}/health" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ Health check passed (HTTP $HTTP_CODE)"
+    break
+  fi
+  echo "  ⏳ Health check: HTTP $HTTP_CODE (${HEALTH_ELAPSED}s/${HEALTH_MAX_WAIT}s)"
+  sleep 5
+  HEALTH_ELAPSED=$((HEALTH_ELAPSED + 5))
+done
+
+if [ $HEALTH_ELAPSED -ge $HEALTH_MAX_WAIT ]; then
+  echo "⚠️ Health check did not pass in ${HEALTH_MAX_WAIT}s — continuing anyway (hook default will apply)"
+fi
+
+# Complete the ASG launch lifecycle hook explicitly
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
+  --instance-ids "$INSTANCE_ID" --region "${region}" \
+  --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || echo "")
+
+if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
+  echo "Completing launch lifecycle hook for instance $INSTANCE_ID in ASG $ASG_NAME..."
+  aws autoscaling complete-lifecycle-action \
+    --lifecycle-hook-name "msab-launch-hook" \
+    --auto-scaling-group-name "$ASG_NAME" \
+    --lifecycle-action-result "CONTINUE" \
+    --instance-id "$INSTANCE_ID" \
+    --region "${region}" 2>/dev/null && \
+    echo "✅ Launch lifecycle hook completed" || \
+    echo "⚠️ Launch lifecycle hook completion failed (may have already timed out)"
+else
+  echo "⚠️ Could not determine ASG name — skipping lifecycle hook completion"
+fi
+
 # --- Install Lifecycle Drain Service ---
 # AUDIT-017 FIX: Embed drain script inline (removes GitHub and Docker cp dependencies)
 mkdir -p "$APP_DIR/scripts/aws"
