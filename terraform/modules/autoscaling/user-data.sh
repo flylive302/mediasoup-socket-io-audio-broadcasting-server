@@ -80,9 +80,12 @@ cd "$APP_DIR"
 ECR_REGISTRY=$(echo "${ecr_repo_url}" | cut -d'/' -f1)
 
 # Authenticate Docker with ECR (uses instance IAM role)
-aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+# ECR repo lives in ap-south-1 only (single-region registry).
+# All regions authenticate and pull cross-region from this endpoint.
+ECR_REGION="ap-south-1"
+aws ecr get-login-password --region "$ECR_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-# Pull the pinned image
+# Pull the pinned image (cross-region pull from $ECR_REGION if instance is in a different region)
 docker pull ${ecr_repo_url}:${image_tag}
 
 # --- Fetch Secrets from SSM Parameter Store ---
@@ -105,6 +108,25 @@ SECRET_INTERNAL_KEY=$(fetch_ssm "laravel-internal-key")
 SECRET_SESSION=$(fetch_ssm "session-secret")
 SECRET_TURN_API_KEY=$(fetch_ssm "cloudflare-turn-api-key")
 SECRET_REDIS_AUTH=$(fetch_ssm "redis-auth-token")
+
+# --- Validate critical secrets (fail fast instead of silent empty values) ---
+MISSING_SECRETS=0
+for SECRET_CHECK in "JWT_SECRET:$SECRET_JWT" "INTERNAL_KEY:$SECRET_INTERNAL_KEY" "REDIS_AUTH:$SECRET_REDIS_AUTH"; do
+  CHECK_NAME="$${SECRET_CHECK%%:*}"
+  CHECK_VALUE="$${SECRET_CHECK#*:}"
+  if [ -z "$CHECK_VALUE" ]; then
+    echo "❌ FATAL: Secret $CHECK_NAME is empty — SSM parameter likely missing in region $REGION"
+    MISSING_SECRETS=1
+  fi
+done
+
+if [ "$MISSING_SECRETS" -eq 1 ]; then
+  echo "❌ Bootstrap aborted: critical secrets missing. Check SSM Parameter Store in $REGION."
+  echo "   Expected path: $SSM_PREFIX/<secret-name>"
+  exit 1
+fi
+
+echo "✅ All critical secrets fetched from SSM ($REGION)"
 
 # --- Create .env file (NON-SENSITIVE config only) ---
 cat > .env << ENVEOF
@@ -159,6 +181,13 @@ PUBLIC_IP=$PUBLIC_IP
 CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 ENVEOF
 
+# --- Write secrets env file for lifecycle drain service (not in .env, not in Docker) ---
+cat > /opt/msab/.env.secrets << SECRETSEOF
+LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY
+MSAB_PORT=${app_port}
+SECRETSEOF
+chmod 600 /opt/msab/.env.secrets
+
 # --- Run Container ---
 # Secrets passed via -e flags (from SSM), non-sensitive config via --env-file
 # NOTE: awslogs Docker log driver rejected awslogs-stream-prefix on Docker 29.x/Ubuntu 24.04.
@@ -190,18 +219,18 @@ HEALTH_MAX_WAIT=120
 HEALTH_ELAPSED=0
 
 while [ $HEALTH_ELAPSED -lt $HEALTH_MAX_WAIT ]; do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${app_port}/health" 2>/dev/null || echo "000")
+  HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" "http://localhost:${app_port}/health" 2>/dev/null || echo "000")
   if [ "$HTTP_CODE" = "200" ]; then
     echo "✅ Health check passed (HTTP $HTTP_CODE)"
     break
   fi
-  echo "  ⏳ Health check: HTTP $HTTP_CODE (${HEALTH_ELAPSED}s/${HEALTH_MAX_WAIT}s)"
+  echo "  ⏳ Health check: HTTP $HTTP_CODE ($${HEALTH_ELAPSED}s/$${HEALTH_MAX_WAIT}s)"
   sleep 5
   HEALTH_ELAPSED=$((HEALTH_ELAPSED + 5))
 done
 
 if [ $HEALTH_ELAPSED -ge $HEALTH_MAX_WAIT ]; then
-  echo "⚠️ Health check did not pass in ${HEALTH_MAX_WAIT}s — continuing anyway (hook default will apply)"
+  echo "⚠️ Health check did not pass in $${HEALTH_MAX_WAIT}s — continuing anyway (hook default will apply)"
 fi
 
 # Complete the ASG launch lifecycle hook explicitly
@@ -322,6 +351,7 @@ Requires=docker.service
 Type=simple
 ExecStart=/opt/msab/scripts/aws/lifecycle-drain.sh
 EnvironmentFile=/opt/msab/.env
+EnvironmentFile=/opt/msab/.env.secrets
 Restart=always
 RestartSec=10
 

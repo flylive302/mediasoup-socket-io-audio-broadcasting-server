@@ -232,6 +232,20 @@ module "ssm" {
   redis_auth_token        = var.redis_auth_token
 }
 
+# Frankfurt SSM — replicate secrets to eu-central-1
+# Without this, Frankfurt instances boot with empty secrets (Redis AUTH fails → health 503 loop)
+module "ssm_frankfurt" {
+  source    = "./modules/ssm"
+  providers = { aws = aws.frankfurt }
+
+  project_name            = var.project_name
+  jwt_secret              = var.jwt_secret
+  laravel_internal_key    = var.laravel_internal_key
+  session_secret          = var.session_secret
+  cloudflare_turn_api_key = var.cloudflare_turn_api_key
+  redis_auth_token        = var.redis_auth_token
+}
+
 # =============================================================================
 # Phase 3: Auto Scaling Groups (one per region)
 # =============================================================================
@@ -244,26 +258,26 @@ module "autoscaling_mumbai" {
   source    = "./modules/autoscaling"
   providers = { aws = aws.mumbai }
 
-  region                 = "ap-south-1"
-  project_name           = var.project_name
-  instance_type          = var.instance_type
-  ssh_public_key_path    = var.ssh_public_key_path
-  instance_profile_name  = module.iam.instance_profile_name
-  msab_security_group_id = module.networking_mumbai.msab_security_group_id
-  public_subnet_ids      = module.networking_mumbai.public_subnet_ids
-  target_group_arn       = module.loadbalancer_mumbai.target_group_arn
-  ecr_repo_url           = module.ecr.repository_url
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_mumbai.redis_host
-  redis_port             = module.redis_mumbai.redis_port
-  redis_password         = var.redis_auth_token
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-  cascade_enabled        = true
+  region                  = "ap-south-1"
+  project_name            = var.project_name
+  instance_type           = var.instance_type
+  ssh_public_key_path     = var.ssh_public_key_path
+  instance_profile_name   = module.iam.instance_profile_name
+  msab_security_group_id  = module.networking_mumbai.msab_security_group_id
+  public_subnet_ids       = module.networking_mumbai.public_subnet_ids
+  target_group_arn        = module.loadbalancer_mumbai.target_group_arn
+  ecr_repo_url            = module.ecr.repository_url
+  app_port                = var.app_port
+  rtc_min_port            = var.rtc_min_port
+  rtc_max_port            = var.rtc_max_port
+  redis_host              = module.redis_mumbai.redis_host
+  redis_port              = module.redis_mumbai.redis_port
+  redis_password          = var.redis_auth_token
+  laravel_internal_key    = var.laravel_internal_key
+  jwt_secret              = var.jwt_secret
+  session_secret          = var.session_secret
+  audio_domain            = var.audio_domain
+  cascade_enabled         = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 
@@ -272,9 +286,9 @@ module "autoscaling_mumbai" {
   desired_instances = 2
 
   # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix       = module.loadbalancer_mumbai.target_group_arn_suffix
-  load_balancer_arn_suffix      = module.loadbalancer_mumbai.nlb_arn_suffix
-  alarm_notification_topic_arn  = module.cloudwatch_mumbai.alerts_topic_arn
+  target_group_arn_suffix      = module.loadbalancer_mumbai.target_group_arn_suffix
+  load_balancer_arn_suffix     = module.loadbalancer_mumbai.nlb_arn_suffix
+  alarm_notification_topic_arn = module.cloudwatch_mumbai.alerts_topic_arn
 }
 
 
@@ -282,26 +296,26 @@ module "autoscaling_frankfurt" {
   source    = "./modules/autoscaling"
   providers = { aws = aws.frankfurt }
 
-  region                 = "eu-central-1"
-  project_name           = var.project_name
-  instance_type          = var.instance_type
-  ssh_public_key_path    = var.ssh_public_key_path
-  instance_profile_name  = module.iam.instance_profile_name
-  msab_security_group_id = module.networking_frankfurt.msab_security_group_id
-  public_subnet_ids      = module.networking_frankfurt.public_subnet_ids
-  target_group_arn       = module.loadbalancer_frankfurt.target_group_arn
-  ecr_repo_url           = module.ecr.repository_url
-  app_port               = var.app_port
-  rtc_min_port           = var.rtc_min_port
-  rtc_max_port           = var.rtc_max_port
-  redis_host             = module.redis_frankfurt.redis_host
-  redis_port             = module.redis_frankfurt.redis_port
-  redis_password         = var.redis_auth_token
-  laravel_internal_key   = var.laravel_internal_key
-  jwt_secret             = var.jwt_secret
-  session_secret         = var.session_secret
-  audio_domain           = var.audio_domain
-  cascade_enabled        = true
+  region                  = "eu-central-1"
+  project_name            = var.project_name
+  instance_type           = var.instance_type
+  ssh_public_key_path     = var.ssh_public_key_path
+  instance_profile_name   = module.iam.instance_profile_name
+  msab_security_group_id  = module.networking_frankfurt.msab_security_group_id
+  public_subnet_ids       = module.networking_frankfurt.public_subnet_ids
+  target_group_arn        = module.loadbalancer_frankfurt.target_group_arn
+  ecr_repo_url            = module.ecr.repository_url
+  app_port                = var.app_port
+  rtc_min_port            = var.rtc_min_port
+  rtc_max_port            = var.rtc_max_port
+  redis_host              = module.redis_frankfurt.redis_host
+  redis_port              = module.redis_frankfurt.redis_port
+  redis_password          = var.redis_auth_token
+  laravel_internal_key    = var.laravel_internal_key
+  jwt_secret              = var.jwt_secret
+  session_secret          = var.session_secret
+  audio_domain            = var.audio_domain
+  cascade_enabled         = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 
@@ -310,9 +324,9 @@ module "autoscaling_frankfurt" {
   desired_instances = 2
 
   # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix       = module.loadbalancer_frankfurt.target_group_arn_suffix
-  load_balancer_arn_suffix      = module.loadbalancer_frankfurt.nlb_arn_suffix
-  alarm_notification_topic_arn  = module.cloudwatch_frankfurt.alerts_topic_arn
+  target_group_arn_suffix      = module.loadbalancer_frankfurt.target_group_arn_suffix
+  load_balancer_arn_suffix     = module.loadbalancer_frankfurt.nlb_arn_suffix
+  alarm_notification_topic_arn = module.cloudwatch_frankfurt.alerts_topic_arn
 }
 
 # =============================================================================
