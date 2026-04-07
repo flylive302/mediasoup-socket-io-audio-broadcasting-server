@@ -35,7 +35,7 @@ const configSchema = z.object({
 
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),
-  JWT_MAX_AGE_SECONDS: z.coerce.number().default(86_400), // 24 hours fallback
+  JWT_MAX_AGE_SECONDS: z.coerce.number().default(2_592_000), // 30 days fallback
 
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
