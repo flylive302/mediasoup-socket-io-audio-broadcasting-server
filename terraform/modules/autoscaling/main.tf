@@ -94,6 +94,9 @@ resource "aws_launch_template" "msab" {
     cloudflare_turn_api_key = var.cloudflare_turn_api_key
     cloudflare_turn_key_id  = var.cloudflare_turn_key_id
     image_tag               = var.image_tag
+    jwt_max_age_seconds     = var.jwt_max_age_seconds
+    laravel_api_timeout_ms  = var.laravel_api_timeout_ms
+    ice_stun_urls           = var.ice_stun_urls
   }))
 
   # Metadata options (IMDSv2 required)

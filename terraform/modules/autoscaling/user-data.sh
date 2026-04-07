@@ -140,8 +140,13 @@ REDIS_PORT=${redis_port}
 REDIS_DB=3
 REDIS_TLS=true
 
+# JWT Authentication
+# Max age must match Laravel's MSAB JWT expiry (services.msab.jwt_expiry_hours)
+JWT_MAX_AGE_SECONDS=${jwt_max_age_seconds}
+
 # Laravel
 LARAVEL_API_URL=${laravel_api_url}
+LARAVEL_API_TIMEOUT_MS=${laravel_api_timeout_ms}
 
 # MediaSoup
 MEDIASOUP_LISTEN_IP=0.0.0.0
@@ -158,6 +163,9 @@ MAX_LISTENERS_PER_DISTRIBUTION_ROUTER=700
 
 # Security
 CORS_ORIGINS=${cors_origins}
+
+# ICE Servers (STUN/TURN for WebRTC NAT traversal)
+ICE_STUN_URLS=${ice_stun_urls}
 
 # Laravel Events
 MSAB_EVENTS_CHANNEL=flylive:msab:events

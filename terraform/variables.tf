@@ -95,3 +95,24 @@ variable "cloudflare_turn_key_id" {
   type        = string
   default     = ""
 }
+
+# --- MSAB Application Config ---
+# These are non-sensitive app config that gets written to the boot .env file
+
+variable "jwt_max_age_seconds" {
+  description = "Maximum JWT age in seconds — must match Laravel's MSAB JWT expiry (services.msab.jwt_expiry_hours)"
+  type        = number
+  default     = 2592000 # 30 days (720 hours × 3600)
+}
+
+variable "laravel_api_timeout_ms" {
+  description = "Timeout for MSAB → Laravel API calls in milliseconds"
+  type        = number
+  default     = 10000 # 10 seconds
+}
+
+variable "ice_stun_urls" {
+  description = "Comma-separated STUN server URLs for WebRTC NAT traversal"
+  type        = string
+  default     = "stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53"
+}

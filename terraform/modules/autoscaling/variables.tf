@@ -205,3 +205,23 @@ variable "alarm_notification_topic_arn" {
   type        = string
   default     = ""
 }
+
+# --- MSAB Application Config ---
+
+variable "jwt_max_age_seconds" {
+  description = "Maximum JWT age in seconds — written to boot .env"
+  type        = number
+  default     = 2592000 # 30 days
+}
+
+variable "laravel_api_timeout_ms" {
+  description = "Timeout for MSAB → Laravel API calls in milliseconds"
+  type        = number
+  default     = 10000
+}
+
+variable "ice_stun_urls" {
+  description = "Comma-separated STUN server URLs for WebRTC NAT traversal"
+  type        = string
+  default     = "stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53"
+}
