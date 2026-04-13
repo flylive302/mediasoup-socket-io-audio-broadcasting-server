@@ -118,6 +118,8 @@ export const RELAY_EVENTS = {
   /** User: profile updates */
   user: {
     PROFILE_UPDATED: "user.profile.updated",
+    USER_FOLLOWED: "user.followed",
+    USER_UNFOLLOWED: "user.unfollowed",
   },
 
 
