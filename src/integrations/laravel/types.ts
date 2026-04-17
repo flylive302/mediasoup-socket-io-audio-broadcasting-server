@@ -122,6 +122,11 @@ export const RELAY_EVENTS = {
     USER_UNFOLLOWED: "user.unfollowed",
   },
 
+  /** Auth: token revocation and force-disconnect (NOT pass-through — EventRouter intercepts) */
+  auth: {
+    REVOKE_TOKENS: "auth.revoke_tokens",
+    FORCE_DISCONNECT: "auth.force_disconnect",
+  },
 
   /** Lucky draw: cashback results, room/app announcements */
   lucky: {

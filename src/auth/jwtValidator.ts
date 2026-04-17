@@ -117,11 +117,42 @@ export async function verifyJwt(
   // Revocation is defense-in-depth — we accept the risk of allowing a
   // recently-revoked token during a Redis blip rather than blocking ALL users.
   try {
-    const revokedKey = `auth:revoked:${hashToken(token)}`;
-    const isRevoked = await redis.exists(revokedKey);
-    if (isRevoked) {
-      logger.warn({ userId: user.id }, "JWT: Attempted use of revoked token");
-      return null;
+    // Pipeline both revocation lookups in a single Redis round-trip
+    const userRevokedKey = `auth:user_revoked:${user.id}`;
+    const tokenRevokedKey = `auth:revoked:${hashToken(token)}`;
+    const pipeline = redis.pipeline();
+    pipeline.get(userRevokedKey);
+    pipeline.exists(tokenRevokedKey);
+    const results = await pipeline.exec();
+
+    // User-level revocation (primary — set by Laravel via relay event)
+    // Any JWT issued before the revocation timestamp is rejected.
+    if (results?.[0]) {
+      const [err, revokedAt] = results[0] as [Error | null, string | null];
+      if (
+        !err &&
+        revokedAt !== null &&
+        typeof payload.iat === "number" &&
+        payload.iat < Number(revokedAt)
+      ) {
+        logger.warn(
+          { userId: user.id },
+          "JWT: Rejected — issued before user-level revocation",
+        );
+        return null;
+      }
+    }
+
+    // Token-hash revocation (backward compat — kept for direct token invalidation)
+    if (results?.[1]) {
+      const [err, isRevoked] = results[1] as [Error | null, number];
+      if (!err && isRevoked) {
+        logger.warn(
+          { userId: user.id },
+          "JWT: Attempted use of revoked token (hash)",
+        );
+        return null;
+      }
     }
   } catch (err) {
     logger.warn(

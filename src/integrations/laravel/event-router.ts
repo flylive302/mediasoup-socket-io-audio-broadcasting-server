@@ -9,6 +9,7 @@
  * - both null → broadcast to all
  */
 import type { Server } from "socket.io";
+import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { UserSocketRepository } from "./user-socket.repository.js";
 import type { LaravelEvent, EventRoutingResult, EventTarget } from "./types.js";
@@ -19,6 +20,14 @@ import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
+import { config } from "@src/config/index.js";
+
+/** Payload for auth.force_disconnect relay event */
+interface ForceDisconnectPayload {
+  reason: string;
+  blocked_until?: string | null;
+  blocked_reason?: string | null;
+}
 
 export class EventRouter {
   constructor(
@@ -26,6 +35,7 @@ export class EventRouter {
     private readonly userSocketRepo: UserSocketRepository,
     private readonly clientManager: ClientManager,
     private readonly logger: Logger,
+    private readonly redis: Redis,
     private readonly roomStateRepo?: RoomStateRepository,
   ) {}
 
@@ -152,6 +162,28 @@ export class EventRouter {
         event.user_id !== null
       ) {
         this.syncUserProfile(event.user_id, event.payload);
+      }
+
+      // REACT: Write user-level revocation key to local Redis
+      if (
+        event.event === RELAY_EVENTS.auth.REVOKE_TOKENS &&
+        event.user_id !== null
+      ) {
+        this.writeRevocationKey(
+          event.user_id,
+          event.payload.revoked_at as number,
+        );
+      }
+
+      // REACT: Force-disconnect all user sockets
+      if (
+        event.event === RELAY_EVENTS.auth.FORCE_DISCONNECT &&
+        event.user_id !== null
+      ) {
+        await this.forceDisconnectUser(
+          event.user_id,
+          event.payload as unknown as ForceDisconnectPayload,
+        );
       }
 
       // Post-relay side-effect: sync room settings (seatCount) to RoomState
@@ -350,5 +382,63 @@ export class EventRouter {
           "Failed to sync room seatCount from room.updated",
         );
       });
+  }
+
+  /**
+   * Write user-level revocation key to local Redis.
+   * Any JWT with iat < revokedAt will be rejected by jwtValidator.
+   * TTL matches JWT lifetime so the key auto-expires when no valid tokens remain.
+   */
+  private writeRevocationKey(userId: number, revokedAt: number): void {
+    const key = `auth:user_revoked:${userId}`;
+    const ttl = config.JWT_MAX_AGE_SECONDS; // 30 days — matches JWT lifetime
+    this.redis
+      .set(key, String(revokedAt), "EX", ttl)
+      .then(() => {
+        this.logger.info(
+          { userId, revokedAt },
+          "User revocation key written to local Redis",
+        );
+      })
+      .catch((err) => {
+        this.logger.error(
+          { err, userId },
+          "Failed to write user revocation key — user may reconnect with old JWT",
+        );
+      });
+  }
+
+  /**
+   * Disconnect all sockets for a user and notify the client.
+   * The client receives an 'auth:force_disconnect' event with the suspension
+   * details before the socket is closed, allowing the frontend to show a
+   * user-facing "Account Suspended" message.
+   */
+  private async forceDisconnectUser(
+    userId: number,
+    payload: ForceDisconnectPayload,
+  ): Promise<void> {
+    const socketIds = await this.userSocketRepo.getSocketIds(userId);
+    let disconnectedCount = 0;
+
+    for (const sid of socketIds) {
+      const socket = this.io.sockets.sockets.get(sid);
+      if (socket) {
+        // Emit before disconnect so the client can react (show suspended page)
+        socket.emit("auth:force_disconnect", payload);
+        socket.disconnect(true);
+        disconnectedCount++;
+      }
+    }
+
+    this.logger.warn(
+      {
+        userId,
+        socketCount: socketIds.length,
+        disconnectedCount,
+        reason: payload.reason,
+      },
+      "User force-disconnected from all sockets",
+    );
   }
 }
