@@ -22,5 +22,5 @@ export interface PendingInvite {
 }
 
 export type SeatActionResult =
-  | { success: true; seatIndex: number }
+  | { success: true; seatIndex: number; previousSeatIndex?: number | null }
   | { success: false; error: string };

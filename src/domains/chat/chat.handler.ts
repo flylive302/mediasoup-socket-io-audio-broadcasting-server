@@ -30,12 +30,13 @@ const handleChatMessage = createHandler(
       return { success: false, error: Errors.RATE_LIMITED };
     }
 
+    // Lean payload: id + userId + content + type + timestamp.
+    // Frontend hydrates author name/avatar/frame from its participants map
+    // (populated by room:userJoined). Avoids re-broadcasting profile data
+    // on every message at scale.
     const message = {
       id: randomUUID(),
       userId,
-      userName: socket.data.user.name,
-      avatar: socket.data.user.avatar,
-      frame: socket.data.user.frame,
       content: payload.content,
       type: payload.type,
       timestamp: Date.now(),

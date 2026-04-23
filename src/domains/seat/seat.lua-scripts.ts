@@ -22,40 +22,45 @@ export const TAKE_SEAT_SCRIPT = `
   local seatIndex = tonumber(ARGV[1])
   local userId = ARGV[2]
   local seatCount = tonumber(ARGV[3])
-  
+
   -- Validate seat index
   if seatIndex < 0 or seatIndex >= seatCount then
     return cjson.encode({success = false, error = "SEAT_INVALID"})
   end
-  
+
   -- Check if locked
   if redis.call('SISMEMBER', lockedKey, tostring(seatIndex)) == 1 then
     return cjson.encode({success = false, error = "SEAT_LOCKED"})
   end
-  
+
   -- Check if seat is already taken
   local existingSeat = redis.call('HGET', seatsKey, tostring(seatIndex))
   if existingSeat then
     return cjson.encode({success = false, error = "SEAT_TAKEN"})
   end
-  
-  -- Remove user from any existing seat first (O(1) via reverse index)
-  local existingUserSeat = redis.call('GET', userSeatKey)
-  if existingUserSeat then
-    redis.call('HDEL', seatsKey, existingUserSeat)
+
+  -- Remove user from any existing seat first (O(1) via reverse index).
+  -- Capture the prior index so the handler can broadcast seat:cleared
+  -- to keep other clients' UIs in sync during a move.
+  local previousSeatIndex = redis.call('GET', userSeatKey)
+  if previousSeatIndex then
+    redis.call('HDEL', seatsKey, previousSeatIndex)
   end
-  
+
   -- Take the new seat
   local seatData = cjson.encode({userId = userId, muted = false})
   redis.call('HSET', seatsKey, tostring(seatIndex), seatData)
-  
+
   -- SEAT-005: Maintain user→seat reverse index
   redis.call('SET', userSeatKey, tostring(seatIndex))
-  
+
   -- M-3 FIX: Ensure TTL on seat keys as crash safety net
   redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
   redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
-  
+
+  if previousSeatIndex then
+    return cjson.encode({success = true, seatIndex = seatIndex, previousSeatIndex = tonumber(previousSeatIndex)})
+  end
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 
@@ -91,17 +96,17 @@ export const ASSIGN_SEAT_SCRIPT = `
   local userId = ARGV[2]
   local seatCount = tonumber(ARGV[3])
   local roomPrefix = ARGV[4]
-  
+
   -- Validate seat index
   if seatIndex < 0 or seatIndex >= seatCount then
     return cjson.encode({success = false, error = "SEAT_INVALID"})
   end
-  
+
   -- Check if locked
   if redis.call('SISMEMBER', lockedKey, tostring(seatIndex)) == 1 then
     return cjson.encode({success = false, error = "SEAT_LOCKED"})
   end
-  
+
   -- Remove anyone currently on that seat + clean their reverse index
   local displaced = redis.call('HGET', seatsKey, tostring(seatIndex))
   if displaced then
@@ -109,24 +114,29 @@ export const ASSIGN_SEAT_SCRIPT = `
     redis.call('HDEL', seatsKey, tostring(seatIndex))
     redis.call('DEL', roomPrefix .. displacedUser)
   end
-  
-  -- Remove user from any existing seat (O(1) via reverse index)
-  local existingUserSeat = redis.call('GET', userSeatKey)
-  if existingUserSeat then
-    redis.call('HDEL', seatsKey, existingUserSeat)
+
+  -- Remove user from any existing seat (O(1) via reverse index).
+  -- Capture the prior index so the handler can broadcast seat:cleared
+  -- to keep other clients' UIs in sync during a move.
+  local previousSeatIndex = redis.call('GET', userSeatKey)
+  if previousSeatIndex then
+    redis.call('HDEL', seatsKey, previousSeatIndex)
   end
-  
+
   -- Assign user to the seat
   local seatData = cjson.encode({userId = userId, muted = false})
   redis.call('HSET', seatsKey, tostring(seatIndex), seatData)
-  
+
   -- SEAT-005: Maintain user→seat reverse index
   redis.call('SET', userSeatKey, tostring(seatIndex))
-  
+
   -- M-3 FIX: Ensure TTL on seat keys as crash safety net
   redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
   redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
-  
+
+  if previousSeatIndex then
+    return cjson.encode({success = true, seatIndex = seatIndex, previousSeatIndex = tonumber(previousSeatIndex)})
+  end
   return cjson.encode({success = true, seatIndex = seatIndex})
 `;
 

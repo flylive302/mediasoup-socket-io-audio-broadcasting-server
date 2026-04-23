@@ -30,7 +30,16 @@ export const takeSeatHandler = createHandler(
       return { success: false, error: result.error };
     }
 
-    logger.info({ roomId, userId, seatIndex }, "User took seat");
+    logger.info({ roomId, userId, seatIndex, previousSeatIndex: result.previousSeatIndex ?? null }, "User took seat");
+
+    // When the user moved seats, tell other clients to clear the prior slot
+    // first. Without this, observers would see the user occupying both seats
+    // until some unrelated event repaints the source.
+    if (result.previousSeatIndex != null) {
+      emitToRoom(socket, roomId, "seat:cleared", {
+        seatIndex: result.previousSeatIndex,
+      }, context.cascadeRelay);
+    }
 
     // BL-007 FIX: userId-only — frontend looks up user from participants (cascade-aware)
     emitToRoom(socket, roomId, "seat:updated", {

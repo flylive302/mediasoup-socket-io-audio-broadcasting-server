@@ -3,7 +3,7 @@
  */
 import { seatAssignSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
-import { emitToRoom } from "@src/shared/room-emit.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
@@ -39,12 +39,22 @@ export const assignSeatHandler = createHandler(
     }
 
     logger.info(
-      { roomId, targetUserId, seatIndex, assignedBy: userId },
+      { roomId, targetUserId, seatIndex, assignedBy: userId, previousSeatIndex: result.previousSeatIndex ?? null },
       "User assigned to seat",
     );
 
-    // BL-007 FIX: userId-only — frontend looks up user from participants (cascade-aware)
-    emitToRoom(socket, roomId, "seat:updated", {
+    // When assigned user is moved from another seat, broadcast the clear so
+    // every client (owner + everyone else) drops the source slot.
+    if (result.previousSeatIndex != null) {
+      broadcastToRoom(socket.nsp, roomId, "seat:cleared", {
+        seatIndex: result.previousSeatIndex,
+      }, context.cascadeRelay);
+    }
+
+    // BL-007 FIX: userId-only — frontend looks up user from participants (cascade-aware).
+    // broadcastToRoom (includes sender): the assigning owner is in the room
+    // and needs the same UI update everyone else gets.
+    broadcastToRoom(socket.nsp, roomId, "seat:updated", {
       seatIndex,
       userId: targetUserId,
       isMuted: false,
