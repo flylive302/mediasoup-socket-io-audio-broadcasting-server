@@ -17,6 +17,7 @@ resource "aws_globalaccelerator_accelerator" "main" {
 resource "aws_globalaccelerator_listener" "tls" {
   accelerator_arn = aws_globalaccelerator_accelerator.main.id
   protocol        = "TCP"
+  client_affinity = "SOURCE_IP"
 
   port_range {
     from_port = 443
