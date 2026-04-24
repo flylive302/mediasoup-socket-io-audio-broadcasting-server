@@ -15,8 +15,11 @@ terraform {
   }
 
   # Remote state in S3 (created via bootstrap)
+  # Bucket is account-specific — provided at init time:
+  #   cp backend.hcl.example backend.hcl  (fill in your account ID)
+  #   terraform init -backend-config=backend.hcl
   backend "s3" {
-    bucket       = "flylive-audio-tfstate-778477255323"
+    bucket       = "flylive-audio-tfstate-013453151767"  # ← change this
     key          = "phase1/terraform.tfstate"
     region       = "ap-south-1"
     use_lockfile = true
@@ -272,7 +275,6 @@ module "autoscaling_mumbai" {
   rtc_max_port            = var.rtc_max_port
   redis_host              = module.redis_mumbai.redis_host
   redis_port              = module.redis_mumbai.redis_port
-  redis_password          = var.redis_auth_token
   laravel_internal_key    = var.laravel_internal_key
   jwt_secret              = var.jwt_secret
   session_secret          = var.session_secret
@@ -315,7 +317,6 @@ module "autoscaling_frankfurt" {
   rtc_max_port            = var.rtc_max_port
   redis_host              = module.redis_frankfurt.redis_host
   redis_port              = module.redis_frankfurt.redis_port
-  redis_password          = var.redis_auth_token
   laravel_internal_key    = var.laravel_internal_key
   jwt_secret              = var.jwt_secret
   session_secret          = var.session_secret

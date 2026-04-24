@@ -51,6 +51,19 @@ output "sns_topic_arn" {
   value       = module.sns.topic_arn
 }
 
+# --- ACM Certificate Validation Records ---
+# Run `terraform output acm_validation_mumbai` and `acm_validation_frankfurt` DURING apply
+# to get the exact CNAME records to add in Cloudflare (required for cert to issue).
+output "acm_validation_mumbai" {
+  description = "ACM DNS validation records for Mumbai cert — add these CNAMEs in Cloudflare (DNS only, not proxied)"
+  value       = module.ssl_mumbai.domain_validation_options
+}
+
+output "acm_validation_frankfurt" {
+  description = "ACM DNS validation records for Frankfurt cert — add these CNAMEs in Cloudflare (DNS only, not proxied)"
+  value       = module.ssl_frankfurt.domain_validation_options
+}
+
 # --- CloudWatch Alerts ---
 output "alerts_topic_arn" {
   description = "SNS topic ARN for CloudWatch operational alerts"

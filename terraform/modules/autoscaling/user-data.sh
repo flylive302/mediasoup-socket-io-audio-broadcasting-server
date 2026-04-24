@@ -65,6 +65,10 @@ EOF
 iptables -t raw -A PREROUTING -p udp --dport ${rtc_min_port}:${rtc_max_port} -j NOTRACK 2>/dev/null || true
 iptables -t raw -A OUTPUT -p udp --sport ${rtc_min_port}:${rtc_max_port} -j NOTRACK 2>/dev/null || true
 
+# Persist iptables rules so they survive instance reboots
+DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+netfilter-persistent save
+
 # --- Get instance metadata ---
 TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
@@ -111,7 +115,7 @@ SECRET_REDIS_AUTH=$(fetch_ssm "redis-auth-token")
 
 # --- Validate critical secrets (fail fast instead of silent empty values) ---
 MISSING_SECRETS=0
-for SECRET_CHECK in "JWT_SECRET:$SECRET_JWT" "INTERNAL_KEY:$SECRET_INTERNAL_KEY" "REDIS_AUTH:$SECRET_REDIS_AUTH"; do
+for SECRET_CHECK in "JWT_SECRET:$SECRET_JWT" "INTERNAL_KEY:$SECRET_INTERNAL_KEY" "REDIS_AUTH:$SECRET_REDIS_AUTH" "SESSION_SECRET:$SECRET_SESSION"; do
   CHECK_NAME="$${SECRET_CHECK%%:*}"
   CHECK_VALUE="$${SECRET_CHECK#*:}"
   if [ -z "$CHECK_VALUE" ]; then
@@ -217,6 +221,36 @@ docker run -d \
   -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
   -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
   ${ecr_repo_url}:${image_tag}
+
+# --- Install CloudWatch Agent (ship Docker JSON logs to CloudWatch Logs) ---
+wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb \
+  -O /tmp/cw-agent.deb
+dpkg -i /tmp/cw-agent.deb
+rm /tmp/cw-agent.deb
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWEOF'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [{
+          "file_path": "/var/lib/docker/containers/*/*.log",
+          "log_group_name": "/flylive-audio/msab",
+          "log_stream_name": "{instance_id}",
+          "timezone": "UTC",
+          "multi_line_start_pattern": "^\\{"
+        }]
+      }
+    }
+  }
+}
+CWEOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+
+echo "✅ CloudWatch Agent started — logs → /flylive-audio/msab"
 
 # --- Wait for app health + complete launch lifecycle hook ---
 # Ensures ASG only marks instance InService AFTER the app is confirmed healthy.

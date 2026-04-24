@@ -1,0 +1,12 @@
+# =============================================================================
+# Terraform S3 Backend — Account-Specific Config
+# =============================================================================
+# 1. Copy this file:  cp backend.hcl.example backend.hcl
+# 2. Fill in your AWS account ID below (find it with: aws sts get-caller-identity)
+# 3. Create the bucket first (see INFRASTRUCTURE.md § 4.4)
+# 4. Run: terraform init -backend-config=backend.hcl
+#
+# backend.hcl is gitignored — never commit it (contains your account ID).
+# =============================================================================
+
+bucket = "flylive-audio-tfstate-YOUR_ACCOUNT_ID_HERE"

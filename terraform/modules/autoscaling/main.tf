@@ -83,7 +83,6 @@ resource "aws_launch_template" "msab" {
     rtc_max_port         = var.rtc_max_port
     redis_host           = var.redis_host
     redis_port           = var.redis_port
-    redis_password       = var.redis_password
     laravel_internal_key = var.laravel_internal_key
     jwt_secret           = var.jwt_secret
     session_secret       = var.session_secret
@@ -209,7 +208,7 @@ resource "aws_autoscaling_lifecycle_hook" "launching" {
   name                   = "msab-launch-hook"
   autoscaling_group_name = aws_autoscaling_group.msab.name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  heartbeat_timeout      = 300 # 5 minutes for bootstrap
+  heartbeat_timeout      = 600 # 10 minutes — covers cold Frankfurt start (cross-region ECR pull)
   default_result         = "CONTINUE"
 }
 

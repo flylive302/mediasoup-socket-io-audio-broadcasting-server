@@ -77,12 +77,6 @@ variable "redis_port" {
   default     = 6379
 }
 
-variable "redis_password" {
-  description = "Redis password"
-  type        = string
-  sensitive   = true
-}
-
 variable "laravel_internal_key" {
   description = "Shared secret key for Laravel API authentication"
   type        = string
@@ -195,9 +189,14 @@ variable "load_balancer_arn_suffix" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag to deploy (SHA for production, latest for dev)"
+  description = "Docker image tag to deploy. Pin to a git-SHA tag (e.g., sha-abc1234) in production. Using 'latest' risks mixed cluster versions during scale-out events."
   type        = string
   default     = "latest"
+
+  validation {
+    condition     = var.image_tag != ""
+    error_message = "image_tag must not be empty."
+  }
 }
 
 variable "alarm_notification_topic_arn" {

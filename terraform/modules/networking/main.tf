@@ -101,9 +101,9 @@ resource "aws_security_group" "msab" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # WebRTC UDP
+  # WebRTC UDP (includes SFU cascade ports 40000–49999 — cross-region traffic comes from public IPs)
   ingress {
-    description = "WebRTC UDP"
+    description = "WebRTC UDP + SFU cascade"
     from_port   = var.rtc_min_port
     to_port     = var.rtc_max_port
     protocol    = "udp"
@@ -117,16 +117,6 @@ resource "aws_security_group" "msab" {
     to_port     = var.rtc_max_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # SFU cascade: allow cross-region UDP for plainTransport RTP pipes
-  # AUDIT-010 FIX: restricted to VPC CIDRs only (was 0.0.0.0/0)
-  ingress {
-    description = "SFU cascade plainTransport (RTP/SRTP cross-region)"
-    from_port   = 40000
-    to_port     = 49999
-    protocol    = "udp"
-    cidr_blocks = ["10.10.0.0/16"]
   }
 
   # All outbound
