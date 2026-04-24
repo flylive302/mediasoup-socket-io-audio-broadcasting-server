@@ -18,7 +18,7 @@ resource "aws_sns_topic" "msab_events" {
 # in the URL. The /api/events route reads it from either the X-Internal-Key header
 # (for direct Laravel POST) or the ?key= query parameter (for SNS delivery).
 resource "aws_sns_topic_subscription" "msab_endpoints" {
-  for_each = toset(var.msab_endpoint_urls)
+  for_each = var.msab_endpoint_urls
 
   topic_arn = aws_sns_topic.msab_events.arn
   protocol  = "https"

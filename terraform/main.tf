@@ -204,10 +204,11 @@ module "sns" {
 
   # Fan-out to BOTH regional NLB endpoints directly (not via GA)
   # GA would route to nearest region only — we need ALL regions to receive every event
-  msab_endpoint_urls = [
-    "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events",
-    "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events",
-  ]
+  # Map keys are static region names so for_each is resolvable at plan time
+  msab_endpoint_urls = {
+    mumbai    = "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events"
+    frankfurt = "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events"
+  }
 }
 
 # =============================================================================

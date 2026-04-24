@@ -5,8 +5,8 @@ variable "project_name" {
 }
 
 variable "msab_endpoint_urls" {
-  description = "List of regional MSAB /api/events HTTPS endpoints to subscribe"
-  type        = list(string)
+  description = "Map of region-name => MSAB /api/events HTTPS endpoint. Keys must be static (known at plan time); values may contain apply-time NLB DNS names."
+  type        = map(string)
 }
 
 variable "aws_account_id" {
