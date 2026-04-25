@@ -31,12 +31,13 @@ async function processJoin(
     clientManager,
     seatRepository,
     cascadeCoordinator,
+    roomRegistry,
   } = context;
 
   // Try to get/create the room locally first
   let cluster = roomManager.getRoom(roomId);
 
-  // Cross-Region Cascade Check
+  // Cross-Region Cascade Check (Laravel-discovered, between regions)
   if (!cluster && cascadeCoordinator) {
     const cascadeResult =
       await cascadeCoordinator.handleCrossRegionJoin(roomId);
@@ -53,9 +54,62 @@ async function processJoin(
     }
   }
 
-  // Standard flow: create room if still not found (we're the origin)
-  if (!cluster) {
+  // B-1: Same-region ownership via Redis CAS.
+  // Without this, two instances in the same region could both fall through to
+  // getOrCreateRoom() and end up running independent mediasoup routers for the
+  // same room — producers on instance A unreachable to listeners on instance B.
+  const selfId = config.PUBLIC_IP || "unknown";
+  if (!cluster && roomRegistry) {
+    const claim = await roomRegistry.claimOwnership(roomId, selfId);
+
+    if (claim.won || claim.owner === selfId) {
+      // We own the room (just claimed, or already owned but lost local cluster
+      // after restart). Become origin.
+      cluster = await roomManager.getOrCreateRoom(roomId);
+      await roomRegistry.registerOrigin(roomId, {
+        instanceId: selfId,
+        ip: selfId,
+        port: config.PORT,
+        listenerCount: 0,
+      });
+      logger.info({ roomId, selfId }, "Origin claimed via Redis CAS");
+    } else if (cascadeCoordinator) {
+      // Another instance in our region owns the room. Become an edge piping
+      // from them. waitForOriginInfo handles the owner-init race.
+      const edgeResult = await cascadeCoordinator.handleSameRegionEdge(
+        roomId,
+        claim.owner,
+      );
+      if (edgeResult.isEdge) {
+        cluster = await roomManager.getOrCreateRoom(roomId);
+        logger.info(
+          { roomId, ownerInstanceId: claim.owner },
+          "Edge room created for same-region cascade",
+        );
+      }
+    }
+  }
+
+  // Fallback for single-instance / cascade-disabled deployments.
+  // Also catches the path where roomRegistry was injected but cascade is off
+  // and we lost CAS — there's no edge path available, so we surface the error
+  // by leaving cluster null → the caller throws below.
+  if (!cluster && !roomRegistry) {
     cluster = await roomManager.getOrCreateRoom(roomId);
+  }
+
+  if (!cluster) {
+    throw new Error(
+      `Cannot serve room ${roomId}: another instance owns it but cascade edge setup failed`,
+    );
+  }
+
+  // Refresh ownership TTL on every join so long-running celebrity broadcasts
+  // don't hit the 24h orphan window. No-op (via Lua check) if we're not the owner.
+  if (roomRegistry) {
+    roomRegistry.refreshOwnership(roomId, selfId).catch((err) =>
+      logger.warn({ err, roomId }, "Failed to refresh room ownership TTL"),
+    );
   }
 
   const rtpCapabilities = cluster.router?.rtpCapabilities;

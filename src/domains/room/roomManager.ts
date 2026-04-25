@@ -11,6 +11,7 @@ import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { config } from "@src/config/index.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
+import type { RoomRegistry } from "./room-registry.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -22,6 +23,7 @@ export class RoomManager {
   // Cascade services (late-bound after bootstrap)
   private cascadeCoordinator: CascadeCoordinator | null = null;
   private cascadeRelay: CascadeRelay | null = null;
+  private roomRegistry: RoomRegistry | null = null;
 
   constructor(
     private readonly workerManager: WorkerManager,
@@ -48,6 +50,15 @@ export class RoomManager {
   setCascadeServices(coordinator: CascadeCoordinator, relay: CascadeRelay): void {
     this.cascadeCoordinator = coordinator;
     this.cascadeRelay = relay;
+  }
+
+  /**
+   * Late-bind the RoomRegistry so closeRoom can release the CAS ownership key.
+   * Always called from server.ts (independent of CASCADE_ENABLED) — single-instance
+   * deploys still claim and release ownership for safety.
+   */
+  setRoomRegistry(registry: RoomRegistry): void {
+    this.roomRegistry = registry;
   }
 
   getRoomCount(): number {
@@ -221,6 +232,15 @@ export class RoomManager {
       cleanupOps.push(
         this.cascadeCoordinator.cleanup(roomId).catch((err) =>
           logger.error({ err, roomId }, "Cascade cleanup failed"),
+        ),
+      );
+    }
+    // B-1: Release CAS ownership claim so another instance can re-claim if a
+    // new room with this id appears later (e.g., user re-opens after closing).
+    if (this.roomRegistry) {
+      cleanupOps.push(
+        this.roomRegistry.cleanup(roomId).catch((err) =>
+          logger.error({ err, roomId }, "RoomRegistry cleanup failed"),
         ),
       );
     }

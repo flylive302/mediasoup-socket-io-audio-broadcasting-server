@@ -78,12 +78,34 @@ function validUserPayload(overrides: Record<string, unknown> = {}): Record<strin
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mockRedis: any;
 
+/**
+ * Build a chainable pipeline mock that resolves exec() with the given results.
+ * Production calls: redis.pipeline().get(userKey); pipeline.exists(tokenKey); pipeline.exec()
+ * Each result tuple is [error, value] matching ioredis pipeline.exec() shape.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createPipelineMock(execResults: Array<[Error | null, unknown]>): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pipeline: any = {};
+  pipeline.get = vi.fn().mockReturnValue(pipeline);
+  pipeline.exists = vi.fn().mockReturnValue(pipeline);
+  pipeline.exec = vi.fn().mockResolvedValue(execResults);
+  return pipeline;
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────
 
 describe("JwtValidator", () => {
   beforeEach(() => {
     mockRedis = {
       exists: vi.fn().mockResolvedValue(0),
+      // Default: neither user-level nor token-hash revocation set
+      pipeline: vi.fn().mockReturnValue(
+        createPipelineMock([
+          [null, null], // userRevoked GET → no revocation timestamp
+          [null, 0],    // tokenRevoked EXISTS → not revoked
+        ]),
+      ),
     };
   });
 
@@ -138,7 +160,13 @@ describe("JwtValidator", () => {
   });
 
   it("returns null for revoked token", async () => {
-    mockRedis.exists.mockResolvedValue(1); // Token is revoked
+    // Token-hash revocation is set — second pipeline result returns EXISTS=1
+    mockRedis.pipeline.mockReturnValue(
+      createPipelineMock([
+        [null, null], // userRevoked GET → not revoked
+        [null, 1],    // tokenRevoked EXISTS → revoked
+      ]),
+    );
 
     const payload = validUserPayload();
     const token = createJwt(payload);
@@ -146,11 +174,14 @@ describe("JwtValidator", () => {
     const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
     expect(user).toBeNull();
-    expect(mockRedis.exists).toHaveBeenCalled();
+    expect(mockRedis.pipeline).toHaveBeenCalled();
   });
 
   it("returns user (fail-open) on Redis error during revocation check", async () => {
-    mockRedis.exists.mockRejectedValue(new Error("Redis connection lost"));
+    // Pipeline exec throws — simulates Redis unreachable during revocation check
+    const pipeline = createPipelineMock([]);
+    pipeline.exec.mockRejectedValue(new Error("Redis connection lost"));
+    mockRedis.pipeline.mockReturnValue(pipeline);
 
     const payload = validUserPayload();
     const token = createJwt(payload);

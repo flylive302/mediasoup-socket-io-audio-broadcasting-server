@@ -17,6 +17,7 @@ import type { UserRoomRepository } from "./integrations/laravel/user-room.reposi
 import type { EventRouter } from "./integrations/laravel/event-router.js";
 import type { CascadeCoordinator } from "./domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "./domains/cascade/cascade-relay.js";
+import type { RoomRegistry } from "./domains/room/room-registry.js";
 
 
 export interface AppContext {
@@ -37,4 +38,5 @@ export interface AppContext {
   eventRouter: EventRouter;
   cascadeCoordinator: CascadeCoordinator | null;
   cascadeRelay: CascadeRelay | null;
+  roomRegistry: RoomRegistry | null;
 }

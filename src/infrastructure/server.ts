@@ -85,10 +85,16 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   let cascadeCoordinator: CascadeCoordinator | null = null;
   let cascadeRelay: CascadeRelay | null = null;
 
+  // RoomRegistry is always exposed via context so the join handler's CAS path
+  // works even if cascade isn't enabled (single-instance deploys still benefit
+  // from idempotent ownership claims).
+  appContext.roomRegistry = roomRegistry;
+  roomManager.setRoomRegistry(roomRegistry);
+
   if (config.CASCADE_ENABLED) {
     cascadeRelay = new CascadeRelay(logger);
     cascadeCoordinator = new CascadeCoordinator(
-      roomManager, pipeManager,
+      roomManager, pipeManager, roomRegistry,
       appContext.laravelClient, cascadeRelay, logger,
     );
     appContext.cascadeCoordinator = cascadeCoordinator;

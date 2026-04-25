@@ -21,15 +21,72 @@ export interface InstanceInfo {
 const KEY_PREFIX = "cascade:room:";
 const TTL_SECONDS = 86_400; // 24 hours (matches RoomStateRepository)
 
+export interface ClaimResult {
+  /** True if this instance won the claim and should become origin. */
+  won: boolean;
+  /** The instanceId currently holding ownership (self if won, otherwise existing owner). */
+  owner: string;
+}
+
 export class RoomRegistry {
   constructor(
     private readonly redis: Redis,
     private readonly logger: Logger,
   ) {}
 
-  // ─── Origin ─────────────────────────────────────────────────────
+  // ─── Origin Ownership (CAS) ────────────────────────────────────
 
-  /** Register this instance as origin for a room */
+  /**
+   * Atomically claim origin ownership of a room, or return the current owner.
+   *
+   * SETNX-based: only one instance ever wins for a given roomId. The TTL
+   * acts as orphan recovery — if the owning instance dies without releasing,
+   * another instance can claim after expiry.
+   *
+   * Stored separately from registerOrigin's InstanceInfo so the claim is
+   * cheap (string SET) and the full info is only written after the cluster
+   * is fully initialized. Edges that lose the claim must poll getOrigin()
+   * to wait for the winner's cluster to come up.
+   */
+  async claimOwnership(roomId: string, instanceId: string): Promise<ClaimResult> {
+    const key = `${KEY_PREFIX}${roomId}:owner`;
+    const set = await this.redis.set(key, instanceId, "EX", TTL_SECONDS, "NX");
+
+    if (set === "OK") {
+      this.logger.debug({ roomId, instanceId }, "RoomRegistry: ownership claimed");
+      return { won: true, owner: instanceId };
+    }
+
+    const currentOwner = (await this.redis.get(key)) ?? instanceId;
+    this.logger.debug({ roomId, instanceId, currentOwner }, "RoomRegistry: ownership claim lost");
+    return { won: false, owner: currentOwner };
+  }
+
+  /**
+   * Refresh ownership TTL — called when the owner observes activity in the room.
+   * Prevents the 24h orphan window if a long-running celebrity broadcast survives
+   * past the original claim TTL.
+   */
+  async refreshOwnership(roomId: string, instanceId: string): Promise<void> {
+    const key = `${KEY_PREFIX}${roomId}:owner`;
+    // Lua: only refresh if we still own it (prevents resurrecting a key after another instance reclaimed)
+    await this.redis.eval(
+      `
+      if redis.call('GET', KEYS[1]) == ARGV[1] then
+        return redis.call('EXPIRE', KEYS[1], ARGV[2])
+      end
+      return 0
+      `,
+      1,
+      key,
+      instanceId,
+      TTL_SECONDS.toString(),
+    );
+  }
+
+  // ─── Origin Info ────────────────────────────────────────────────
+
+  /** Register this instance as origin for a room (call AFTER cluster is initialized) */
   async registerOrigin(roomId: string, info: InstanceInfo): Promise<void> {
     const key = `${KEY_PREFIX}${roomId}:origin`;
     await this.redis.setex(key, TTL_SECONDS, JSON.stringify(info));
@@ -165,11 +222,12 @@ export class RoomRegistry {
 
   // ─── Cleanup ────────────────────────────────────────────────────
 
-  /** Remove all registry data for a room */
+  /** Remove all registry data for a room (origin info, edges, AND ownership claim). */
   async cleanup(roomId: string): Promise<void> {
+    const ownerKey = `${KEY_PREFIX}${roomId}:owner`;
     const originKey = `${KEY_PREFIX}${roomId}:origin`;
     const edgesKey = `${KEY_PREFIX}${roomId}:edges`;
-    await this.redis.del(originKey, edgesKey);
+    await this.redis.del(ownerKey, originKey, edgesKey);
     this.logger.debug({ roomId }, "RoomRegistry: room cleaned up");
   }
 }

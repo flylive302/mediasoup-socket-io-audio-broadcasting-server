@@ -94,6 +94,7 @@ export async function initializeSocket(
     eventRouter,
     cascadeCoordinator: null, // Wired in server.ts after bootstrap
     cascadeRelay: null,       // Wired in server.ts after bootstrap
+    roomRegistry: null,       // Wired in server.ts after bootstrap
   };
 
   io.on("connection", (socket) => {
