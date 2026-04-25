@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("@src/config/index.js", () => ({
+  config: {
+    JWT_MAX_AGE_SECONDS: 2592000,
+    CASCADE_ENABLED: false,
+    INTERNAL_API_KEY: "",
+    PUBLIC_IP: "",
+    PORT: 3030,
+    LOG_LEVEL: "silent",
+  },
+  isDev: false,
+}));
+
 // Mock logger
 vi.mock("@src/infrastructure/logger.js", () => ({
   logger: {
