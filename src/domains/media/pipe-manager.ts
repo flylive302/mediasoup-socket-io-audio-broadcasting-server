@@ -26,16 +26,30 @@ export class PipeManager {
   constructor(private readonly logger: Logger) {}
 
   /**
-   * ORIGIN side: create a plainTransport to send a producer's RTP out.
+   * ORIGIN side: create a plainTransport, point it at the edge's address,
+   * then consume the producer using the EDGE'S rtpCapabilities so RTP flows
+   * OUT to the edge with parameters the edge can decode.
    *
-   * The origin creates this transport, then gives the ip/port to the edge
-   * via the internal API so the edge can `connect()` its own transport to it.
+   * Per mediasoup v3 docs ("Consuming Media in an External Endpoint"):
+   * the consumer must be created with the receiver's rtpCapabilities, and
+   * the receiver produces using the resulting consumer.rtpParameters — that
+   * carries the negotiated payload type, SSRC, header extensions, etc.
+   * Synthesizing rtpParameters on the receiver causes SSRC mismatch and the
+   * producer never sees incoming packets.
+   *
+   * Returns the consumer's rtpParameters/kind so the edge can produce with
+   * the exact same SSRC/PT the origin is sending.
    */
   async createOriginPipe(
     router: mediasoup.types.Router,
     producerId: string,
     roomId: string,
-  ): Promise<PlainTransportInfo> {
+    edgeAddress: { ip: string; port: number },
+    edgeRtpCapabilities: mediasoup.types.RtpCapabilities,
+  ): Promise<PlainTransportInfo & {
+    consumerRtpParameters: mediasoup.types.RtpParameters;
+    consumerKind: mediasoup.types.MediaKind;
+  }> {
     const transport = await router.createPlainTransport({
       listenInfo: {
         protocol: "udp",
@@ -49,10 +63,20 @@ export class PipeManager {
       comedia: false, // origin provides explicit remote address
     });
 
-    // Consume the producer on this transport so RTP flows out
-    await transport.consume({
+    // Connect to edge BEFORE consuming so RTP has a destination from the
+    // first packet — order matters: consume() against an unconnected
+    // transport silently produces packets that go nowhere.
+    await transport.connect({
+      ip: edgeAddress.ip,
+      port: edgeAddress.port,
+    });
+
+    // Consume with the EDGE's caps so the consumer's rtpParameters reflect
+    // what the edge can decode. The returned rtpParameters carry SSRC, PT,
+    // and header extensions that the edge MUST mirror in produce().
+    const consumer = await transport.consume({
       producerId,
-      rtpCapabilities: router.rtpCapabilities,
+      rtpCapabilities: edgeRtpCapabilities,
       paused: false,
     });
 
@@ -66,16 +90,24 @@ export class PipeManager {
         roomId,
         producerId,
         transportId: transport.id,
+        consumerId: consumer.id,
         ip: tuple.localAddress,
         port: tuple.localPort,
+        edgeIp: edgeAddress.ip,
+        edgePort: edgeAddress.port,
       },
       "PipeManager: origin pipe created",
     );
 
-    const info: PlainTransportInfo = {
+    const info: PlainTransportInfo & {
+      consumerRtpParameters: mediasoup.types.RtpParameters;
+      consumerKind: mediasoup.types.MediaKind;
+    } = {
       transportId: transport.id,
       ip: tuple.localAddress ?? "0.0.0.0",
       port: tuple.localPort,
+      consumerRtpParameters: consumer.rtpParameters,
+      consumerKind: consumer.kind,
     };
     if (transport.srtpParameters) {
       info.srtpParameters = transport.srtpParameters;
@@ -84,18 +116,16 @@ export class PipeManager {
   }
 
   /**
-   * EDGE side: create a plainTransport pointing at the origin's ip:port
-   * and produce locally so edge listeners can consume.
+   * EDGE side, phase 1: create the local plainTransport and return its
+   * listen address so the edge can POST it to the origin's /pipe/offer
+   * before the origin creates its own end. The transport is NOT yet
+   * connected or producing — call createEdgePipeFromTransport with the
+   * origin's returned address to complete setup.
    */
-  async createEdgePipe(
+  async createEdgeListener(
     router: mediasoup.types.Router,
-    originInfo: PlainTransportInfo,
-    rtpParameters: mediasoup.types.RtpParameters,
     roomId: string,
-  ): Promise<{
-    transport: mediasoup.types.PlainTransport;
-    producer: mediasoup.types.Producer;
-  }> {
+  ): Promise<{ transport: mediasoup.types.PlainTransport; ip: string; port: number }> {
     const transport = await router.createPlainTransport({
       listenInfo: {
         protocol: "udp",
@@ -109,6 +139,35 @@ export class PipeManager {
       comedia: false,
     });
 
+    // Track immediately so close-on-error paths still clean up.
+    this.trackTransport(roomId, transport);
+
+    const tuple = transport.tuple;
+    return {
+      transport,
+      ip: tuple.localAddress ?? "0.0.0.0",
+      port: tuple.localPort,
+    };
+  }
+
+  /**
+   * EDGE side, phase 2: connect a previously-created edge listener transport
+   * to the origin's address and produce locally so edge listeners can consume.
+   *
+   * Split from createEdgeListener so we can give the origin our local address
+   * BEFORE it consumes — the origin needs that address to know where to send
+   * RTP (comedia is disabled on both ends).
+   */
+  async createEdgePipeFromTransport(
+    transport: mediasoup.types.PlainTransport,
+    originInfo: PlainTransportInfo,
+    kind: mediasoup.types.MediaKind,
+    rtpParameters: mediasoup.types.RtpParameters,
+    roomId: string,
+  ): Promise<{
+    transport: mediasoup.types.PlainTransport;
+    producer: mediasoup.types.Producer;
+  }> {
     // Connect to origin's ip:port
     await transport.connect({
       ip: originInfo.ip,
@@ -118,14 +177,13 @@ export class PipeManager {
         : {}),
     });
 
-    // Produce locally — edge listeners consume from this producer
+    // Produce locally with the origin consumer's rtpParameters — these carry
+    // the SSRC and PT that origin is sending, which the producer must match
+    // for incoming RTP to bind correctly.
     const producer = await transport.produce({
-      kind: "audio",
+      kind,
       rtpParameters,
     });
-
-    // Track for cleanup
-    this.trackTransport(roomId, transport);
 
     this.logger.debug(
       {

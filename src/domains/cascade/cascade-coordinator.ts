@@ -17,6 +17,7 @@ import { config } from "@src/config/index.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelClient } from "@src/integrations/laravelClient.js";
 import type { PipeManager, PlainTransportInfo } from "@src/domains/media/pipe-manager.js";
+import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { RoomRegistry, InstanceInfo } from "@src/domains/room/room-registry.js";
 import type { CascadeRelay } from "./cascade-relay.js";
@@ -41,6 +42,30 @@ const OWNER_POLL_INTERVAL_MS = 200;
 export class CascadeCoordinator {
   /** roomId → origin base URL (only set on edge instances) */
   private readonly originUrls = new Map<string, string>();
+
+  /**
+   * Idempotency cache: roomId → (originProducerId → edgeProducerId).
+   * Without this, every listener join on an edge would create a new pipe
+   * for every existing speaker — at 1K listeners on an edge, origin's
+   * outbound bandwidth multiplies 1000× for the same audio.
+   */
+  private readonly pipedProducers = new Map<string, Map<string, string>>();
+
+  /**
+   * In-flight pipe creations keyed by `${roomId}:${producerId}` so concurrent
+   * callers requesting the same producer share a single setup attempt
+   * instead of racing.
+   */
+  private readonly pendingPipes = new Map<string, Promise<string | null>>();
+
+  /**
+   * In-flight bootstraps keyed by roomId so concurrent listener joins on the
+   * same edge share one origin-snapshot fetch instead of N parallel hits.
+   */
+  private readonly pendingBootstraps = new Map<
+    string,
+    Promise<Array<{ producerId: string; userId: number }>>
+  >();
 
   /** Our instance ID */
   private readonly selfId: string;
@@ -97,7 +122,7 @@ export class CascadeCoordinator {
       return { isEdge: false };
     }
 
-    this.attachToOrigin(roomId, cascadeInfo.hosting_ip, cascadeInfo.hosting_port);
+    await this.attachToOrigin(roomId, cascadeInfo.hosting_ip, cascadeInfo.hosting_port);
 
     this.logger.info(
       {
@@ -150,7 +175,7 @@ export class CascadeCoordinator {
       return { isEdge: false };
     }
 
-    this.attachToOrigin(roomId, origin.ip, origin.port);
+    await this.attachToOrigin(roomId, origin.ip, origin.port);
 
     this.logger.info(
       { roomId, ownerInstanceId, originIp: origin.ip, originPort: origin.port },
@@ -170,8 +195,14 @@ export class CascadeCoordinator {
   /**
    * Wire local edge state for an origin discovered via either Laravel (cross-region)
    * or RoomRegistry (same-region). Idempotent so callers don't need to dedupe.
+   *
+   * Awaits the origin-side relay registration so any subsequent snapshot
+   * fetch (fetchAndPipeExistingProducers) is guaranteed to be in origin's
+   * relay list — without this, a speaker producing in the gap between
+   * "edge sent notify" and "origin processed it" would miss this edge,
+   * and the snapshot fetch wouldn't see them yet either.
    */
-  private attachToOrigin(roomId: string, originIp: string, originPort: number): void {
+  private async attachToOrigin(roomId: string, originIp: string, originPort: number): Promise<void> {
     const originBaseUrl = `https://${originIp}:${originPort}`;
     this.originUrls.set(roomId, originBaseUrl);
 
@@ -181,10 +212,14 @@ export class CascadeCoordinator {
     };
     this.cascadeRelay.registerRemote(roomId, originInstance);
 
-    // Fire-and-forget origin notification — origin uses this to add us to its relay list.
-    this.notifyOriginEdgeRegistered(originBaseUrl, roomId).catch((err) =>
-      this.logger.error({ err, roomId }, "CascadeCoordinator: failed to notify origin"),
-    );
+    try {
+      await this.notifyOriginEdgeRegistered(originBaseUrl, roomId);
+    } catch (err) {
+      // Don't fail the join — if notify fails, the snapshot fetch still gets
+      // a consistent view of producers, and the user can rejoin to retry
+      // relay registration. Log so it's visible.
+      this.logger.error({ err, roomId }, "CascadeCoordinator: failed to notify origin");
+    }
   }
 
   /**
@@ -212,44 +247,128 @@ export class CascadeCoordinator {
 
   /**
    * Request a pipe from the origin for a specific producer.
-   * Creates the edge-side pipe transport that connects to the origin's transport.
+   * Creates the edge-side pipe transport that connects to the origin's transport,
+   * then registers the resulting producer with the local cluster so it pipes to
+   * all distribution routers — without that registration, edge listeners can't
+   * consume because canConsume()/consume() resolve via the cluster's piped map.
    *
    * @returns The local producer ID on the edge (listeners consume from this)
    */
   async requestPipeForProducer(
     roomId: string,
     producerId: string,
-    router: import("mediasoup").types.Router,
+    cluster: RoomMediaCluster,
   ): Promise<string | null> {
+    // Cache hit: this producer is already piped to the local edge.
+    const existing = this.pipedProducers.get(roomId)?.get(producerId);
+    if (existing) {
+      return existing;
+    }
+
+    // In-flight: another caller is already piping this producer. Coalesce.
+    const inflightKey = `${roomId}:${producerId}`;
+    const pending = this.pendingPipes.get(inflightKey);
+    if (pending) {
+      return pending;
+    }
+
+    const promise = this.doRequestPipeForProducer(roomId, producerId, cluster);
+    this.pendingPipes.set(inflightKey, promise);
+    try {
+      const result = await promise;
+      if (result) {
+        let roomMap = this.pipedProducers.get(roomId);
+        if (!roomMap) {
+          roomMap = new Map();
+          this.pipedProducers.set(roomId, roomMap);
+        }
+        roomMap.set(producerId, result);
+      }
+      return result;
+    } finally {
+      this.pendingPipes.delete(inflightKey);
+    }
+  }
+
+  /**
+   * Actual pipe-creation work. Wrapped by requestPipeForProducer for caching
+   * and concurrent-call coalescing. Don't call directly — use the wrapper.
+   */
+  private async doRequestPipeForProducer(
+    roomId: string,
+    producerId: string,
+    cluster: RoomMediaCluster,
+  ): Promise<string | null> {
+    const router = cluster.router;
+    if (!router) {
+      this.logger.error({ roomId }, "CascadeCoordinator: cluster has no source router");
+      return null;
+    }
+
     const originBaseUrl = this.originUrls.get(roomId);
     if (!originBaseUrl) {
       this.logger.error({ roomId }, "CascadeCoordinator: no origin URL for room");
       return null;
     }
 
+    let edgeListener: Awaited<ReturnType<PipeManager["createEdgeListener"]>> | null = null;
     try {
-      // Request the origin to create a pipe transport
-      const offerResponse = await this.requestPipeOffer(originBaseUrl, roomId, producerId);
+      // Phase 1: create the edge's PlainTransport up-front so we have a
+      // concrete listen address to give to the origin. Origin needs this to
+      // call connect() before consume() — without it, origin's transport
+      // has no destination and the pipe is silent.
+      edgeListener = await this.pipeManager.createEdgeListener(router, roomId);
+
+      // Use the instance's PUBLIC_IP if available so origin can reach us
+      // across the public network — tuple.localAddress is 0.0.0.0.
+      const edgePublicIp = config.PUBLIC_IP || edgeListener.ip;
+
+      // Phase 2: ask origin to create its transport, .connect() to us, and
+      // consume the producer using OUR rtpCapabilities. Origin returns its
+      // address plus the consumer.rtpParameters we must mirror in produce()
+      // so SSRC/PT match.
+      const offerResponse = await this.requestPipeOffer(
+        originBaseUrl,
+        roomId,
+        producerId,
+        edgePublicIp,
+        edgeListener.port,
+        router.rtpCapabilities,
+      );
 
       if (!offerResponse) {
+        // Close the listener we created — origin won't be sending anything.
+        edgeListener.transport.close();
         return null;
       }
 
-      // Create edge-side pipe pointing at origin's transport
+      // Phase 3: connect our transport to origin's address and produce with
+      // the rtpParameters origin's consumer negotiated for us.
       const originInfo: PlainTransportInfo = {
         transportId: offerResponse.transportId,
         ip: offerResponse.ip,
         port: offerResponse.port,
       };
 
-      const rtpParams = this.buildEdgeRtpParameters();
-
-      const { producer } = await this.pipeManager.createEdgePipe(
-        router,
+      const { producer } = await this.pipeManager.createEdgePipeFromTransport(
+        edgeListener.transport,
         originInfo,
-        rtpParams,
+        offerResponse.kind,
+        offerResponse.rtpParameters,
         roomId,
       );
+
+      // Register with the cluster so it gets piped to all distribution routers.
+      // Without this, listeners on dist routers can't consume — canConsume() and
+      // consume() both resolve via the cluster's pipedProducerMap, which is only
+      // populated by registerProducer().
+      await cluster.registerProducer(producer);
+
+      // Drop the cache entry if origin's producer (and therefore our pipe)
+      // closes — next caller should re-pipe instead of returning a stale id.
+      producer.on("transportclose", () => {
+        this.pipedProducers.get(roomId)?.delete(producerId);
+      });
 
       this.logger.info(
         {
@@ -258,6 +377,8 @@ export class CascadeCoordinator {
           edgeProducerId: producer.id,
           originIp: offerResponse.ip,
           originPort: offerResponse.port,
+          edgeIp: edgePublicIp,
+          edgePort: edgeListener.port,
         },
         "CascadeCoordinator: edge pipe established",
       );
@@ -268,6 +389,10 @@ export class CascadeCoordinator {
         { err, roomId, producerId },
         "CascadeCoordinator: failed to set up edge pipe",
       );
+      // Clean up the listener if phase 2 or 3 threw.
+      if (edgeListener && !edgeListener.transport.closed) {
+        edgeListener.transport.close();
+      }
       return null;
     }
   }
@@ -295,6 +420,7 @@ export class CascadeCoordinator {
 
     // Clean up local state
     this.originUrls.delete(roomId);
+    this.pipedProducers.delete(roomId);
 
     this.logger.debug({ roomId }, "CascadeCoordinator: room cascade cleanup complete");
   }
@@ -306,29 +432,144 @@ export class CascadeCoordinator {
     return this.originUrls.has(roomId);
   }
 
+  // ─── Edge Bootstrap (B-1 Stage 2d) ─────────────────────────────
+
+  /**
+   * Fetch the origin's full source-producer list and set up an edge-side pipe
+   * for each. Used during room:join on an edge so the joining listener gets
+   * edge-LOCAL producer IDs in their `existingProducers` payload — without
+   * this step, an edge would only know about producers that joined AFTER the
+   * edge was attached (via relayed audio:newProducer), and pre-existing
+   * speakers would be silent for edge listeners.
+   *
+   * @returns Edge-local producer IDs paired with their owning userId. Empty
+   * array when not an edge or origin returned no producers / fetch failed.
+   */
+  async fetchAndPipeExistingProducers(
+    roomId: string,
+    cluster: RoomMediaCluster,
+  ): Promise<Array<{ producerId: string; userId: number }>> {
+    if (!this.isEdgeRoom(roomId)) return [];
+
+    // Coalesce concurrent joins so we only hit origin once per burst.
+    // The shared promise also lets joins arriving mid-bootstrap return the
+    // same edge-local IDs instead of seeing partial state.
+    const existing = this.pendingBootstraps.get(roomId);
+    if (existing) return existing;
+
+    const promise = this.runBootstrap(roomId, cluster);
+    this.pendingBootstraps.set(roomId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.pendingBootstraps.delete(roomId);
+    }
+  }
+
+  private async runBootstrap(
+    roomId: string,
+    cluster: RoomMediaCluster,
+  ): Promise<Array<{ producerId: string; userId: number }>> {
+    const originBaseUrl = this.originUrls.get(roomId);
+    if (!originBaseUrl) return [];
+
+    const list = await this.fetchOriginProducers(originBaseUrl, roomId);
+    if (!list || list.length === 0) return [];
+
+    // Parallel pipe setup. Each requestPipeForProducer is independent and
+    // already idempotent (cache + in-flight dedupe), so this safely no-ops
+    // for producers piped by an earlier join.
+    const results = await Promise.all(
+      list.map(async (entry) => {
+        const edgeId = await this.requestPipeForProducer(roomId, entry.producerId, cluster);
+        return edgeId ? { producerId: edgeId, userId: entry.userId } : null;
+      }),
+    );
+
+    const successful = results.filter(
+      (r): r is { producerId: string; userId: number } => r !== null,
+    );
+
+    this.logger.info(
+      { roomId, requested: list.length, piped: successful.length },
+      "CascadeCoordinator: bootstrapped edge with existing origin producers",
+    );
+
+    return successful;
+  }
+
+  /**
+   * GET origin's /internal/room/:id/producers to discover live source producers.
+   */
+  private async fetchOriginProducers(
+    originBaseUrl: string,
+    roomId: string,
+  ): Promise<Array<{ producerId: string; userId: number; kind: string }> | null> {
+    const url = `${originBaseUrl}/internal/room/${encodeURIComponent(roomId)}/producers`;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            "X-Internal-Key": config.INTERNAL_API_KEY || "",
+          },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          this.logger.warn(
+            { roomId, status: response.status },
+            "CascadeCoordinator: origin producers fetch failed",
+          );
+          return null;
+        }
+
+        const body = (await response.json()) as {
+          status: string;
+          producers: Array<{ producerId: string; userId: number; kind: string }>;
+        };
+        return body.producers ?? [];
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.logger.error({ err, roomId }, "CascadeCoordinator: origin producers fetch error");
+      return null;
+    }
+  }
+
   // ─── Remote Event Handlers ────────────────────────────────────
 
   /**
    * Handle a relayed audio:newProducer event on an edge instance.
    * Requests a new pipe from the origin for the newly added producer
    * so edge listeners can hear speakers who joined after the edge was set up.
+   *
+   * @returns The edge's LOCAL producer ID so the relay handler can rewrite
+   * the broadcast payload — listeners consume against local IDs, not origin's.
+   * Returns null when this isn't an edge or pipe setup failed.
    */
-  async handleRemoteNewProducer(roomId: string, producerId: string): Promise<void> {
-    if (!this.isEdgeRoom(roomId)) return;
+  async handleRemoteNewProducer(roomId: string, producerId: string): Promise<string | null> {
+    if (!this.isEdgeRoom(roomId)) return null;
 
     const cluster = this.roomManager.getRoom(roomId);
     if (!cluster?.router) {
       this.logger.warn({ roomId, producerId }, "CascadeCoordinator: no local cluster for remote producer");
-      return;
+      return null;
     }
 
-    const edgeProducerId = await this.requestPipeForProducer(roomId, producerId, cluster.router);
+    const edgeProducerId = await this.requestPipeForProducer(roomId, producerId, cluster);
     if (edgeProducerId) {
       this.logger.info(
         { roomId, sourceProducerId: producerId, edgeProducerId },
         "CascadeCoordinator: piped remote producer to edge",
       );
     }
+    return edgeProducerId;
   }
 
   /**
@@ -351,6 +592,9 @@ export class CascadeCoordinator {
     originBaseUrl: string,
     roomId: string,
     producerId: string,
+    edgeIp: string,
+    edgePort: number,
+    edgeRtpCapabilities: import("mediasoup").types.RtpCapabilities,
   ): Promise<PipeOfferResponse | null> {
     const url = `${originBaseUrl}/internal/pipe/offer`;
 
@@ -365,7 +609,7 @@ export class CascadeCoordinator {
             "Content-Type": "application/json",
             "X-Internal-Key": config.INTERNAL_API_KEY || "",
           },
-          body: JSON.stringify({ roomId, producerId }),
+          body: JSON.stringify({ roomId, producerId, edgeIp, edgePort, edgeRtpCapabilities }),
           signal: controller.signal,
         });
 
@@ -449,21 +693,4 @@ export class CascadeCoordinator {
     }
   }
 
-  /**
-   * Build minimal RTP parameters for the edge-side producer.
-   * Uses opus codec which is the standard for audio in mediasoup.
-   */
-  private buildEdgeRtpParameters(): import("mediasoup").types.RtpParameters {
-    return {
-      codecs: [
-        {
-          mimeType: "audio/opus",
-          payloadType: 100,
-          clockRate: 48000,
-          channels: 2,
-        },
-      ],
-      encodings: [{ ssrc: Math.floor(Math.random() * 0xFFFFFFFF) }],
-    };
-  }
 }

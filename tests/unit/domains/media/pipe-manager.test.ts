@@ -21,7 +21,11 @@ function createMockPlainTransport() {
     id: `pt-${Math.random().toString(36).slice(2)}`,
     tuple: { localAddress: "10.0.1.1", localPort: 40001 },
     srtpParameters: undefined,
-    consume: vi.fn().mockResolvedValue({ id: "consumer-1" }),
+    consume: vi.fn().mockResolvedValue({
+      id: "consumer-1",
+      kind: "audio",
+      rtpParameters: { codecs: [{ mimeType: "audio/opus", payloadType: 100, clockRate: 48000, channels: 2 }], encodings: [{ ssrc: 12345 }] },
+    }),
     produce: vi.fn().mockResolvedValue({ id: "producer-1" }),
     connect: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
@@ -45,6 +49,8 @@ function createMockRouter() {
   };
 }
 
+const edgeCaps = { codecs: [], headerExtensions: [] };
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe("PipeManager", () => {
@@ -55,54 +61,94 @@ describe("PipeManager", () => {
     pipeManager = new PipeManager(mockLogger);
   });
 
+  const edgeAddr = { ip: "10.0.2.5", port: 41234 };
+
   describe("createOriginPipe", () => {
-    it("creates a plain transport and consumes the producer", async () => {
+    it("creates a plain transport, connects to edge, and consumes the producer", async () => {
       const { router, transport } = createMockRouter();
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await pipeManager.createOriginPipe(router as any, "prod-1", "room-1");
+      const result = await pipeManager.createOriginPipe(router as any, "prod-1", "room-1", edgeAddr, edgeCaps as any);
 
       expect(router.createPlainTransport).toHaveBeenCalledWith(
         expect.objectContaining({ rtcpMux: true, comedia: false }),
       );
+      // Origin must connect to edge BEFORE consume so RTP has a destination.
+      expect(transport.connect).toHaveBeenCalledWith({ ip: edgeAddr.ip, port: edgeAddr.port });
+      // Origin must consume with the EDGE's caps so the consumer's rtpParameters
+      // reflect what the edge can decode.
       expect(transport.consume).toHaveBeenCalledWith(
-        expect.objectContaining({ producerId: "prod-1" }),
+        expect.objectContaining({ producerId: "prod-1", rtpCapabilities: edgeCaps }),
       );
+      // Order matters: connect must precede consume.
+      const connectCall = transport.connect.mock.invocationCallOrder[0]!;
+      const consumeCall = transport.consume.mock.invocationCallOrder[0]!;
+      expect(connectCall).toBeLessThan(consumeCall);
       expect(result).toEqual(
         expect.objectContaining({
           transportId: transport.id,
           ip: "10.0.1.1",
           port: 40001,
+          consumerKind: "audio",
         }),
       );
+      // Consumer's rtpParameters must be returned so edge can produce with matching SSRC/PT.
+      expect(result.consumerRtpParameters.encodings![0]!.ssrc).toBe(12345);
     });
 
     it("tracks the transport for the room", async () => {
       const { router } = createMockRouter();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1");
+      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1", edgeAddr, edgeCaps as any);
       expect(pipeManager.getPipeCount("room-1")).toBe(1);
     });
   });
 
-  describe("createEdgePipe", () => {
-    it("creates a transport, connects to origin, and produces", async () => {
+  describe("createEdgeListener + createEdgePipeFromTransport", () => {
+    it("creates a listener transport and returns its address", async () => {
+      const { router, transport } = createMockRouter();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const listener = await pipeManager.createEdgeListener(router as any, "room-1");
+
+      expect(router.createPlainTransport).toHaveBeenCalledWith(
+        expect.objectContaining({ rtcpMux: true, comedia: false }),
+      );
+      expect(listener.transport).toBe(transport);
+      expect(listener.ip).toBe("10.0.1.1");
+      expect(listener.port).toBe(40001);
+      // Listener should be tracked immediately for cleanup.
+      expect(pipeManager.getPipeCount("room-1")).toBe(1);
+    });
+
+    it("connects to origin and produces in phase 2", async () => {
       const { router, transport } = createMockRouter();
       const originInfo = {
         transportId: "origin-t-1",
         ip: "10.0.1.1",
         port: 40001,
       };
-      const rtpParams = { codecs: [] };
+      const rtpParams = {
+        codecs: [{ mimeType: "audio/opus", payloadType: 100, clockRate: 48000, channels: 2 }],
+        encodings: [{ ssrc: 99 }],
+      };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await pipeManager.createEdgePipe(router as any, originInfo, rtpParams as any, "room-1");
+      const listener = await pipeManager.createEdgeListener(router as any, "room-1");
+      const result = await pipeManager.createEdgePipeFromTransport(
+        listener.transport,
+        originInfo,
+        "audio",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        rtpParams as any,
+        "room-1",
+      );
 
       expect(transport.connect).toHaveBeenCalledWith(
         expect.objectContaining({ ip: "10.0.1.1", port: 40001 }),
       );
       expect(transport.produce).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "audio" }),
+        expect.objectContaining({ kind: "audio", rtpParameters: rtpParams }),
       );
       expect(result.transport).toBe(transport);
       expect(result.producer).toBeDefined();
@@ -113,7 +159,7 @@ describe("PipeManager", () => {
     it("closes all transports for a room", async () => {
       const { router, transport } = createMockRouter();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1");
+      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1", edgeAddr, edgeCaps as any);
 
       expect(pipeManager.getPipeCount("room-1")).toBe(1);
 
@@ -133,7 +179,7 @@ describe("PipeManager", () => {
     it("removes transport from tracking when it closes", async () => {
       const { router, transport } = createMockRouter();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1");
+      await pipeManager.createOriginPipe(router as any, "prod-1", "room-1", edgeAddr, edgeCaps as any);
 
       expect(pipeManager.getPipeCount("room-1")).toBe(1);
 

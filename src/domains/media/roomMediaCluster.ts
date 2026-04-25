@@ -198,6 +198,27 @@ export class RoomMediaCluster {
     return this.sourceRouter?.getProducer(producerId);
   }
 
+  /**
+   * List all live source producers with their owning userId.
+   * Used by /internal/room/:id/producers so an attaching edge can fetch the
+   * speaker set on join and pipe each before serving listeners.
+   */
+  getSourceProducers(): Array<{ producerId: string; userId: number; kind: mediasoup.types.MediaKind }> {
+    if (!this.sourceRouter) return [];
+    const out: Array<{ producerId: string; userId: number; kind: mediasoup.types.MediaKind }> = [];
+    for (const id of this.sourceProducerIds) {
+      const p = this.sourceRouter.getProducer(id);
+      if (p && !p.closed) {
+        out.push({
+          producerId: p.id,
+          userId: p.appData.userId as number,
+          kind: p.kind,
+        });
+      }
+    }
+    return out;
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // Consumer Management
   // ─────────────────────────────────────────────────────────────────

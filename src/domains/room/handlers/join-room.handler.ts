@@ -197,6 +197,23 @@ async function processJoin(
     }
   }
 
+  // B-1 Stage 2d: edges have no local speakers — the producers actually live
+  // on the origin. Fetch the origin's producer list and pipe each one so the
+  // joining listener can consume against EDGE-LOCAL producer IDs. Replace
+  // (don't merge) because the loop above only sees edge-local clients, none
+  // of whom can be speakers without bidirectional piping.
+  if (cascadeCoordinator?.isEdgeRoom(roomId)) {
+    const piped = await cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster);
+    existingProducers.length = 0;
+    existingProducers.push(...piped);
+    // Mark participants whose producers we just piped as speakers so the UI
+    // shows the right state for pre-existing speakers on edge join.
+    for (const p of piped) {
+      const participant = participantMap.get(p.userId);
+      if (participant) participant.isSpeaker = true;
+    }
+  }
+
   // Get seat data
   const roomSeatsData = await seatRepository.getSeats(roomId, seatCount);
   const lockedSeats = roomSeatsData.filter((s) => s.locked).map((s) => s.index);

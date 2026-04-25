@@ -131,7 +131,7 @@ describe("Internal API", () => {
   });
 
   describe("POST /internal/pipe/offer", () => {
-    it("returns 400 when missing roomId or producerId", async () => {
+    it("returns 400 when missing roomId, producerId, edgeIp, or edgePort", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/internal/pipe/offer",
@@ -141,12 +141,28 @@ describe("Internal API", () => {
       expect(res.statusCode).toBe(400);
     });
 
+    it("returns 400 when edge address or rtpCapabilities are missing", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/pipe/offer",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: { roomId: "room-1", producerId: "prod-1", edgeIp: "10.0.2.5", edgePort: 41234 },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
     it("returns 404 when room does not exist on this instance", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/internal/pipe/offer",
         headers: { "x-internal-key": "test-internal-key-12345678" },
-        payload: { roomId: "room-1", producerId: "prod-1" },
+        payload: {
+          roomId: "room-1",
+          producerId: "prod-1",
+          edgeIp: "10.0.2.5",
+          edgePort: 41234,
+          edgeRtpCapabilities: { codecs: [], headerExtensions: [] },
+        },
       });
       expect(res.statusCode).toBe(404);
       const body = JSON.parse(res.payload);

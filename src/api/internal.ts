@@ -25,6 +25,9 @@ import { logger } from "@src/infrastructure/logger.js";
 interface PipeOfferBody {
   roomId: string;
   producerId: string;
+  edgeIp: string;
+  edgePort: number;
+  edgeRtpCapabilities: import("mediasoup").types.RtpCapabilities;
 }
 
 interface PipeCloseBody {
@@ -93,6 +96,34 @@ export const createInternalRoutes = (
       };
     });
 
+    // ─── Producer Discovery (B-1 Stage 2c) ─────────────────────
+
+    /**
+     * GET /internal/room/:id/producers
+     * Edge → Origin: list all live source producers in a room so a newly
+     * attaching edge can pipe each speaker that joined before the edge.
+     *
+     * Without this, the edge only learns about NEW speakers via relayed
+     * audio:newProducer events — pre-existing speakers remain inaudible
+     * for listeners that connect through the edge.
+     */
+    fastify.get<{ Params: { id: string } }>("/internal/room/:id/producers", async (request, reply) => {
+      const roomId = request.params.id;
+      if (!roomId) {
+        return reply.code(400).send({ status: "error", message: "Missing roomId" });
+      }
+
+      const cluster = roomManager.getRoom(roomId);
+      if (!cluster) {
+        return reply.code(404).send({ status: "error", message: "Room not found on this instance" });
+      }
+
+      return {
+        status: "ok",
+        producers: cluster.getSourceProducers(),
+      };
+    });
+
     // ─── Pipe Offer (Phase 5B) ─────────────────────────────────
 
     /**
@@ -106,12 +137,13 @@ export const createInternalRoutes = (
      * The edge then creates its own transport pointing at the returned ip:port.
      */
     fastify.post("/internal/pipe/offer", async (request, reply) => {
-      const { roomId, producerId } = request.body as PipeOfferBody;
+      const { roomId, producerId, edgeIp, edgePort, edgeRtpCapabilities } =
+        request.body as PipeOfferBody;
 
-      if (!roomId || !producerId) {
+      if (!roomId || !producerId || !edgeIp || !edgePort || !edgeRtpCapabilities) {
         return reply.code(400).send({
           status: "error",
-          message: "Missing roomId or producerId",
+          message: "Missing roomId, producerId, edgeIp, edgePort, or edgeRtpCapabilities",
         });
       }
 
@@ -132,11 +164,16 @@ export const createInternalRoutes = (
       }
 
       try {
-        // Create a plainTransport that consumes the producer's RTP
+        // Create a plainTransport that consumes the producer's RTP using the
+        // edge's caps so the consumer's rtpParameters reflect what the edge
+        // can decode. Origin returns those rtpParameters so the edge produces
+        // with matching SSRC/PT.
         const transportInfo = await pipeManager.createOriginPipe(
           router,
           producerId,
           roomId,
+          { ip: edgeIp, port: edgePort },
+          edgeRtpCapabilities,
         );
 
         // Use the instance's PUBLIC_IP instead of the local transport address
@@ -160,7 +197,8 @@ export const createInternalRoutes = (
           ip: publicIp,
           port: transportInfo.port,
           srtpParameters: transportInfo.srtpParameters ?? null,
-          rtpCapabilities: router.rtpCapabilities,
+          rtpParameters: transportInfo.consumerRtpParameters,
+          kind: transportInfo.consumerKind,
         };
       } catch (err) {
         logger.error({ err, roomId, producerId }, "Failed to create pipe offer");
@@ -238,12 +276,13 @@ export const createInternalRoutes = (
         return { status: "ok", relayed: false, reason: "self" };
       }
 
-      // Broadcast the event to local users in this room
-      if (io) {
-        io.to(roomId).emit(event, data);
-      }
+      // Payload that will be broadcast to local sockets — may be rewritten
+      // below for events that carry instance-local IDs (e.g. producerId).
+      let broadcastData = data;
 
-      // Handle special cascade lifecycle events
+      // Handle special cascade lifecycle events BEFORE broadcasting so we can
+      // rewrite payloads that reference origin-local IDs that local listeners
+      // wouldn't be able to resolve.
       if (event === "__cascade:edge-registered" && cascadeRelay) {
         const edgeData = data as Record<string, string>;
         if (edgeData.edgeInstanceId && edgeData.edgeBaseUrl) {
@@ -253,11 +292,34 @@ export const createInternalRoutes = (
           });
         }
       } else if (event === "audio:newProducer" && cascadeCoordinator) {
-        const producerData = data as Record<string, string>;
-        if (producerData.producerId) {
-          cascadeCoordinator.handleRemoteNewProducer(roomId, producerData.producerId).catch((err) =>
-            logger.error({ err, roomId }, "Failed to handle remote new producer"),
-          );
+        // The relayed payload's producerId is the ORIGIN's source producer ID.
+        // Local listeners on this edge consume from the edge's local cluster,
+        // whose pipedProducerMap is keyed by the edge's local producer ID.
+        // We must await pipe setup, then swap producerId to the edge-local ID
+        // before broadcasting — otherwise consume() will fail with "not piped".
+        const producerData = data as Record<string, unknown>;
+        const originProducerId = producerData.producerId;
+        if (typeof originProducerId === "string") {
+          try {
+            const edgeProducerId = await cascadeCoordinator.handleRemoteNewProducer(
+              roomId,
+              originProducerId,
+            );
+            if (!edgeProducerId) {
+              logger.warn(
+                { roomId, originProducerId },
+                "Cascade relay: edge pipe setup failed; suppressing audio:newProducer broadcast",
+              );
+              // Skip the local broadcast — listeners would just fail to consume.
+              // Still forward to other remotes below so they get a chance.
+              broadcastData = null;
+            } else {
+              broadcastData = { ...producerData, producerId: edgeProducerId };
+            }
+          } catch (err) {
+            logger.error({ err, roomId, originProducerId }, "Failed to handle remote new producer");
+            broadcastData = null;
+          }
         }
       } else if (event === "room:closed" && cascadeCoordinator) {
         cascadeCoordinator.handleOriginClosed(roomId).catch((err) =>
@@ -265,7 +327,13 @@ export const createInternalRoutes = (
         );
       }
 
-      // Forward to other remote instances (if we're the origin and have multiple edges)
+      // Broadcast the event to local users in this room (after any rewrites)
+      if (io && broadcastData !== null) {
+        io.to(roomId).emit(event, broadcastData);
+      }
+
+      // Forward to other remote instances using the ORIGINAL data so each
+      // hop performs its own producer-id rewrite (their edge IDs differ).
       if (cascadeRelay) {
         await cascadeRelay.relayToRemote(roomId, event, data, sourceInstanceId);
       }

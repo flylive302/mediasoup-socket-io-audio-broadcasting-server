@@ -8,6 +8,9 @@
 export interface PipeOfferRequest {
   roomId: string;
   producerId: string;
+  edgeIp: string;
+  edgePort: number;
+  edgeRtpCapabilities: import("mediasoup").types.RtpCapabilities;
 }
 
 /** Response from POST /internal/pipe/offer */
@@ -17,7 +20,8 @@ export interface PipeOfferResponse {
   ip: string;
   port: number;
   srtpParameters: unknown | null;
-  rtpCapabilities: unknown;
+  rtpParameters: import("mediasoup").types.RtpParameters;
+  kind: import("mediasoup").types.MediaKind;
 }
 
 // ─── Relay ──────────────────────────────────────────────────────
