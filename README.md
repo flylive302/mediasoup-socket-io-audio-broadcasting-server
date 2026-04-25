@@ -837,7 +837,3 @@ redis-cli -h $REDIS_HOST -p $REDIS_PORT PING
 ## License
 
 Proprietary - FlyLive
-
-## Support
-
-For issues and support, contact the engineering team.
