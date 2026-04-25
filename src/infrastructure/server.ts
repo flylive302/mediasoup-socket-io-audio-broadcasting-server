@@ -68,6 +68,12 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       credentials: true,
     },
     adapter: createAdapter(pubClient, subClient),
+    // Resume the same socket session if the client reconnects within the window —
+    // skips the full room:join cycle on transient drops (tab switch, brief network blip).
+    connectionStateRecovery: {
+      maxDisconnectionDuration: 2 * 60 * 1000,
+      skipMiddlewares: true,
+    },
   });
 
   const appContext = await initializeSocket(io, pubClient);
