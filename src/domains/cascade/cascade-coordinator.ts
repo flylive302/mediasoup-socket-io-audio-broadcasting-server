@@ -44,12 +44,21 @@ export class CascadeCoordinator {
   private readonly originUrls = new Map<string, string>();
 
   /**
-   * Idempotency cache: roomId → (originProducerId → edgeProducerId).
-   * Without this, every listener join on an edge would create a new pipe
-   * for every existing speaker — at 1K listeners on an edge, origin's
+   * Idempotency cache: roomId → (originProducerId → { edgeProducerId, transport }).
+   *
+   * - edgeProducerId: returned to callers for the relay-rewrite path so edge
+   *   listeners consume against this id instead of origin's.
+   * - transport: kept so we can close it (and its UDP port) when origin's
+   *   producer closes — closing only the producer would leak the transport.
+   *
+   * Without this cache, every listener join on an edge would create a new
+   * pipe for every existing speaker — at 1K listeners on an edge, origin's
    * outbound bandwidth multiplies 1000× for the same audio.
    */
-  private readonly pipedProducers = new Map<string, Map<string, string>>();
+  private readonly pipedProducers = new Map<
+    string,
+    Map<string, { edgeProducerId: string; transport: import("mediasoup").types.PlainTransport }>
+  >();
 
   /**
    * In-flight pipe creations keyed by `${roomId}:${producerId}` so concurrent
@@ -203,7 +212,7 @@ export class CascadeCoordinator {
    * and the snapshot fetch wouldn't see them yet either.
    */
   private async attachToOrigin(roomId: string, originIp: string, originPort: number): Promise<void> {
-    const originBaseUrl = `https://${originIp}:${originPort}`;
+    const originBaseUrl = `http://${originIp}:${originPort}`;
     this.originUrls.set(roomId, originBaseUrl);
 
     const originInstance: RemoteInstance = {
@@ -262,7 +271,7 @@ export class CascadeCoordinator {
     // Cache hit: this producer is already piped to the local edge.
     const existing = this.pipedProducers.get(roomId)?.get(producerId);
     if (existing) {
-      return existing;
+      return existing.edgeProducerId;
     }
 
     // In-flight: another caller is already piping this producer. Coalesce.
@@ -275,16 +284,9 @@ export class CascadeCoordinator {
     const promise = this.doRequestPipeForProducer(roomId, producerId, cluster);
     this.pendingPipes.set(inflightKey, promise);
     try {
-      const result = await promise;
-      if (result) {
-        let roomMap = this.pipedProducers.get(roomId);
-        if (!roomMap) {
-          roomMap = new Map();
-          this.pipedProducers.set(roomId, roomMap);
-        }
-        roomMap.set(producerId, result);
-      }
-      return result;
+      // doRequestPipeForProducer writes its own cache entry (because it has
+      // the transport ref); we only need to await and propagate the id.
+      return await promise;
     } finally {
       this.pendingPipes.delete(inflightKey);
     }
@@ -363,6 +365,17 @@ export class CascadeCoordinator {
       // consume() both resolve via the cluster's pipedProducerMap, which is only
       // populated by registerProducer().
       await cluster.registerProducer(producer);
+
+      // Cache both producer-id and transport so handleRemoteProducerClosed
+      // can close the transport too (closing only the producer leaks the UDP
+      // port). Done here rather than in the wrapper because we have the
+      // transport ref in this scope.
+      let roomMap = this.pipedProducers.get(roomId);
+      if (!roomMap) {
+        roomMap = new Map();
+        this.pipedProducers.set(roomId, roomMap);
+      }
+      roomMap.set(producerId, { edgeProducerId: producer.id, transport: edgeListener.transport });
 
       // Drop the cache entry if origin's producer (and therefore our pipe)
       // closes — next caller should re-pipe instead of returning a stale id.
@@ -542,6 +555,143 @@ export class CascadeCoordinator {
     }
   }
 
+  // ─── Participant Discovery (B-1 Stage 2j) ──────────────────────
+
+  /**
+   * Fetch participants currently connected to origin so an edge user's join
+   * response includes the full room (not just same-region sockets).
+   *
+   * Returns null on any error; caller falls back to the local-only list so
+   * the edge still works in degraded mode if origin is briefly unreachable.
+   */
+  async fetchOriginParticipants(
+    roomId: string,
+  ): Promise<Array<{
+    id: number;
+    name: string;
+    signature: string;
+    avatar: string;
+    frame: string;
+    gender: number;
+    country: string;
+    wealth_xp: string;
+    charm_xp: string;
+    vip_level: number;
+    isSpeaker: boolean;
+  }> | null> {
+    if (!this.isEdgeRoom(roomId)) return null;
+
+    const originBaseUrl = this.originUrls.get(roomId);
+    if (!originBaseUrl) return null;
+
+    const url = `${originBaseUrl}/internal/room/${encodeURIComponent(roomId)}/participants`;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: { "X-Internal-Key": config.INTERNAL_API_KEY || "" },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          this.logger.warn(
+            { roomId, status: response.status },
+            "CascadeCoordinator: origin participants fetch failed",
+          );
+          return null;
+        }
+
+        const body = (await response.json()) as {
+          status: string;
+          participants: Array<{
+            id: number;
+            name: string;
+            signature: string;
+            avatar: string;
+            frame: string;
+            gender: number;
+            country: string;
+            wealth_xp: string;
+            charm_xp: string;
+            vip_level: number;
+            isSpeaker: boolean;
+          }>;
+        };
+        return body.participants ?? [];
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.logger.error({ err, roomId }, "CascadeCoordinator: origin participants fetch error");
+      return null;
+    }
+  }
+
+  // ─── Room Snapshot (B-1 Stage 2k) ──────────────────────────────
+
+  /**
+   * Fetch origin's per-room Redis state (seats, locked seats, music player).
+   * Each region has its own Redis, so this state is invisible to edges
+   * locally — without this, cross-region users see empty seat occupancy
+   * and no music state for rooms hosted in other regions.
+   */
+  async fetchOriginRoomSnapshot(
+    roomId: string,
+    seatCount: number,
+  ): Promise<{
+    seats: Array<{ seatIndex: number; userId: number; isMuted: boolean }>;
+    lockedSeats: number[];
+    seatCount: number;
+    musicPlayer: {
+      userId: number;
+      title: string;
+      duration: number;
+      position: number;
+      isPaused: boolean;
+    } | null;
+  } | null> {
+    if (!this.isEdgeRoom(roomId)) return null;
+
+    const originBaseUrl = this.originUrls.get(roomId);
+    if (!originBaseUrl) return null;
+
+    const url = `${originBaseUrl}/internal/room/${encodeURIComponent(roomId)}/snapshot?seatCount=${seatCount}`;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: { "X-Internal-Key": config.INTERNAL_API_KEY || "" },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          this.logger.warn(
+            { roomId, status: response.status },
+            "CascadeCoordinator: origin snapshot fetch failed",
+          );
+          return null;
+        }
+
+        return (await response.json()) as Awaited<
+          ReturnType<CascadeCoordinator["fetchOriginRoomSnapshot"]>
+        >;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.logger.error({ err, roomId }, "CascadeCoordinator: origin snapshot fetch error");
+      return null;
+    }
+  }
+
   // ─── Remote Event Handlers ────────────────────────────────────
 
   /**
@@ -553,6 +703,53 @@ export class CascadeCoordinator {
    * the broadcast payload — listeners consume against local IDs, not origin's.
    * Returns null when this isn't an edge or pipe setup failed.
    */
+  /**
+   * Handle a relayed audio:producerClosed event on an edge instance.
+   * Closes the local edge-side producer + its PlainTransport so listener
+   * consumers fire `producerclose` (existing handler in roomMediaCluster)
+   * and the UDP port is freed.
+   *
+   * @returns The edge's LOCAL producer ID so the relay handler can rewrite
+   * the broadcast payload — frontend listeners may key off it. Returns null
+   * if no pipe was tracked (already closed, or producer never reached us).
+   */
+  async handleRemoteProducerClosed(roomId: string, producerId: string): Promise<string | null> {
+    if (!this.isEdgeRoom(roomId)) return null;
+
+    const entry = this.pipedProducers.get(roomId)?.get(producerId);
+    if (!entry) {
+      this.logger.debug(
+        { roomId, producerId },
+        "CascadeCoordinator: remote producer closed but no local pipe tracked",
+      );
+      return null;
+    }
+
+    const cluster = this.roomManager.getRoom(roomId);
+    if (cluster) {
+      const edgeProducer = cluster.getProducer(entry.edgeProducerId);
+      if (edgeProducer && !edgeProducer.closed) {
+        edgeProducer.close();
+      }
+    }
+
+    if (!entry.transport.closed) {
+      entry.transport.close();
+    }
+
+    // The producer's transportclose listener already removes the cache
+    // entry; the explicit delete here covers the case where neither the
+    // producer nor transport object emit (e.g., already-closed cluster).
+    this.pipedProducers.get(roomId)?.delete(producerId);
+
+    this.logger.info(
+      { roomId, sourceProducerId: producerId, edgeProducerId: entry.edgeProducerId },
+      "CascadeCoordinator: remote producer closed — edge pipe torn down",
+    );
+
+    return entry.edgeProducerId;
+  }
+
   async handleRemoteNewProducer(roomId: string, producerId: string): Promise<string | null> {
     if (!this.isEdgeRoom(roomId)) return null;
 
@@ -643,7 +840,7 @@ export class CascadeCoordinator {
     roomId: string,
   ): Promise<void> {
     const url = `${originBaseUrl}/internal/cascade/relay`;
-    const selfBaseUrl = `https://${this.selfId}:${config.PORT}`;
+    const selfBaseUrl = `http://${this.selfId}:${config.PORT}`;
 
     await fetch(url, {
       method: "POST",

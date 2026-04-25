@@ -124,6 +124,8 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       cascadeRelay,
       cascadeCoordinator,
       io,
+      seatRepository: appContext.seatRepository,
+      redis: pubClient,
     }),
     { prefix: "/" },
   );

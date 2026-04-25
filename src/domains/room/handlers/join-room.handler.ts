@@ -202,10 +202,40 @@ async function processJoin(
   // joining listener can consume against EDGE-LOCAL producer IDs. Replace
   // (don't merge) because the loop above only sees edge-local clients, none
   // of whom can be speakers without bidirectional piping.
+  //
+  // B-1 Stage 2j: also fetch the origin's participants so the edge user's
+  // join response shows the full room, not just same-region sockets. Without
+  // this, cross-region rooms appear empty until other-region users move
+  // (relay-driven room:userJoined).
+  //
+  // B-1 Stage 2k: snapshot of origin's seat + music state for the same
+  // reason — Redis is per-region.
+  let originSnapshot: Awaited<
+    ReturnType<NonNullable<typeof cascadeCoordinator>["fetchOriginRoomSnapshot"]>
+  > | null = null;
   if (cascadeCoordinator?.isEdgeRoom(roomId)) {
-    const piped = await cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster);
+    const [piped, originParticipants, snapshot] = await Promise.all([
+      cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster),
+      cascadeCoordinator.fetchOriginParticipants(roomId),
+      cascadeCoordinator.fetchOriginRoomSnapshot(roomId, seatCount),
+    ]);
+    originSnapshot = snapshot;
+
     existingProducers.length = 0;
     existingProducers.push(...piped);
+
+    // Merge origin's participants in, deduping by userId. Origin is the
+    // authoritative source for cross-region users — local participants[]
+    // here only carries same-region sockets that fetchSockets() saw.
+    if (originParticipants) {
+      for (const op of originParticipants) {
+        if (op.id === userId) continue; // never add the joining user
+        if (participantMap.has(op.id)) continue;
+        participants.push(op);
+        participantMap.set(op.id, op);
+      }
+    }
+
     // Mark participants whose producers we just piped as speakers so the UI
     // shows the right state for pre-existing speakers on edge join.
     for (const p of piped) {
@@ -214,17 +244,25 @@ async function processJoin(
     }
   }
 
-  // Get seat data
-  const roomSeatsData = await seatRepository.getSeats(roomId, seatCount);
-  const lockedSeats = roomSeatsData.filter((s) => s.locked).map((s) => s.index);
-  const seats: { seatIndex: number; userId: number; isMuted: boolean }[] = [];
-  for (const seatData of roomSeatsData) {
-    if (seatData.userId) {
-      seats.push({
-        seatIndex: seatData.index,
-        userId: Number(seatData.userId),
-        isMuted: seatData.muted,
-      });
+  // Get seat data — origin's snapshot wins for edges (origin's Redis is
+  // authoritative; local Redis only holds same-region writes).
+  let seats: { seatIndex: number; userId: number; isMuted: boolean }[];
+  let lockedSeats: number[];
+  if (originSnapshot) {
+    seats = originSnapshot.seats;
+    lockedSeats = originSnapshot.lockedSeats;
+  } else {
+    const roomSeatsData = await seatRepository.getSeats(roomId, seatCount);
+    lockedSeats = roomSeatsData.filter((s) => s.locked).map((s) => s.index);
+    seats = [];
+    for (const seatData of roomSeatsData) {
+      if (seatData.userId) {
+        seats.push({
+          seatIndex: seatData.index,
+          userId: Number(seatData.userId),
+          isMuted: seatData.muted,
+        });
+      }
     }
   }
 
@@ -242,12 +280,15 @@ async function processJoin(
   }
 
   // Parallel Redis operations (safe — these use different Redis keys)
-  const [newCount, , , musicPlayer] = await Promise.all([
+  const [newCount, , , localMusicPlayer] = await Promise.all([
     roomManager.state.adjustParticipantCount(roomId, 1),
     context.autoCloseService.recordActivity(roomId),
     context.userRoomRepository.setUserRoom(userId, roomId),
     getMusicPlayerState(context.redis, roomId),
   ]);
+
+  // Origin's musicPlayer state wins for edges (per-region Redis again).
+  const musicPlayer = originSnapshot ? originSnapshot.musicPlayer : localMusicPlayer;
 
   return {
     rtpCapabilities,

@@ -56,6 +56,20 @@ function createMockPipeManager() {
   };
 }
 
+function createMockSeatRepository() {
+  return {
+    getSeats: vi.fn().mockResolvedValue([]),
+  };
+}
+
+function createMockRedis() {
+  return {
+    get: vi.fn().mockResolvedValue(null),
+    del: vi.fn().mockResolvedValue(0),
+    setex: vi.fn().mockResolvedValue("OK"),
+  };
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe("Internal API", () => {
@@ -78,6 +92,8 @@ describe("Internal API", () => {
         cascadeRelay: null,
         cascadeCoordinator: null,
         io: null,
+        seatRepository: createMockSeatRepository() as any,
+        redis: createMockRedis() as any,
       }),
     );
     await app.ready();
@@ -238,6 +254,215 @@ describe("Internal API", () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.payload);
       expect(body.relayed).toBe(true);
+    });
+
+    it("rewrites audio:producerClosed payload to edge-local producer id", async () => {
+      // Re-mount app with a cascadeCoordinator that resolves the rewrite.
+      const handleRemoteProducerClosed = vi
+        .fn()
+        .mockResolvedValue("edge-local-producer-99");
+      const ioEmit = vi.fn();
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: createMockRoomManager() as any,
+          roomRegistry: createMockRoomRegistry() as any,
+          pipeManager: createMockPipeManager() as any,
+          cascadeRelay: { relayToRemote: vi.fn(), hasRemotes: vi.fn() } as any,
+          cascadeCoordinator: { handleRemoteProducerClosed } as any,
+          io: { to: vi.fn().mockReturnValue({ emit: ioEmit }) } as any,
+          seatRepository: createMockSeatRepository() as any,
+          redis: createMockRedis() as any,
+        }),
+      );
+      await localApp.ready();
+
+      const res = await localApp.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {
+          roomId: "room-1",
+          event: "audio:producerClosed",
+          data: { producerId: "origin-producer-7", userId: 42 },
+          sourceInstanceId: "10.0.2.200",
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(handleRemoteProducerClosed).toHaveBeenCalledWith("room-1", "origin-producer-7");
+      // Local broadcast carries the edge-local producer id, not origin's.
+      expect(ioEmit).toHaveBeenCalledWith(
+        "audio:producerClosed",
+        expect.objectContaining({ producerId: "edge-local-producer-99", userId: 42 }),
+      );
+      await localApp.close();
+    });
+  });
+
+  describe("GET /internal/room/:id/participants", () => {
+    it("returns 404 when room is not on this instance", async () => {
+      const res = await app.inject({
+        method: "GET",
+        url: "/internal/room/missing-room/participants",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns participants from origin's local sockets with isSpeaker derived from cluster", async () => {
+      const cluster = {
+        getSourceProducers: vi
+          .fn()
+          .mockReturnValue([{ producerId: "p1", userId: 100, kind: "audio" }]),
+      };
+      const ioMock = {
+        in: vi.fn().mockReturnValue({
+          fetchSockets: vi.fn().mockResolvedValue([
+            {
+              data: {
+                user: {
+                  id: 100,
+                  name: "Alice",
+                  signature: "sig",
+                  avatar: "a.png",
+                  frame: "f.png",
+                  gender: 1,
+                  country: "IT",
+                  wealth_xp: "10",
+                  charm_xp: "5",
+                  vip_level: 2,
+                },
+              },
+            },
+            {
+              data: {
+                user: {
+                  id: 101,
+                  name: "Bob",
+                  signature: "",
+                  avatar: "",
+                  frame: "",
+                  gender: 0,
+                  country: "ES",
+                  wealth_xp: "0",
+                  charm_xp: "0",
+                  vip_level: 0,
+                },
+              },
+            },
+          ]),
+        }),
+      };
+
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: { getRoom: vi.fn().mockReturnValue(cluster), getRoomCount: vi.fn() } as any,
+          roomRegistry: createMockRoomRegistry() as any,
+          pipeManager: createMockPipeManager() as any,
+          cascadeRelay: null,
+          cascadeCoordinator: null,
+          io: ioMock as any,
+          seatRepository: createMockSeatRepository() as any,
+          redis: createMockRedis() as any,
+        }),
+      );
+      await localApp.ready();
+
+      const res = await localApp.inject({
+        method: "GET",
+        url: "/internal/room/room-1/participants",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.participants).toHaveLength(2);
+      expect(body.participants[0]).toEqual(
+        expect.objectContaining({ id: 100, name: "Alice", isSpeaker: true }),
+      );
+      expect(body.participants[1]).toEqual(
+        expect.objectContaining({ id: 101, name: "Bob", isSpeaker: false }),
+      );
+      await localApp.close();
+    });
+  });
+
+  describe("GET /internal/room/:id/snapshot", () => {
+    it("returns 404 when room is not on this instance", async () => {
+      const res = await app.inject({
+        method: "GET",
+        url: "/internal/room/missing-room/snapshot",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns seats, lockedSeats, and musicPlayer pulled from origin's redis", async () => {
+      const seatRepo = {
+        getSeats: vi.fn().mockResolvedValue([
+          { index: 0, userId: "10", muted: false, locked: false },
+          { index: 1, userId: null, muted: false, locked: true },
+          { index: 2, userId: "20", muted: true, locked: false },
+        ]),
+      };
+      const redisMock = {
+        get: vi.fn().mockResolvedValue(
+          JSON.stringify({
+            userId: 10,
+            title: "Track",
+            duration: 200,
+            position: 50,
+            isPaused: false,
+          }),
+        ),
+        del: vi.fn(),
+        setex: vi.fn(),
+      };
+      const cluster = { getSourceProducers: vi.fn().mockReturnValue([]) };
+      const stateRepo = { get: vi.fn().mockResolvedValue({ seatCount: 15 }) };
+
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: {
+            getRoom: vi.fn().mockReturnValue(cluster),
+            getRoomCount: vi.fn(),
+            state: stateRepo,
+          } as any,
+          roomRegistry: createMockRoomRegistry() as any,
+          pipeManager: createMockPipeManager() as any,
+          cascadeRelay: null,
+          cascadeCoordinator: null,
+          io: null,
+          seatRepository: seatRepo as any,
+          redis: redisMock as any,
+        }),
+      );
+      await localApp.ready();
+
+      const res = await localApp.inject({
+        method: "GET",
+        url: "/internal/room/room-1/snapshot?seatCount=15",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.seats).toEqual([
+        { seatIndex: 0, userId: 10, isMuted: false },
+        { seatIndex: 2, userId: 20, isMuted: true },
+      ]);
+      expect(body.lockedSeats).toEqual([1]);
+      expect(body.seatCount).toBe(15);
+      expect(body.musicPlayer).toEqual(
+        expect.objectContaining({ userId: 10, title: "Track" }),
+      );
+      await localApp.close();
     });
   });
 });

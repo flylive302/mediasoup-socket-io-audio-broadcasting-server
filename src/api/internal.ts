@@ -18,6 +18,9 @@ import type { RoomRegistry } from "@src/domains/room/room-registry.js";
 import type { PipeManager } from "@src/domains/media/pipe-manager.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
+import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
+import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
+import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 
 // ─── Request Body Types ──────────────────────────────────────────
@@ -51,13 +54,15 @@ export interface InternalRouteDeps {
   cascadeRelay: CascadeRelay | null;
   cascadeCoordinator: CascadeCoordinator | null;
   io: Server | null;
+  seatRepository: SeatRepository;
+  redis: Redis;
 }
 
 export const createInternalRoutes = (
   deps: InternalRouteDeps,
 ): FastifyPluginAsync => {
   return async (fastify) => {
-    const { roomManager, roomRegistry, pipeManager, cascadeRelay, cascadeCoordinator, io } = deps;
+    const { roomManager, roomRegistry, pipeManager, cascadeRelay, cascadeCoordinator, io, seatRepository, redis } = deps;
 
     // ─── Auth Hook ──────────────────────────────────────────────
     fastify.addHook("onRequest", async (request, reply) => {
@@ -123,6 +128,127 @@ export const createInternalRoutes = (
         producers: cluster.getSourceProducers(),
       };
     });
+
+    /**
+     * GET /internal/room/:id/participants
+     * Edge → Origin: snapshot of users currently connected to origin's region
+     * so an edge-region listener sees the full room on join.
+     *
+     * Without this, an edge user's join response only contains participants
+     * from their local Redis (same-region sockets). They'd hear cross-region
+     * speakers but the participant list and seat-user names would be wrong
+     * until the next room:userJoined relay arrives.
+     */
+    fastify.get<{ Params: { id: string } }>("/internal/room/:id/participants", async (request, reply) => {
+      const roomId = request.params.id;
+      if (!roomId) {
+        return reply.code(400).send({ status: "error", message: "Missing roomId" });
+      }
+
+      const cluster = roomManager.getRoom(roomId);
+      if (!cluster) {
+        return reply.code(404).send({ status: "error", message: "Room not found on this instance" });
+      }
+
+      if (!io) {
+        return reply.code(503).send({ status: "error", message: "Socket.IO not initialized" });
+      }
+
+      // Speaker set from cluster — authoritative for isSpeaker (a user is a
+      // speaker iff they have a producer on the source router).
+      const speakerUserIds = new Set(cluster.getSourceProducers().map((p) => p.userId));
+
+      const sockets = await io.in(roomId).fetchSockets();
+      const seen = new Set<number>();
+      const participants: Array<{
+        id: number;
+        name: string;
+        signature: string;
+        avatar: string;
+        frame: string;
+        gender: number;
+        country: string;
+        wealth_xp: string;
+        charm_xp: string;
+        vip_level: number;
+        isSpeaker: boolean;
+      }> = [];
+
+      for (const s of sockets) {
+        const u = s.data?.user;
+        if (!u || seen.has(u.id)) continue;
+        seen.add(u.id);
+        participants.push({
+          id: u.id,
+          name: u.name,
+          signature: u.signature,
+          avatar: u.avatar,
+          frame: u.frame,
+          gender: u.gender,
+          country: u.country,
+          wealth_xp: u.wealth_xp,
+          charm_xp: u.charm_xp,
+          vip_level: u.vip_level ?? 0,
+          isSpeaker: speakerUserIds.has(u.id),
+        });
+      }
+
+      return { status: "ok", participants };
+    });
+
+    /**
+     * GET /internal/room/:id/snapshot
+     * Edge → Origin: room state held in origin's Redis (seats, locked seats,
+     * seat count, music player). Edge regions have their own Redis so this
+     * data is invisible to them locally — without this endpoint, edge users
+     * see empty seat occupancy and no music state for cross-region rooms.
+     *
+     * Bundles four reads into one HTTP roundtrip since the join handler
+     * needs all of them at the same point.
+     */
+    fastify.get<{ Params: { id: string }; Querystring: { seatCount?: string } }>(
+      "/internal/room/:id/snapshot",
+      async (request, reply) => {
+        const roomId = request.params.id;
+        if (!roomId) {
+          return reply.code(400).send({ status: "error", message: "Missing roomId" });
+        }
+
+        const cluster = roomManager.getRoom(roomId);
+        if (!cluster) {
+          return reply.code(404).send({ status: "error", message: "Room not found on this instance" });
+        }
+
+        // Use origin's stored seatCount when caller didn't pass one — origin
+        // is authoritative for room dimensions in cross-region cascade.
+        const state = await roomManager.state.get(roomId);
+        const seatCount = Number(request.query.seatCount) || state?.seatCount || 15;
+
+        const [seatsRaw, musicPlayer] = await Promise.all([
+          seatRepository.getSeats(roomId, seatCount),
+          getMusicPlayerState(redis, roomId),
+        ]);
+
+        const seats: { seatIndex: number; userId: number; isMuted: boolean }[] = [];
+        const lockedSeats: number[] = [];
+        for (const s of seatsRaw) {
+          if (s.userId) {
+            seats.push({ seatIndex: s.index, userId: Number(s.userId), isMuted: s.muted });
+          }
+          if (s.locked) {
+            lockedSeats.push(s.index);
+          }
+        }
+
+        return {
+          status: "ok",
+          seats,
+          lockedSeats,
+          seatCount,
+          musicPlayer,
+        };
+      },
+    );
 
     // ─── Pipe Offer (Phase 5B) ─────────────────────────────────
 
@@ -319,6 +445,28 @@ export const createInternalRoutes = (
           } catch (err) {
             logger.error({ err, roomId, originProducerId }, "Failed to handle remote new producer");
             broadcastData = null;
+          }
+        }
+      } else if (event === "audio:producerClosed" && cascadeCoordinator) {
+        // Mirror of audio:newProducer: rewrite producerId to edge-local so
+        // any frontend listener keying off it sees the right id, AND tear
+        // down the edge pipe so listener consumers get producerclose.
+        const producerData = data as Record<string, unknown>;
+        const originProducerId = producerData.producerId;
+        if (typeof originProducerId === "string") {
+          try {
+            const edgeProducerId = await cascadeCoordinator.handleRemoteProducerClosed(
+              roomId,
+              originProducerId,
+            );
+            if (edgeProducerId) {
+              broadcastData = { ...producerData, producerId: edgeProducerId };
+            }
+            // If we never had a pipe for this producer, the local broadcast
+            // is harmless — pass through with origin id; no listener should
+            // be watching for it locally anyway.
+          } catch (err) {
+            logger.error({ err, roomId, originProducerId }, "Failed to handle remote producer closed");
           }
         }
       } else if (event === "room:closed" && cascadeCoordinator) {

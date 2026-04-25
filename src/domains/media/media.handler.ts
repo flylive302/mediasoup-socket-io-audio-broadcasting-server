@@ -139,6 +139,14 @@ const audioProduceHandler = createHandler(
       }
       // CQ-LOW-001: Guard against double-close
       if (!producer.closed) producer.close();
+
+      // Notify the room (incl. cross-region edges) so listener consumers
+      // get cleanup. Without this, edge-region listeners hold dead
+      // consumers (no RTP arriving) until full rejoin. Cascade-aware emit.
+      emitToRoom(socket, roomId, "audio:producerClosed", {
+        producerId: producer.id,
+        userId: socket.data.user.id,
+      }, context.cascadeRelay);
     });
 
     return { success: true, data: { id: producer.id } };
