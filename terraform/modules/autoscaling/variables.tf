@@ -104,13 +104,13 @@ variable "audio_domain" {
 variable "cors_origins" {
   description = "CORS origins for the app"
   type        = string
-  default     = "https://flyliveapp.com,https://www.flyliveapp.com"
+  default     = "https://flyliveapp.com,https://app.flyliveapp.com"
 }
 
 variable "laravel_api_url" {
   description = "Laravel API base URL"
   type        = string
-  default     = "https://api.flyliveapp.com"
+  default     = "https://app.flyliveapp.com"
 }
 
 # --- Scaling Configuration ---
@@ -118,7 +118,7 @@ variable "laravel_api_url" {
 variable "min_instances" {
   description = "Minimum number of instances in the ASG"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "max_instances" {
@@ -130,7 +130,7 @@ variable "max_instances" {
 variable "desired_instances" {
   description = "Desired number of instances in the ASG"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "scale_up_threshold" {
@@ -154,7 +154,7 @@ variable "drain_timeout_seconds" {
 variable "cascade_enabled" {
   description = "Enable SFU cross-region room cascading"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "instance_type_overrides" {
