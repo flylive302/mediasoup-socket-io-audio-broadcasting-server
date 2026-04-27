@@ -124,10 +124,13 @@ export async function verifyJwt(
   // 5. Validate user payload via Zod
   const parseResult = UserSchema.safeParse(payload);
   if (!parseResult.success) {
+    // Log full payload (excluding sensitive fields) for debugging new-user JWT rejections
+    const { email: _e, phone: _p, ...safePayload } = payload;
     logger.warn(
       {
         errors: parseResult.error.format(),
         payloadKeys: Object.keys(payload),
+        payloadValues: safePayload,
         userId: payload.id,
       },
       "JWT: Payload validation failed",
