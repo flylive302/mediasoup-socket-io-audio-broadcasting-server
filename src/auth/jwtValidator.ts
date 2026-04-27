@@ -42,7 +42,10 @@ export async function verifyJwt(
   // 1. Split JWT into parts
   const parts = token.split(".");
   if (parts.length !== 3) {
-    logger.debug("JWT: Invalid format (expected 3 parts)");
+    logger.warn(
+      { partsCount: parts.length, tokenLength: token.length },
+      "JWT: Invalid format (expected 3 parts)",
+    );
     return null;
   }
 
@@ -64,11 +67,18 @@ export async function verifyJwt(
       expectedSignature.length !== receivedSignature.length ||
       !timingSafeEqual(expectedSignature, receivedSignature)
     ) {
-      logger.debug("JWT: Signature verification failed");
+      logger.warn(
+        {
+          payloadHead: payloadB64.slice(0, 12),
+          expectedLen: expectedSignature.length,
+          receivedLen: receivedSignature.length,
+        },
+        "JWT: Signature verification failed",
+      );
       return null;
     }
-  } catch {
-    logger.debug("JWT: Signature verification error");
+  } catch (err) {
+    logger.warn({ err }, "JWT: Signature verification error");
     return null;
   }
 
@@ -77,8 +87,8 @@ export async function verifyJwt(
   try {
     const decoded = base64UrlDecode(payloadB64).toString("utf-8");
     payload = JSON.parse(decoded) as Record<string, unknown>;
-  } catch {
-    logger.debug("JWT: Failed to decode payload");
+  } catch (err) {
+    logger.warn({ err }, "JWT: Failed to decode payload");
     return null;
   }
 
@@ -86,7 +96,10 @@ export async function verifyJwt(
   const now = Math.floor(Date.now() / 1000);
 
   if (typeof payload.exp === "number" && payload.exp < now) {
-    logger.debug("JWT: Token expired");
+    logger.warn(
+      { exp: payload.exp, now, userId: payload.id },
+      "JWT: Token expired",
+    );
     return null;
   }
 
@@ -96,15 +109,27 @@ export async function verifyJwt(
     typeof payload.iat === "number" &&
     payload.iat + config.JWT_MAX_AGE_SECONDS < now
   ) {
-    logger.debug("JWT: Token exceeds max age (no exp claim)");
+    logger.warn(
+      {
+        iat: payload.iat,
+        maxAge: config.JWT_MAX_AGE_SECONDS,
+        now,
+        userId: payload.id,
+      },
+      "JWT: Token exceeds max age (no exp claim)",
+    );
     return null;
   }
 
   // 5. Validate user payload via Zod
   const parseResult = UserSchema.safeParse(payload);
   if (!parseResult.success) {
-    logger.debug(
-      { errors: parseResult.error.format() },
+    logger.warn(
+      {
+        errors: parseResult.error.format(),
+        payloadKeys: Object.keys(payload),
+        userId: payload.id,
+      },
       "JWT: Payload validation failed",
     );
     return null;
