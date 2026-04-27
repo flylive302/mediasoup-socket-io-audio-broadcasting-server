@@ -41,7 +41,10 @@ export async function authMiddleware(
     const user = await verifyJwt(cleanToken, redis, logger);
 
     if (!user) {
-      logger.warn({ socketId: socket.id }, "Invalid token provided");
+      logger.warn(
+        { socketId: socket.id, tokenLength: cleanToken.length, tokenPreview: cleanToken.slice(0, 20) },
+        "Invalid token provided — verifyJwt returned null (check preceding warn logs for reason)",
+      );
       metrics.authAttempts.inc({ result: "invalid_token" });
       return next(new Error(Errors.INVALID_CREDENTIALS));
     }

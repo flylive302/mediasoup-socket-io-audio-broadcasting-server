@@ -43,7 +43,7 @@ export async function verifyJwt(
   const parts = token.split(".");
   if (parts.length !== 3) {
     logger.warn(
-      { partsCount: parts.length, tokenLength: token.length },
+      { partsCount: parts.length, tokenLength: token.length, tokenPreview: token.slice(0, 20) },
       "JWT: Invalid format (expected 3 parts)",
     );
     return null;
@@ -97,7 +97,7 @@ export async function verifyJwt(
 
   if (typeof payload.exp === "number" && payload.exp < now) {
     logger.warn(
-      { exp: payload.exp, now, userId: payload.id },
+      { exp: payload.exp, now, delta: now - payload.exp, userId: payload.id },
       "JWT: Token expired",
     );
     return null;
@@ -126,14 +126,20 @@ export async function verifyJwt(
   if (!parseResult.success) {
     // Log full payload (excluding sensitive fields) for debugging new-user JWT rejections
     const { email: _e, phone: _p, ...safePayload } = payload;
+    const formattedErrors = parseResult.error.issues.map((i) => ({
+      path: i.path.join("."),
+      code: i.code,
+      message: i.message,
+      received: i.code === "invalid_type" ? (i as { received?: string }).received : undefined,
+    }));
     logger.warn(
       {
-        errors: parseResult.error.format(),
+        errors: formattedErrors,
         payloadKeys: Object.keys(payload),
         payloadValues: safePayload,
         userId: payload.id,
       },
-      "JWT: Payload validation failed",
+      "JWT: Payload validation failed — check field types against UserSchema",
     );
     return null;
   }

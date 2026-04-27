@@ -11,21 +11,21 @@ import { z } from "zod";
 export const UserSchema = z.object({
   id: z.number(),
   name: z.string(),
-  signature: z.string(),
-  email: z.string(),
-  avatar: z.string(),
-  frame: z.string(),
-  gender: z.coerce.number(),
-  date_of_birth: z.string(), // ISO date string (YYYY-MM-DD)
-  phone: z.string(),
-  country: z.string(),
-  coins: z.string(),
-  diamonds: z.string(),
-  wealth_xp: z.string(),
-  charm_xp: z.string(),
-  is_blocked: z.boolean(),
+  signature: z.string().default(""),
+  email: z.string().nullable().default(""),
+  avatar: z.string().nullable().default(""),
+  frame: z.string().nullable().default(""),
+  gender: z.coerce.number().default(0),
+  date_of_birth: z.string().nullable().default(""), // ISO date string (YYYY-MM-DD) or empty
+  phone: z.string().nullable().default(""),
+  country: z.string().nullable().default(""),
+  coins: z.string().default("0"),
+  diamonds: z.string().default("0"),
+  wealth_xp: z.string().default("0"),
+  charm_xp: z.string().default("0"),
+  is_blocked: z.boolean().default(false),
   vip_level: z.number().default(0),
-  isSpeaker: z.boolean(),
+  isSpeaker: z.boolean().default(false),
 });
 
 /** User type derived from Zod schema */

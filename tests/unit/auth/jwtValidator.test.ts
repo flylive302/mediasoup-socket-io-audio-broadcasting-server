@@ -150,13 +150,20 @@ describe("JwtValidator", () => {
     expect(user2).toBeNull();
   });
 
-  it("returns null when payload fails Zod validation (missing fields)", async () => {
+  it("fills defaults for missing optional fields in JWT payload", async () => {
     const payload = { id: 42, name: "Test", iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 };
     const token = createJwt(payload);
 
     const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
 
-    expect(user).toBeNull();
+    // Schema now uses .default() for optional fields — missing fields get defaults
+    expect(user).not.toBeNull();
+    expect(user!.id).toBe(42);
+    expect(user!.name).toBe("Test");
+    expect(user!.email).toBe("");
+    expect(user!.avatar).toBe("");
+    expect(user!.vip_level).toBe(0);
+    expect(user!.isSpeaker).toBe(false);
   });
 
   it("returns null for revoked token", async () => {
