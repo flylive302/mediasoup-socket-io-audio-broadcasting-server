@@ -202,12 +202,15 @@ module "sns" {
   aws_account_id       = data.aws_caller_identity.current.account_id
   laravel_internal_key = var.laravel_internal_key
 
-  # Fan-out to BOTH regional NLB endpoints directly (not via GA)
-  # GA would route to nearest region only — we need ALL regions to receive every event
-  # Map keys are static region names so for_each is resolvable at plan time
+  # Fan-out to BOTH regional MSAB endpoints via custom domains (not raw NLB DNS names).
+  # SNS verifies TLS certificates — the ACM cert covers *.audio.flyliveapp.com but NOT
+  # the raw NLB hostnames (*.elb.amazonaws.com). Using raw NLB URLs causes
+  # SubscriptionConfirmation to fail permanently (SNS rejects the TLS handshake).
+  # GA would route to nearest region only — we need ALL regions to receive every event.
+  # Map keys are static region names so for_each is resolvable at plan time.
   msab_endpoint_urls = {
-    mumbai    = "https://${module.loadbalancer_mumbai.nlb_dns_name}/api/events"
-    frankfurt = "https://${module.loadbalancer_frankfurt.nlb_dns_name}/api/events"
+    mumbai    = "https://mumbai.audio.flyliveapp.com/api/events"
+    frankfurt = "https://frankfurt.audio.flyliveapp.com/api/events"
   }
 }
 
