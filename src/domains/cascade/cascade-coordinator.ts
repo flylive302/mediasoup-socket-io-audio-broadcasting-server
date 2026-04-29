@@ -15,6 +15,7 @@
  */
 import { config } from "@src/config/index.js";
 import type { Logger } from "@src/infrastructure/logger.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 import type { LaravelClient } from "@src/integrations/laravelClient.js";
 import type { PipeManager, PlainTransportInfo } from "@src/domains/media/pipe-manager.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
@@ -25,6 +26,8 @@ import type {
   CascadeJoinResult,
   PipeOfferResponse,
   RemoteInstance,
+  ReverseOfferResponse,
+  ReverseFinalizeResponse,
 } from "./types.js";
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -76,7 +79,34 @@ export class CascadeCoordinator {
     Promise<Array<{ producerId: string; userId: number }>>
   >();
 
-  /** Our instance ID */
+  /**
+   * Reverse-pipe state on edge instances.
+   * Edge speakers produce locally; we open a reverse pipe to origin so origin
+   * (and other edges) can hear them. Tracked so we can tear down the pipe
+   * when the speaker disconnects (closeReversePipe).
+   *
+   *   roomId → (edgeProducerId → { outboundTransport, originProducerId })
+   */
+  private readonly reversedProducers = new Map<
+    string,
+    Map<
+      string,
+      {
+        outboundTransport: import("mediasoup").types.PlainTransport;
+        /** Origin's transport id from /reverse-offer — sent on close so
+         *  origin can clean partial setups (offer succeeded, finalize didn't). */
+        originTransportId: string;
+        /** null until finalize completes; close still works without it because
+         *  origin can look up by transportId. */
+        originProducerId: string | null;
+      }
+    >
+  >();
+
+  /**
+   * This instance's identity for relay payloads and CAS comparisons.
+   * Distinct from `config.PUBLIC_IP` (reachability) — see config/instance-identity.
+   */
   private readonly selfId: string;
   private readonly selfRegion: string;
 
@@ -88,8 +118,8 @@ export class CascadeCoordinator {
     private readonly cascadeRelay: CascadeRelay,
     private readonly logger: Logger,
   ) {
-    this.selfId = config.PUBLIC_IP || "unknown";
-    this.selfRegion = config.AWS_REGION || "unknown";
+    this.selfId = config.INSTANCE_ID;
+    this.selfRegion = config.AWS_REGION;
   }
 
   // ─── Cross-Region Join ────────────────────────────────────────
@@ -131,7 +161,26 @@ export class CascadeCoordinator {
       return { isEdge: false };
     }
 
-    await this.attachToOrigin(roomId, cascadeInfo.hosting_ip, cascadeInfo.hosting_port);
+    // Cross-region cascadeInfo from Laravel only carries reachability
+    // (hosting_ip/port). To register origin in the relay map under its real
+    // instance-id (so loop-prevention matches `sourceInstanceId` correctly),
+    // ask origin who it is via /internal/health.
+    const originBaseUrl = `http://${cascadeInfo.hosting_ip}:${cascadeInfo.hosting_port}`;
+    const originInstanceId = await this.fetchOriginInstanceId(originBaseUrl);
+    if (!originInstanceId) {
+      this.logger.warn(
+        { roomId, originBaseUrl },
+        "CascadeCoordinator: cannot attach to cross-region origin without instanceId",
+      );
+      return { isEdge: false };
+    }
+
+    await this.attachToOrigin(
+      roomId,
+      cascadeInfo.hosting_ip,
+      cascadeInfo.hosting_port,
+      originInstanceId,
+    );
 
     this.logger.info(
       {
@@ -184,7 +233,7 @@ export class CascadeCoordinator {
       return { isEdge: false };
     }
 
-    await this.attachToOrigin(roomId, origin.ip, origin.port);
+    await this.attachToOrigin(roomId, origin.ip, origin.port, origin.instanceId);
 
     this.logger.info(
       { roomId, ownerInstanceId, originIp: origin.ip, originPort: origin.port },
@@ -211,12 +260,21 @@ export class CascadeCoordinator {
    * "edge sent notify" and "origin processed it" would miss this edge,
    * and the snapshot fetch wouldn't see them yet either.
    */
-  private async attachToOrigin(roomId: string, originIp: string, originPort: number): Promise<void> {
+  private async attachToOrigin(
+    roomId: string,
+    originIp: string,
+    originPort: number,
+    originInstanceId: string,
+  ): Promise<void> {
     const originBaseUrl = `http://${originIp}:${originPort}`;
     this.originUrls.set(roomId, originBaseUrl);
 
+    // CRITICAL: instanceId here MUST equal origin's selfId (from config.INSTANCE_ID
+    // on origin's side). cascadeRelay.relayToRemote() uses this as the map key
+    // and excludes it when forwarding events whose `sourceInstanceId` matches.
+    // A mismatched key would make every relayed event bounce back to origin.
     const originInstance: RemoteInstance = {
-      instanceId: originIp,
+      instanceId: originInstanceId,
       baseUrl: originBaseUrl,
     };
     this.cascadeRelay.registerRemote(roomId, originInstance);
@@ -831,6 +889,100 @@ export class CascadeCoordinator {
     }
   }
 
+  private async requestReverseOffer(
+    originBaseUrl: string,
+    roomId: string,
+    edgeProducerId: string,
+    edgeIp: string,
+    edgePort: number,
+  ): Promise<ReverseOfferResponse | null> {
+    const url = `${originBaseUrl}/internal/pipe/reverse-offer`;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Key": config.INTERNAL_API_KEY || "",
+          },
+          body: JSON.stringify({ roomId, edgeProducerId, edgeIp, edgePort }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          this.logger.warn(
+            { roomId, edgeProducerId, status: response.status },
+            "CascadeCoordinator: reverse-offer request failed",
+          );
+          return null;
+        }
+        return (await response.json()) as ReverseOfferResponse;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.logger.error(
+        { err, roomId, edgeProducerId },
+        "CascadeCoordinator: reverse-offer request error",
+      );
+      return null;
+    }
+  }
+
+  private async requestReverseFinalize(
+    originBaseUrl: string,
+    roomId: string,
+    edgeProducerId: string,
+    transportId: string,
+    kind: import("mediasoup").types.MediaKind,
+    rtpParameters: import("mediasoup").types.RtpParameters,
+    userId: number,
+  ): Promise<ReverseFinalizeResponse | null> {
+    const url = `${originBaseUrl}/internal/pipe/reverse-finalize`;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Key": config.INTERNAL_API_KEY || "",
+          },
+          body: JSON.stringify({
+            roomId,
+            edgeProducerId,
+            transportId,
+            kind,
+            rtpParameters,
+            userId,
+            edgeInstanceId: this.selfId,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          this.logger.warn(
+            { roomId, edgeProducerId, transportId, status: response.status },
+            "CascadeCoordinator: reverse-finalize request failed",
+          );
+          return null;
+        }
+        return (await response.json()) as ReverseFinalizeResponse;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      this.logger.error(
+        { err, roomId, edgeProducerId, transportId },
+        "CascadeCoordinator: reverse-finalize request error",
+      );
+      return null;
+    }
+  }
+
   /**
    * Notify origin that this edge has registered for a room.
    * Origin registers us as a remote instance for its relay.
@@ -840,7 +992,9 @@ export class CascadeCoordinator {
     roomId: string,
   ): Promise<void> {
     const url = `${originBaseUrl}/internal/cascade/relay`;
-    const selfBaseUrl = `http://${this.selfId}:${config.PORT}`;
+    // Reachability URL — must use PUBLIC_IP, not selfId (which is now an
+    // EC2 instance-id like "i-0762744f24afb40ff" and would not resolve).
+    const selfBaseUrl = `http://${config.PUBLIC_IP}:${config.PORT}`;
 
     await fetch(url, {
       method: "POST",
@@ -890,4 +1044,239 @@ export class CascadeCoordinator {
     }
   }
 
+  // ─── Reverse pipe (edge speaker → origin) ─────────────────────
+
+  /**
+   * Edge-side: open a reverse pipe so origin receives the audio of a speaker
+   * who produced on this edge. Without this, listeners on origin (and on
+   * other edges) hear silence whenever NLB stickiness lands a speaker on an
+   * edge instead of the origin.
+   *
+   * Idempotent per (roomId, edgeProducer.id) — second calls return the cached
+   * originProducerId. Returns null on failure; callers should fall back to
+   * "edge-local listeners only" rather than failing the produce.
+   */
+  async setupReversePipe(
+    roomId: string,
+    edgeProducer: import("mediasoup").types.Producer,
+    cluster: RoomMediaCluster,
+    userId: number,
+  ): Promise<{ originProducerId: string } | null> {
+    const cached = this.reversedProducers.get(roomId)?.get(edgeProducer.id);
+    if (cached) {
+      // originProducerId == null means a previous call cached the offer-side
+      // state but never reached finalize (still in flight, or partial failure
+      // not yet cleaned up). Don't start a duplicate setup against the same
+      // local producer — let the caller treat this as a no-op.
+      if (cached.originProducerId === null) return null;
+      return { originProducerId: cached.originProducerId };
+    }
+
+    const originBaseUrl = this.originUrls.get(roomId);
+    if (!originBaseUrl) {
+      this.logger.warn(
+        { roomId, edgeProducerId: edgeProducer.id },
+        "setupReversePipe: not an edge for this room (no originUrl)",
+      );
+      return null;
+    }
+
+    const router = cluster.router;
+    if (!router) {
+      this.logger.error(
+        { roomId, edgeProducerId: edgeProducer.id },
+        "setupReversePipe: cluster has no source router",
+      );
+      return null;
+    }
+
+    let outbound: Awaited<
+      ReturnType<PipeManager["createReverseOutboundTransport"]>
+    > | null = null;
+
+    try {
+      // Phase 1: edge creates outbound listener so we have a concrete address
+      // to send to origin.
+      outbound = await this.pipeManager.createReverseOutboundTransport(router, roomId);
+
+      // Use PUBLIC_IP so origin can reach us across the public network —
+      // tuple.localAddress is 0.0.0.0.
+      const edgePublicIp = config.PUBLIC_IP || outbound.ip;
+
+      // Phase 2: origin creates inbound transport, connects to us, returns its
+      // listen address + router caps.
+      const offerResponse = await this.requestReverseOffer(
+        originBaseUrl,
+        roomId,
+        edgeProducer.id,
+        edgePublicIp,
+        outbound.port,
+      );
+      if (!offerResponse) {
+        outbound.transport.close();
+        return null;
+      }
+
+      // Cache the offer-side state immediately so a failure between offer and
+      // finalize still has a recoverable cleanup path: closeReversePipe will
+      // send the transportId to origin which can close the pre-finalize
+      // (pending) transport.
+      let perRoom = this.reversedProducers.get(roomId);
+      if (!perRoom) {
+        perRoom = new Map();
+        this.reversedProducers.set(roomId, perRoom);
+      }
+      perRoom.set(edgeProducer.id, {
+        outboundTransport: outbound.transport,
+        originTransportId: offerResponse.transportId,
+        originProducerId: null,
+      });
+
+      // Phase 3: edge connects + consumes its local producer with origin's
+      // rtpCapabilities so the consumer's rtpParameters match what origin
+      // can decode.
+      const consumeResult = await this.pipeManager.connectReverseTransport(
+        outbound.transport,
+        { ip: offerResponse.ip, port: offerResponse.port },
+        edgeProducer.id,
+        offerResponse.rtpCapabilities,
+        roomId,
+      );
+
+      // Phase 4: origin produces with the consumer's rtpParameters,
+      // registers the producer with its cluster, and broadcasts
+      // audio:newProducer. Returns origin's local producer id.
+      const finalizeResponse = await this.requestReverseFinalize(
+        originBaseUrl,
+        roomId,
+        edgeProducer.id,
+        offerResponse.transportId,
+        consumeResult.consumerKind,
+        consumeResult.consumerRtpParameters,
+        userId,
+      );
+      if (!finalizeResponse) {
+        // Trigger cleanup via the close path so origin closes its pending
+        // transport and we drop the cache entry.
+        await this.closeReversePipe(roomId, edgeProducer.id);
+        metrics.reversePipeSetup.inc({ result: "failure" });
+        return null;
+      }
+
+      // Update the cache with origin's producerId.
+      const entry = perRoom.get(edgeProducer.id);
+      if (entry) {
+        entry.originProducerId = finalizeResponse.originProducerId;
+      }
+
+      // If our local outbound transport closes (e.g. mediasoup teardown,
+      // room close) drop the cache entry so future cleanup attempts no-op.
+      outbound.transport.observer.on("close", () => {
+        this.reversedProducers.get(roomId)?.delete(edgeProducer.id);
+        if (this.reversedProducers.get(roomId)?.size === 0) {
+          this.reversedProducers.delete(roomId);
+        }
+      });
+
+      this.logger.info(
+        {
+          roomId,
+          edgeProducerId: edgeProducer.id,
+          originProducerId: finalizeResponse.originProducerId,
+          originIp: offerResponse.ip,
+          originPort: offerResponse.port,
+          edgeIp: edgePublicIp,
+          edgePort: outbound.port,
+        },
+        "Reverse pipe established (edge speaker → origin)",
+      );
+
+      metrics.reversePipeSetup.inc({ result: "success" });
+      return { originProducerId: finalizeResponse.originProducerId };
+    } catch (err) {
+      this.logger.error(
+        { err, roomId, edgeProducerId: edgeProducer.id },
+        "setupReversePipe: failed",
+      );
+      if (outbound && !outbound.transport.closed) {
+        outbound.transport.close();
+      }
+      // Drop any partial cache entry left from the offer phase.
+      this.reversedProducers.get(roomId)?.delete(edgeProducer.id);
+      metrics.reversePipeSetup.inc({ result: "failure" });
+      return null;
+    }
+  }
+
+  /**
+   * Edge-side cleanup: tell origin to close its inbound transport for this
+   * producer (which closes the corresponding origin-side producer and
+   * cascades audio:producerClosed to listeners).
+   */
+  async closeReversePipe(roomId: string, edgeProducerId: string): Promise<void> {
+    const perRoom = this.reversedProducers.get(roomId);
+    const entry = perRoom?.get(edgeProducerId);
+    if (!entry) return;
+
+    perRoom!.delete(edgeProducerId);
+    if (perRoom!.size === 0) this.reversedProducers.delete(roomId);
+
+    try {
+      entry.outboundTransport.close();
+    } catch {
+      // already closed
+    }
+
+    const originBaseUrl = this.originUrls.get(roomId);
+    if (!originBaseUrl) return;
+
+    try {
+      await fetch(`${originBaseUrl}/internal/pipe/reverse-close`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Key": config.INTERNAL_API_KEY || "",
+        },
+        // transportId lets origin clean up partial setups where finalize
+        // never reached it (only offer succeeded). It's always known after
+        // the offer response.
+        body: JSON.stringify({
+          roomId,
+          edgeProducerId,
+          transportId: entry.originTransportId,
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (err) {
+      this.logger.warn(
+        { err, roomId, edgeProducerId },
+        "closeReversePipe: notify origin failed (origin will close on its own when its transport times out)",
+      );
+    }
+  }
+
+  /**
+   * Cross-region attach: query origin's /internal/health to learn its real
+   * instance-id. Same-region edges already have it from the Redis CAS claim;
+   * cross-region only knows hosting_ip from Laravel, not instance-id.
+   */
+  private async fetchOriginInstanceId(
+    originBaseUrl: string,
+  ): Promise<string | null> {
+    try {
+      const res = await fetch(`${originBaseUrl}/internal/health`, {
+        headers: { "X-Internal-Key": config.INTERNAL_API_KEY || "" },
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { instanceId?: string };
+      return body.instanceId?.trim() || null;
+    } catch (err) {
+      this.logger.warn(
+        { err, originBaseUrl },
+        "CascadeCoordinator: failed to fetch origin instanceId",
+      );
+      return null;
+    }
+  }
 }

@@ -12,6 +12,24 @@
  *
  *   // Includes sender (admin mute, seat lock, chat):
  *   broadcastToRoom(socket.nsp, roomId, "seat:locked", data, cascadeRelay);
+ *
+ * ── Why the `.local` flag when cascade is enabled ──────────────────────────
+ * With multiple instances behind a single Redis pub/sub adapter, a plain
+ * `socket.to(roomId).emit()` is delivered to every instance with sockets in
+ * that room. For most events that's fine — payloads are instance-agnostic.
+ *
+ * For `audio:newProducer` it is NOT fine: the payload's `producerId` is
+ * meaningful only on the originating instance. Edges must consume against
+ * an EDGE-LOCAL producer id, which the cascade-relay HTTP path rewrites
+ * before it broadcasts on the edge (see `internal.ts /internal/cascade/relay`).
+ * The Redis adapter delivers the un-rewritten payload first (~ms) and the
+ * edge listener errors with "Cannot consume" before the relayed (rewritten)
+ * event arrives.
+ *
+ * Fix: when cascade is enabled, restrict the local emit to *this* node
+ * (`.local.to(roomId)`) and rely on the cascade-relay HTTP path as the
+ * single cross-instance delivery channel. When cascade is off (single
+ * instance or dev), keep the adapter path so behavior is unchanged.
  */
 import type { Socket, Server, Namespace } from "socket.io";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
@@ -46,7 +64,11 @@ export function emitToRoom(
   data: unknown,
   cascadeRelay: CascadeRelay | null,
 ): void {
-  socket.to(roomId).emit(event, data);
+  if (cascadeRelay) {
+    socket.local.to(roomId).emit(event, data);
+  } else {
+    socket.to(roomId).emit(event, data);
+  }
   relayCrossRegion(cascadeRelay, roomId, event, data);
 }
 
@@ -62,6 +84,10 @@ export function broadcastToRoom(
   data: unknown,
   cascadeRelay: CascadeRelay | null,
 ): void {
-  nsp.to(roomId).emit(event, data);
+  if (cascadeRelay) {
+    nsp.local.to(roomId).emit(event, data);
+  } else {
+    nsp.to(roomId).emit(event, data);
+  }
   relayCrossRegion(cascadeRelay, roomId, event, data);
 }

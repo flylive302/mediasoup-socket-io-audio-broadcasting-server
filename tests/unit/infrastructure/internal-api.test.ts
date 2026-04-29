@@ -5,6 +5,7 @@ vi.mock("@src/config/index.js", () => ({
     CASCADE_ENABLED: true,
     INTERNAL_API_KEY: "test-internal-key-12345678",
     PUBLIC_IP: "10.0.1.100",
+    INSTANCE_ID: "10.0.1.100",
     PORT: 3030,
     LOG_LEVEL: "silent",
   },
@@ -256,6 +257,106 @@ describe("Internal API", () => {
       expect(body.relayed).toBe(true);
     });
 
+    it("skips audio:newProducer when originatingEdgeId matches self (reverse-pipe bounce-back)", async () => {
+      // The originating edge already produced audio:newProducer locally for its
+      // edge-local producer (in audioProduceHandler). Origin's broadcast carries
+      // origin's producer id + originatingEdgeId tag. Without this filter, the
+      // originating edge would: (a) try to set up a forward pipe for its own
+      // audio (loop), (b) duplicate the audio:newProducer broadcast.
+      const handleRemoteNewProducer = vi.fn();
+      const ioLocalEmit = vi.fn();
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: createMockRoomManager() as any,
+          roomRegistry: createMockRoomRegistry() as any,
+          pipeManager: createMockPipeManager() as any,
+          cascadeRelay: { relayToRemote: vi.fn(), hasRemotes: vi.fn() } as any,
+          cascadeCoordinator: { handleRemoteNewProducer } as any,
+          io: { local: { to: vi.fn().mockReturnValue({ emit: ioLocalEmit }) } } as any,
+          seatRepository: createMockSeatRepository() as any,
+          redis: createMockRedis() as any,
+        }),
+      );
+      await localApp.ready();
+
+      const res = await localApp.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {
+          roomId: "room-1",
+          event: "audio:newProducer",
+          data: {
+            producerId: "origin-producer-7",
+            userId: 42,
+            originatingEdgeId: "10.0.1.100", // == mocked INSTANCE_ID
+          },
+          sourceInstanceId: "10.0.5.5", // some other instance
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.payload);
+      expect(body.relayed).toBe(false);
+      expect(body.reason).toBe("originating-edge");
+      // Critical: must NOT attempt forward-pipe setup for our own audio.
+      expect(handleRemoteNewProducer).not.toHaveBeenCalled();
+      // Critical: must NOT broadcast — would be a duplicate.
+      expect(ioLocalEmit).not.toHaveBeenCalled();
+      await localApp.close();
+    });
+
+    it("processes audio:newProducer normally when originatingEdgeId is a different instance", async () => {
+      // Foreign originatingEdgeId means this is another edge's audio coming
+      // through origin → our edge needs to set up a forward pipe and broadcast.
+      const handleRemoteNewProducer = vi
+        .fn()
+        .mockResolvedValue("our-edge-local-producer-99");
+      const ioLocalEmit = vi.fn();
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: createMockRoomManager() as any,
+          roomRegistry: createMockRoomRegistry() as any,
+          pipeManager: createMockPipeManager() as any,
+          cascadeRelay: { relayToRemote: vi.fn(), hasRemotes: vi.fn() } as any,
+          cascadeCoordinator: { handleRemoteNewProducer } as any,
+          io: { local: { to: vi.fn().mockReturnValue({ emit: ioLocalEmit }) } } as any,
+          seatRepository: createMockSeatRepository() as any,
+          redis: createMockRedis() as any,
+        }),
+      );
+      await localApp.ready();
+
+      const res = await localApp.inject({
+        method: "POST",
+        url: "/internal/cascade/relay",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: {
+          roomId: "room-1",
+          event: "audio:newProducer",
+          data: {
+            producerId: "origin-producer-7",
+            userId: 42,
+            originatingEdgeId: "10.99.99.99", // a different edge — NOT us
+          },
+          sourceInstanceId: "10.0.5.5",
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(handleRemoteNewProducer).toHaveBeenCalledWith("room-1", "origin-producer-7");
+      // Local broadcast happens after rewrite to our edge-local producer id.
+      expect(ioLocalEmit).toHaveBeenCalledWith(
+        "audio:newProducer",
+        expect.objectContaining({ producerId: "our-edge-local-producer-99" }),
+      );
+      await localApp.close();
+    });
+
     it("rewrites audio:producerClosed payload to edge-local producer id", async () => {
       // Re-mount app with a cascadeCoordinator that resolves the rewrite.
       const handleRemoteProducerClosed = vi
@@ -271,7 +372,9 @@ describe("Internal API", () => {
           pipeManager: createMockPipeManager() as any,
           cascadeRelay: { relayToRemote: vi.fn(), hasRemotes: vi.fn() } as any,
           cascadeCoordinator: { handleRemoteProducerClosed } as any,
-          io: { to: vi.fn().mockReturnValue({ emit: ioEmit }) } as any,
+          io: {
+            local: { to: vi.fn().mockReturnValue({ emit: ioEmit }) },
+          } as any,
           seatRepository: createMockSeatRepository() as any,
           redis: createMockRedis() as any,
         }),

@@ -28,39 +28,6 @@ let PutMetricDataCommand: any;
 let sdkLoadFailed = false;
 
 let publishHandle: ReturnType<typeof setInterval> | null = null;
-let instanceId = "unknown";
-
-/**
- * Resolve the EC2 instance ID from instance metadata (IMDSv2)
- */
-async function resolveInstanceId(): Promise<string> {
-  try {
-    // Get IMDSv2 token
-    const tokenRes = await fetch(
-      "http://169.254.169.254/latest/api/token",
-      {
-        method: "PUT",
-        headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" },
-        signal: AbortSignal.timeout(2000),
-      },
-    );
-    const token = await tokenRes.text();
-
-    // Get instance ID
-    const idRes = await fetch(
-      "http://169.254.169.254/latest/meta-data/instance-id",
-      {
-        headers: { "X-aws-ec2-metadata-token": token },
-        signal: AbortSignal.timeout(2000),
-      },
-    );
-    return await idRes.text();
-  } catch {
-    // Not running on EC2 — use hostname as fallback
-    const os = await import("os");
-    return os.hostname();
-  }
-}
 
 /**
  * Initialize the AWS CloudWatch client (lazy)
@@ -96,7 +63,7 @@ async function publishMetrics(
 
   try {
     const now = new Date();
-    const dimensions = [{ Name: "InstanceId", Value: instanceId }];
+    const dimensions = [{ Name: "InstanceId", Value: config.INSTANCE_ID }];
 
     // Gather metric values
     const activeRooms = roomManager.getRoomCount();
@@ -117,6 +84,17 @@ async function publishMetrics(
 
     // Max listeners in any single room (for cascade threshold monitoring)
     const maxRoomListeners = roomManager.getMaxRoomListeners();
+
+    // Reverse-pipe setup outcomes (cumulative counters from Prometheus).
+    // Cumulative is fine — CloudWatch alarms use RATE() math expressions to
+    // turn cumulative counts into per-minute rates and compute % failure.
+    const reverseSetupMetric = await metrics.reversePipeSetup.get();
+    let reverseSetupSuccess = 0;
+    let reverseSetupFailure = 0;
+    for (const v of reverseSetupMetric.values) {
+      if (v.labels.result === "success") reverseSetupSuccess = v.value;
+      else if (v.labels.result === "failure") reverseSetupFailure = v.value;
+    }
 
     await client.send(
       new PutMetricDataCommand({
@@ -157,12 +135,34 @@ async function publishMetrics(
             Timestamp: now,
             Dimensions: dimensions,
           },
+          {
+            MetricName: "ReversePipeSetupSuccess",
+            Value: reverseSetupSuccess,
+            Unit: "Count",
+            Timestamp: now,
+            Dimensions: dimensions,
+          },
+          {
+            MetricName: "ReversePipeSetupFailure",
+            Value: reverseSetupFailure,
+            Unit: "Count",
+            Timestamp: now,
+            Dimensions: dimensions,
+          },
         ],
       }),
     );
 
     logger.debug(
-      { activeRooms, activeConnections, workerCount, workerCpuPercent, maxRoomListeners },
+      {
+        activeRooms,
+        activeConnections,
+        workerCount,
+        workerCpuPercent,
+        maxRoomListeners,
+        reverseSetupSuccess,
+        reverseSetupFailure,
+      },
       "CloudWatch metrics published",
     );
   } catch (err) {
@@ -185,9 +185,7 @@ export async function startCloudWatchPublisher(
     return;
   }
 
-  // Resolve instance ID
-  instanceId = await resolveInstanceId();
-  logger.info({ instanceId }, "CloudWatch metrics publisher starting");
+  logger.info({ instanceId: config.INSTANCE_ID }, "CloudWatch metrics publisher starting");
 
   // Publish immediately, then every 60 seconds
   await publishMetrics(roomManager, workerManager);

@@ -145,6 +145,17 @@ export const metrics = {
     help: "Total socket registration failures (Redis unreachable during auth)",
     registers: [metricsRegistry],
   }),
+
+  // Reverse-pipe setup (edge speaker → origin)
+  // Tracks setupReversePipe outcomes so we can alarm on >5% failure rate.
+  // A high failure rate means edge speakers are silent to origin/other-edge
+  // listeners — which is the exact production bug Phase 4 fixes.
+  reversePipeSetup: new Counter({
+    name: "flylive_reverse_pipe_setup_total",
+    help: "Reverse-pipe setup attempts on edge instances",
+    labelNames: ["result"] as const, // success | failure
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

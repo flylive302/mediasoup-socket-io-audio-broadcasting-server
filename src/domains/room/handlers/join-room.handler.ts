@@ -58,7 +58,12 @@ async function processJoin(
   // Without this, two instances in the same region could both fall through to
   // getOrCreateRoom() and end up running independent mediasoup routers for the
   // same room — producers on instance A unreachable to listeners on instance B.
-  const selfId = config.PUBLIC_IP || "unknown";
+  //
+  // selfId is INSTANCE_ID (identity, used for CAS comparisons); the registry's
+  // `ip` field is PUBLIC_IP (reachability, used by edges to construct the
+  // origin's base URL). These were the same value historically; they are
+  // intentionally distinct now.
+  const selfId = config.INSTANCE_ID;
   if (!cluster && roomRegistry) {
     const claim = await roomRegistry.claimOwnership(roomId, selfId);
 
@@ -68,7 +73,7 @@ async function processJoin(
       cluster = await roomManager.getOrCreateRoom(roomId);
       await roomRegistry.registerOrigin(roomId, {
         instanceId: selfId,
-        ip: selfId,
+        ip: config.PUBLIC_IP,
         port: config.PORT,
         listenerCount: 0,
       });

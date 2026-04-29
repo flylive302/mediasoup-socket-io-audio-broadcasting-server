@@ -65,6 +65,7 @@ export const RELAY_EVENTS = {
   achievement: {
     BADGE_EARNED: "badge.earned",
     LEVEL_UP: "level.up",
+    USER_PROGRESSION: "user.progression",
   },
 
   /** Room: level ups, participant counts, membership changes, settings */

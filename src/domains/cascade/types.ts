@@ -24,6 +24,21 @@ export interface PipeOfferResponse {
   kind: import("mediasoup").types.MediaKind;
 }
 
+/** Response from POST /internal/pipe/reverse-offer (origin → edge). */
+export interface ReverseOfferResponse {
+  status: string;
+  transportId: string;
+  ip: string;
+  port: number;
+  rtpCapabilities: import("mediasoup").types.RtpCapabilities;
+}
+
+/** Response from POST /internal/pipe/reverse-finalize (origin → edge). */
+export interface ReverseFinalizeResponse {
+  status: string;
+  originProducerId: string;
+}
+
 // ─── Relay ──────────────────────────────────────────────────────
 
 /** Payload relayed between instances for socket events */

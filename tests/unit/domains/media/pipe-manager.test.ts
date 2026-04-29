@@ -190,4 +190,163 @@ describe("PipeManager", () => {
       expect(pipeManager.getPipeCount("room-1")).toBe(0);
     });
   });
+
+  // ─── Reverse pipe (edge speaker → origin) ─────────────────────
+
+  describe("createReverseOutboundTransport", () => {
+    it("creates a plain transport on the local router", async () => {
+      const { router, transport } = createMockRouter();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = await pipeManager.createReverseOutboundTransport(router as any, "room-rev");
+
+      expect(router.createPlainTransport).toHaveBeenCalledWith(
+        expect.objectContaining({ rtcpMux: true, comedia: false }),
+      );
+      expect(out.transport).toBe(transport);
+      expect(out.ip).toBe("10.0.1.1");
+      expect(out.port).toBe(40001);
+      expect(pipeManager.getPipeCount("room-rev")).toBe(1);
+    });
+
+    it("does NOT call connect or consume in phase 1", async () => {
+      const { router, transport } = createMockRouter();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await pipeManager.createReverseOutboundTransport(router as any, "room-rev");
+
+      expect(transport.connect).not.toHaveBeenCalled();
+      expect(transport.consume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("connectReverseTransport", () => {
+    it("connects to origin then consumes the local producer", async () => {
+      const { router, transport } = createMockRouter();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = await pipeManager.createReverseOutboundTransport(router as any, "room-rev");
+
+      const originAddr = { ip: "10.5.5.5", port: 40500 };
+      const originCaps = { codecs: [{ mimeType: "audio/opus" }], headerExtensions: [] };
+
+      const result = await pipeManager.connectReverseTransport(
+        out.transport,
+        originAddr,
+        "edge-prod-1",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        originCaps as any,
+        "room-rev",
+      );
+
+      expect(transport.connect).toHaveBeenCalledWith(
+        expect.objectContaining({ ip: originAddr.ip, port: originAddr.port }),
+      );
+      expect(transport.consume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          producerId: "edge-prod-1",
+          rtpCapabilities: originCaps,
+        }),
+      );
+      // connect MUST precede consume (so RTP has a destination).
+      const connectCall = transport.connect.mock.invocationCallOrder[0]!;
+      const consumeCall = transport.consume.mock.invocationCallOrder[0]!;
+      expect(connectCall).toBeLessThan(consumeCall);
+
+      // Consumer's rtpParameters become origin's produce input.
+      expect(result.consumerRtpParameters.encodings![0]!.ssrc).toBe(12345);
+      expect(result.consumerKind).toBe("audio");
+    });
+  });
+
+  describe("createReverseInboundTransport", () => {
+    it("creates a transport on origin's router and connects it to edge", async () => {
+      const { router, transport } = createMockRouter();
+      const edgeAddr2 = { ip: "10.7.7.7", port: 40700 };
+
+      const result = await pipeManager.createReverseInboundTransport(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        router as any,
+        edgeAddr2,
+        "room-rev",
+      );
+
+      expect(router.createPlainTransport).toHaveBeenCalledWith(
+        expect.objectContaining({ rtcpMux: true, comedia: false }),
+      );
+      // Origin must connect to edge before edge sends RTP.
+      expect(transport.connect).toHaveBeenCalledWith({
+        ip: edgeAddr2.ip,
+        port: edgeAddr2.port,
+      });
+      expect(result.transportId).toBe(transport.id);
+      // Returns origin's router caps so edge can consume against them.
+      expect(result.rtpCapabilities).toBe(router.rtpCapabilities);
+      // Tracked for cleanup.
+      expect(pipeManager.getPipeCount("room-rev")).toBe(1);
+    });
+  });
+
+  describe("finalizeReverseInbound + closeReverseInboundByEdgeProducer", () => {
+    it("produces with edge consumer rtpParameters and tracks by edgeProducerId", async () => {
+      const { router, transport } = createMockRouter();
+      const edgeAddr2 = { ip: "10.7.7.7", port: 40700 };
+
+      const inbound = await pipeManager.createReverseInboundTransport(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        router as any,
+        edgeAddr2,
+        "room-rev",
+      );
+
+      const rtpParams = {
+        codecs: [{ mimeType: "audio/opus", payloadType: 100, clockRate: 48000, channels: 2 }],
+        encodings: [{ ssrc: 7777 }],
+      };
+
+      const { producer } = await pipeManager.finalizeReverseInbound(
+        inbound.transportId,
+        "edge-prod-A",
+        "audio",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        rtpParams as any,
+        { userId: 42 },
+        "room-rev",
+      );
+
+      expect(transport.produce).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "audio", rtpParameters: rtpParams }),
+      );
+      expect(producer).toBeDefined();
+
+      // closeReverseInboundByEdgeProducer closes the transport.
+      const closed = await pipeManager.closeReverseInboundByEdgeProducer(
+        "room-rev",
+        "edge-prod-A",
+      );
+      expect(closed).toBe(true);
+      expect(transport.close).toHaveBeenCalled();
+    });
+
+    it("returns false when no reverse pipe exists for that edge producer", async () => {
+      const result = await pipeManager.closeReverseInboundByEdgeProducer(
+        "room-none",
+        "missing-prod",
+      );
+      expect(result).toBe(false);
+    });
+
+    it("throws if finalize is called for an unknown transportId", async () => {
+      const rtpParams = { codecs: [], encodings: [] };
+      await expect(
+        pipeManager.finalizeReverseInbound(
+          "unknown-transport",
+          "edge-prod-A",
+          "audio",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          rtpParams as any,
+          {},
+          "room-rev",
+        ),
+      ).rejects.toThrow(/pending reverse inbound transport/);
+    });
+  });
 });

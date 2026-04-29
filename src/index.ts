@@ -1,5 +1,5 @@
 import { logger } from "./infrastructure/logger.js";
-import { config } from "./config/index.js";
+import { config, initializeConfig } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
@@ -11,6 +11,12 @@ let shutdownFn: ((signal: string) => Promise<void>) | null = null;
 
 const start = async () => {
   try {
+    // Resolve runtime config (INSTANCE_ID via IMDSv2) and run production
+    // assertions. Must complete before bootstrapServer() because cascade
+    // singletons read config.INSTANCE_ID in their constructors.
+    await initializeConfig();
+    logger.info({ instanceId: config.INSTANCE_ID }, "Instance identity resolved");
+
     // Validate config and connect to Redis early
     getRedisClient();
 

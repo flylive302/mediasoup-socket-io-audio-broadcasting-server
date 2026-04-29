@@ -38,6 +38,35 @@ interface PipeCloseBody {
   edgeInstanceId: string;
 }
 
+interface ReverseOfferBody {
+  roomId: string;
+  edgeProducerId: string;
+  edgeIp: string;
+  edgePort: number;
+}
+
+interface ReverseFinalizeBody {
+  roomId: string;
+  edgeProducerId: string;
+  transportId: string;
+  kind: import("mediasoup").types.MediaKind;
+  rtpParameters: import("mediasoup").types.RtpParameters;
+  /** From edge: the userId that owns this producer (passed through to producer.appData) */
+  userId: number;
+  /** Originating edge's INSTANCE_ID — origin includes it in the audio:newProducer
+   *  broadcast so the originating edge can filter the bounce-back relay event. */
+  edgeInstanceId: string;
+}
+
+interface ReverseCloseBody {
+  roomId: string;
+  edgeProducerId: string;
+  /** Optional — present when the edge knows origin's transportId from the
+   *  offer response. Lets origin close partial-setup (pre-finalize) entries
+   *  that aren't yet keyed by edgeProducerId in reverseInboundByEdge. */
+  transportId?: string;
+}
+
 interface CascadeRelayBody {
   roomId: string;
   event: string;
@@ -95,7 +124,7 @@ export const createInternalRoutes = (
       return {
         status: "ok",
         cascadeEnabled: config.CASCADE_ENABLED,
-        instanceId: config.PUBLIC_IP || "unknown",
+        instanceId: config.INSTANCE_ID,
         roomCount,
         timestamp: new Date().toISOString(),
       };
@@ -376,6 +405,241 @@ export const createInternalRoutes = (
       }
     });
 
+    // ─── Reverse Pipe (edge speaker → origin) ──────────────────
+
+    /**
+     * POST /internal/pipe/reverse-offer
+     * Edge → Origin: edge has produced a local speaker producer and needs
+     * origin to receive that audio so origin and other edges can hear it.
+     *
+     * Origin creates an inbound plainTransport, connects it to the edge's
+     * listen address, and returns its own listen address + router caps.
+     *
+     * Body: ReverseOfferBody
+     * Response: { transportId, ip, port, rtpCapabilities }
+     */
+    fastify.post("/internal/pipe/reverse-offer", async (request, reply) => {
+      const body = request.body as ReverseOfferBody;
+      const { roomId, edgeProducerId, edgeIp, edgePort } = body;
+
+      if (!roomId || !edgeProducerId || !edgeIp || !edgePort) {
+        return reply.code(400).send({
+          status: "error",
+          message: "Missing roomId, edgeProducerId, edgeIp, or edgePort",
+        });
+      }
+
+      const cluster = roomManager.getRoom(roomId);
+      if (!cluster) {
+        return reply.code(404).send({
+          status: "error",
+          message: "Room not found on this instance",
+        });
+      }
+
+      const router = cluster.router;
+      if (!router) {
+        return reply.code(500).send({
+          status: "error",
+          message: "Room has no active router",
+        });
+      }
+
+      try {
+        const result = await pipeManager.createReverseInboundTransport(
+          router,
+          { ip: edgeIp, port: edgePort },
+          roomId,
+        );
+
+        // Use PUBLIC_IP so the edge can reach us across the public network.
+        const publicIp = config.PUBLIC_IP || result.ip;
+
+        logger.info(
+          {
+            roomId,
+            edgeProducerId,
+            transportId: result.transportId,
+            publicIp,
+            port: result.port,
+            edgeIp,
+            edgePort,
+          },
+          "Reverse-offer accepted; inbound transport listening",
+        );
+
+        return {
+          status: "ok",
+          transportId: result.transportId,
+          ip: publicIp,
+          port: result.port,
+          rtpCapabilities: result.rtpCapabilities,
+        };
+      } catch (err) {
+        logger.error({ err, roomId, edgeProducerId }, "Failed to create reverse inbound transport");
+        return reply.code(500).send({
+          status: "error",
+          message: "Failed to create reverse inbound transport",
+        });
+      }
+    });
+
+    /**
+     * POST /internal/pipe/reverse-finalize
+     * Edge → Origin: edge has completed its consume() and provides the
+     * consumer's rtpParameters. Origin produces on the inbound transport,
+     * registers with its cluster (auto-pipes to dist routers), and broadcasts
+     * audio:newProducer to local listeners + cascade-relay to other edges.
+     *
+     * The originating edge filters the cascade-relay bounce-back via
+     * originatingEdgeId so it doesn't try to forward-pipe its own audio.
+     *
+     * Body: ReverseFinalizeBody
+     * Response: { originProducerId }
+     */
+    fastify.post("/internal/pipe/reverse-finalize", async (request, reply) => {
+      const body = request.body as ReverseFinalizeBody;
+      const {
+        roomId,
+        edgeProducerId,
+        transportId,
+        kind,
+        rtpParameters,
+        userId,
+        edgeInstanceId,
+      } = body;
+
+      if (
+        !roomId ||
+        !edgeProducerId ||
+        !transportId ||
+        !kind ||
+        !rtpParameters ||
+        typeof userId !== "number" ||
+        !edgeInstanceId
+      ) {
+        return reply.code(400).send({
+          status: "error",
+          message: "Missing required reverse-finalize fields",
+        });
+      }
+
+      const cluster = roomManager.getRoom(roomId);
+      if (!cluster) {
+        return reply.code(404).send({
+          status: "error",
+          message: "Room not found on this instance",
+        });
+      }
+
+      try {
+        const { producer } = await pipeManager.finalizeReverseInbound(
+          transportId,
+          edgeProducerId,
+          kind,
+          rtpParameters,
+          {
+            userId,
+            source: "reverse-pipe",
+            originatingEdgeProducerId: edgeProducerId,
+            originatingEdgeInstanceId: edgeInstanceId,
+          },
+          roomId,
+        );
+
+        // Pipe to origin's distribution routers so listeners on origin can
+        // consume — same registerProducer call audioProduceHandler makes for
+        // local-speaker producers.
+        await cluster.registerProducer(producer);
+
+        // When this reverse-pipe producer's transport closes (edge speaker
+        // disconnect → /reverse-close → transport.close), notify all
+        // listeners + edges so their consumers tear down. Without this,
+        // origin & other-edge listeners hold dead consumers forever.
+        producer.on("transportclose", () => {
+          if (!producer.closed) producer.close();
+          const closedEvent = {
+            producerId: producer.id,
+            userId,
+            originatingEdgeId: edgeInstanceId,
+          };
+          if (io) {
+            io.local.to(roomId).emit("audio:producerClosed", closedEvent);
+          }
+          if (cascadeRelay) {
+            cascadeRelay.relayToRemote(roomId, "audio:producerClosed", closedEvent).catch((err) =>
+              logger.warn(
+                { err, roomId, originProducerId: producer.id },
+                "Reverse-pipe producerClosed relay failed",
+              ),
+            );
+          }
+        });
+
+        // Broadcast audio:newProducer:
+        //  • locally to origin's listeners (so they consume the new audio)
+        //  • cross-instance to other edges (forward pipes get set up there)
+        //  • the originating edge filters by originatingEdgeId — its local
+        //    producer already serves its listeners.
+        const newProducerEvent = {
+          producerId: producer.id,
+          userId,
+          kind: "audio",
+          originatingEdgeId: edgeInstanceId,
+        };
+        if (io) {
+          io.local.to(roomId).emit("audio:newProducer", newProducerEvent);
+        }
+        if (cascadeRelay) {
+          cascadeRelay.relayToRemote(roomId, "audio:newProducer", newProducerEvent).catch((err) =>
+            logger.warn({ err, roomId, originProducerId: producer.id }, "Reverse-pipe newProducer relay failed"),
+          );
+        }
+
+        logger.info(
+          { roomId, edgeProducerId, originProducerId: producer.id, userId, edgeInstanceId },
+          "Reverse-finalize complete; producer registered + broadcast",
+        );
+
+        return { status: "ok", originProducerId: producer.id };
+      } catch (err) {
+        logger.error({ err, roomId, edgeProducerId, transportId }, "Failed to finalize reverse inbound");
+        return reply.code(500).send({
+          status: "error",
+          message: "Failed to finalize reverse inbound",
+        });
+      }
+    });
+
+    /**
+     * POST /internal/pipe/reverse-close
+     * Edge → Origin: edge speaker disconnected; close the origin-side
+     * inbound transport so the producer is torn down and audio:producerClosed
+     * cascades back to all listeners.
+     *
+     * Body: ReverseCloseBody
+     */
+    fastify.post("/internal/pipe/reverse-close", async (request, reply) => {
+      const body = request.body as ReverseCloseBody;
+      const { roomId, edgeProducerId, transportId } = body;
+
+      if (!roomId || !edgeProducerId) {
+        return reply.code(400).send({
+          status: "error",
+          message: "Missing roomId or edgeProducerId",
+        });
+      }
+
+      const closed = await pipeManager.closeReverseInboundByEdgeProducer(
+        roomId,
+        edgeProducerId,
+        transportId,
+      );
+
+      logger.info({ roomId, edgeProducerId, transportId, closed }, "Reverse-close processed");
+      return { status: "ok", closed };
+    });
+
     // ─── Cascade Relay (Phase 5B) ───────────────────────────────
 
     /**
@@ -397,7 +661,7 @@ export const createInternalRoutes = (
       }
 
       // Prevent relay loops: don't re-relay from ourselves
-      const selfId = config.PUBLIC_IP || "unknown";
+      const selfId = config.INSTANCE_ID;
       if (sourceInstanceId === selfId) {
         return { status: "ok", relayed: false, reason: "self" };
       }
@@ -424,6 +688,16 @@ export const createInternalRoutes = (
         // We must await pipe setup, then swap producerId to the edge-local ID
         // before broadcasting — otherwise consume() will fail with "not piped".
         const producerData = data as Record<string, unknown>;
+
+        // Reverse-pipe bounce-back filter: if origin's broadcast carries
+        // OUR INSTANCE_ID as the originating edge, this is our own speaker's
+        // audio coming back. Our local listeners already consume from the
+        // edge-local producer (audioProduceHandler emit'd it), and setting
+        // up a forward pipe here would loop our audio back to ourselves.
+        if (producerData.originatingEdgeId === config.INSTANCE_ID) {
+          return { status: "ok", relayed: false, reason: "originating-edge" };
+        }
+
         const originProducerId = producerData.producerId;
         if (typeof originProducerId === "string") {
           try {
@@ -452,6 +726,17 @@ export const createInternalRoutes = (
         // any frontend listener keying off it sees the right id, AND tear
         // down the edge pipe so listener consumers get producerclose.
         const producerData = data as Record<string, unknown>;
+
+        // Symmetric reverse-pipe filter: origin's broadcast on transport-close
+        // for a reverse-piped producer carries our INSTANCE_ID in
+        // originatingEdgeId. Our local audioProduceHandler.transportclose
+        // already broadcast audio:producerClosed for the EDGE-LOCAL id —
+        // emitting again with origin's id would be log noise (and confuses
+        // consumer-id-keyed frontend state).
+        if (producerData.originatingEdgeId === config.INSTANCE_ID) {
+          return { status: "ok", relayed: false, reason: "originating-edge" };
+        }
+
         const originProducerId = producerData.producerId;
         if (typeof originProducerId === "string") {
           try {
@@ -475,9 +760,14 @@ export const createInternalRoutes = (
         );
       }
 
-      // Broadcast the event to local users in this room (after any rewrites)
+      // Broadcast the event to local users in this room (after any rewrites).
+      // `.local` is critical: broadcastData carries this edge's locally-rewritten
+      // producerId for audio events. Without `.local`, the Redis adapter would
+      // forward this payload to other edges, where that producerId is invalid —
+      // recreating the race the cascade-relay path is supposed to prevent.
+      // Cross-instance delivery happens exclusively via the relay below.
       if (io && broadcastData !== null) {
-        io.to(roomId).emit(event, broadcastData);
+        io.local.to(roomId).emit(event, broadcastData);
       }
 
       // Forward to other remote instances using the ORIGINAL data so each

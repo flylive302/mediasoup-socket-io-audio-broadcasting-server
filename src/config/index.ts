@@ -4,6 +4,7 @@
  */
 import { z } from "zod";
 import "dotenv/config";
+import { getInstanceId } from "@src/infrastructure/instance-identity.js";
 
 /** Reusable schema for boolean-like env vars ("true"/"1" → true, else false) */
 const booleanEnvSchema = z
@@ -100,8 +101,57 @@ const configSchema = z.object({
   PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
 });
 
-export type Config = z.infer<typeof configSchema>;
+/**
+ * INSTANCE_ID is intentionally NOT a Zod field — it must come from IMDSv2
+ * (or `INSTANCE_ID_OVERRIDE` for local two-instance tests), never from a
+ * generic env var. Allowing env to set it would invite split-brain.
+ */
+export type Config = z.infer<typeof configSchema> & {
+  /** Resolved by `initializeConfig()` from IMDSv2 / hostname / test override. */
+  INSTANCE_ID: string;
+};
 
-/** Validated configuration object - fails fast on invalid config */
-export const config: Config = configSchema.parse(process.env);
+/**
+ * Validated configuration object — fails fast on invalid env.
+ * `INSTANCE_ID` is empty until `initializeConfig()` resolves it; readers must
+ * be invoked after that point (the boot sequence in `src/index.ts` enforces
+ * this by awaiting `initializeConfig()` before bootstrapping the server).
+ */
+export const config: Config = {
+  ...configSchema.parse(process.env),
+  INSTANCE_ID: "",
+};
+
+let initialized = false;
+
+/**
+ * Resolve runtime-discovered config (instance identity) and run hard
+ * production assertions. Must be awaited before any code that reads
+ * `config.INSTANCE_ID` or relies on cascade prerequisites.
+ */
+export async function initializeConfig(): Promise<void> {
+  if (initialized) return;
+
+  config.INSTANCE_ID = await getInstanceId();
+
+  if (config.NODE_ENV === "production") {
+    if (!config.INSTANCE_ID || config.INSTANCE_ID === "unknown") {
+      throw new Error(
+        "[config] INSTANCE_ID could not be resolved — IMDSv2 unreachable AND os.hostname() returned empty/unknown. This indicates a real outage, not a config issue.",
+      );
+    }
+    if (config.CASCADE_ENABLED && !config.INTERNAL_API_KEY) {
+      throw new Error(
+        "[config] CASCADE_ENABLED=true requires INTERNAL_API_KEY. Cross-instance HTTP calls will fail without it.",
+      );
+    }
+    if (config.CASCADE_ENABLED && !config.PUBLIC_IP) {
+      throw new Error(
+        "[config] CASCADE_ENABLED=true requires PUBLIC_IP. Edges cannot reach this instance for pipe handshakes. (Hint: PUBLIC_IP is set by user-data.sh from IMDSv2 — check its fail-fast logic.)",
+      );
+    }
+  }
+
+  initialized = true;
+}
 

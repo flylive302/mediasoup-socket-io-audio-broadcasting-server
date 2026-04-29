@@ -70,8 +70,23 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
 netfilter-persistent save
 
 # --- Get instance metadata ---
+# Fail loudly on empty IMDS responses. An empty PUBLIC_IP would silently
+# break cascade (no reachable host for cross-instance pipe handshakes) and
+# was the latent root cause of the split-brain class of audio bugs — the
+# app would default selfId to "unknown" and two such instances would
+# collide on Redis CAS ownership.
 TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+if [ -z "$TOKEN" ]; then
+  echo "❌ FATAL: IMDSv2 token request returned empty. Instance metadata service unreachable."
+  exit 1
+fi
+
 PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+if [ -z "$PUBLIC_IP" ]; then
+  echo "❌ FATAL: IMDSv2 returned empty PUBLIC_IP. Cascade requires a public IP for cross-instance pipe handshakes."
+  echo "   Verify the instance has a public IPv4 address (subnet, security group, ENI mapping)."
+  exit 1
+fi
 
 echo "Public IP: $PUBLIC_IP"
 

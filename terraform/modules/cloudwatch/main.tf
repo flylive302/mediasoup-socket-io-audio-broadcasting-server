@@ -80,6 +80,74 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   dimensions = {}
 }
 
+# Reverse-pipe failure rate.
+# Counts in CloudWatch are cumulative-since-instance-startup; we use RATE()
+# to convert to per-second deltas so a fresh failure burst isn't diluted by
+# hours of good history. Alarm fires if recent failure ratio > 5% over
+# 5 consecutive minutes; the IF() guard avoids noise when there are no
+# attempts at all.
+resource "aws_cloudwatch_metric_alarm" "reverse_pipe_failure_rate" {
+  alarm_name          = "${var.project_name}-reverse-pipe-failure-rate"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 5
+  threshold           = 0.05
+  alarm_description   = "ALERT: Reverse-pipe setup failure rate > 5% — edge speakers may be silent to origin/other-edge listeners. Check MSAB logs for 'setupReversePipe: failed' or '/internal/pipe/reverse-*' errors."
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  metric_query {
+    id          = "failure_rate"
+    expression  = "IF(rate_attempts > 0, rate_failures / rate_attempts, 0)"
+    label       = "Reverse-pipe failure rate"
+    return_data = true
+  }
+
+  metric_query {
+    id    = "failures"
+    label = "Failures (cumulative)"
+    metric {
+      metric_name = "ReversePipeSetupFailure"
+      namespace   = "FlyLive/MSAB"
+      period      = 60
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id    = "successes"
+    label = "Successes (cumulative)"
+    metric {
+      metric_name = "ReversePipeSetupSuccess"
+      namespace   = "FlyLive/MSAB"
+      period      = 60
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id          = "rate_failures"
+    expression  = "RATE(failures)"
+    label       = "Failure rate (per-second)"
+    return_data = false
+  }
+
+  metric_query {
+    id          = "rate_successes"
+    expression  = "RATE(successes)"
+    label       = "Success rate (per-second)"
+    return_data = false
+  }
+
+  metric_query {
+    id          = "rate_attempts"
+    expression  = "rate_failures + rate_successes"
+    label       = "Total attempt rate (per-second)"
+    return_data = false
+  }
+}
+
 # =============================================================================
 # CloudWatch Dashboard — MSAB Operations
 # =============================================================================

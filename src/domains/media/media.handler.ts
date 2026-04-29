@@ -122,14 +122,53 @@ const audioProduceHandler = createHandler(
       await cluster.registerProducer(producer);
     }
 
-    // Notify room members causing them to consume
-    // (after piping is complete so distribution routers have the producer)
-    // Uses emitToRoom for cascade-aware broadcasting
-    emitToRoom(socket, roomId, "audio:newProducer", {
-      producerId: producer.id,
-      userId: socket.data.user.id,
-      kind: "audio",
-    }, context.cascadeRelay);
+    const userId = socket.data.user.id;
+    const newProducerEvent = { producerId: producer.id, userId, kind: "audio" };
+
+    // Reverse-pipe handling: if this socket is on an EDGE for this room, the
+    // speaker's audio lives on this edge but origin & other edges hear silence
+    // until we open a reverse pipe. setupReversePipe drives the handshake;
+    // origin then broadcasts its own audio:newProducer (with originatingEdgeId
+    // tagged) to all edges, so we must NOT also relay this edge-local event
+    // cross-instance — that would race with origin's broadcast and try to
+    // re-pipe our own audio back to ourselves.
+    const isEdgeRoom =
+      context.cascadeCoordinator?.isEdgeRoom(roomId) ?? false;
+
+    if (isEdgeRoom && context.cascadeCoordinator && cluster) {
+      // Local broadcast first so this edge's listeners don't wait on the
+      // reverse-pipe handshake to start consuming the local producer.
+      socket.local.to(roomId).emit("audio:newProducer", newProducerEvent);
+
+      // Open the reverse pipe in the background. On failure we log and continue
+      // — local listeners can still hear; only cross-instance is silent.
+      void context.cascadeCoordinator
+        .setupReversePipe(roomId, producer, cluster, userId)
+        .then((result) => {
+          if (!result) {
+            logger.warn(
+              { roomId, edgeProducerId: producer.id, userId },
+              "Reverse pipe setup failed — cross-instance listeners will be silent for this speaker",
+            );
+          }
+        })
+        .catch((err) => {
+          logger.error(
+            { err, roomId, edgeProducerId: producer.id, userId },
+            "Reverse pipe setup threw",
+          );
+        });
+    } else {
+      // Origin path (or single-instance/cascade-off): emitToRoom is the
+      // cascade-aware combined local + relay broadcast.
+      emitToRoom(
+        socket,
+        roomId,
+        "audio:newProducer",
+        newProducerEvent,
+        context.cascadeRelay,
+      );
+    }
 
     producer.on("transportclose", () => {
       // Clean up client tracking
@@ -140,12 +179,26 @@ const audioProduceHandler = createHandler(
       // CQ-LOW-001: Guard against double-close
       if (!producer.closed) producer.close();
 
+      // Tear down the reverse pipe if we opened one. Origin will then close
+      // its inbound transport (which closes its producer and cascades
+      // audio:producerClosed to all listeners).
+      if (isEdgeRoom && context.cascadeCoordinator) {
+        context.cascadeCoordinator
+          .closeReversePipe(roomId, producer.id)
+          .catch((err) =>
+            logger.warn(
+              { err, roomId, edgeProducerId: producer.id },
+              "closeReversePipe failed",
+            ),
+          );
+      }
+
       // Notify the room (incl. cross-region edges) so listener consumers
       // get cleanup. Without this, edge-region listeners hold dead
       // consumers (no RTP arriving) until full rejoin. Cascade-aware emit.
       emitToRoom(socket, roomId, "audio:producerClosed", {
         producerId: producer.id,
-        userId: socket.data.user.id,
+        userId,
       }, context.cascadeRelay);
     });
 

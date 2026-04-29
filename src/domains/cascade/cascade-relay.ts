@@ -17,11 +17,11 @@ export class CascadeRelay {
   /** roomId → set of remote instances (edges if we're origin, origin if we're edge) */
   private readonly remoteInstances = new Map<string, Map<string, RemoteInstance>>();
 
-  /** Our own instance ID (PUBLIC_IP) used in sourceInstanceId to prevent loops */
+  /** Our own instance ID (from config.INSTANCE_ID) used in sourceInstanceId to prevent loops */
   private readonly selfId: string;
 
   constructor(private readonly logger: Logger) {
-    this.selfId = config.PUBLIC_IP || "unknown";
+    this.selfId = config.INSTANCE_ID;
   }
 
   // ─── Registration ─────────────────────────────────────────────
