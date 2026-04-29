@@ -12,6 +12,28 @@
  * delivery path (it rewrites producerIds before broadcasting on each edge).
  */
 import { describe, it, expect, vi } from "vitest";
+
+// Mock config so the module graph (room-emit → logger → config) doesn't
+// require real env vars (JWT_SECRET / LARAVEL_API_URL / LARAVEL_INTERNAL_KEY)
+// to be present in the CI environment.
+vi.mock("@src/config/index.js", () => ({
+  config: {
+    NODE_ENV: "test",
+    LOG_LEVEL: "silent",
+  },
+  isDev: false,
+}));
+
+vi.mock("@src/infrastructure/logger.js", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
 import { emitToRoom, broadcastToRoom } from "@src/shared/room-emit.js";
 import type { Socket, Server } from "socket.io";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
