@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { scheduleSeatClear } from "@src/shared/seat-grace.js";
 import { authMiddleware } from "@src/auth/middleware.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
@@ -189,26 +190,38 @@ async function handleDisconnect(
     }
 
     // RT-002 FIX: Parallel Redis cleanup — don't await sequentially
-    const [seatResult] = await Promise.allSettled([
-      seatRepository.leaveSeat(roomId, roomUserId),
+    // Seat clear is intentionally excluded here: it runs after a grace period
+    // so a fast reconnect (mobile background, iOS PWA suspension) retains the seat.
+    await Promise.allSettled([
       userSocketRepository.unregisterSocket(client.userId, socket.id),
       userRoomRepository.clearUserRoom(client.userId),
       roomManager.state.adjustParticipantCount(roomId, -1),
     ]);
 
-    // Emit seat:cleared if user was seated
-    if (
-      seatResult.status === "fulfilled" &&
-      seatResult.value.success &&
-      seatResult.value.seatIndex !== undefined
-    ) {
-      emitToRoom(socket, roomId, "seat:cleared", { seatIndex: seatResult.value.seatIndex }, cascadeRelay);
-
-      log.debug(
-        { roomId, userId: roomUserId, seatIndex: seatResult.value.seatIndex },
-        "User seat cleared on disconnect",
-      );
-    }
+    // Schedule deferred seat clear (15 s grace period).
+    // join-room handler cancels this if the user reconnects in time.
+    scheduleSeatClear(`${roomId}:${roomUserId}`, () => {
+      seatRepository
+        .leaveSeat(roomId, roomUserId)
+        .then((seatResult) => {
+          if (seatResult.success && seatResult.seatIndex !== undefined) {
+            emitToRoom(
+              socket,
+              roomId,
+              "seat:cleared",
+              { seatIndex: seatResult.seatIndex },
+              cascadeRelay,
+            );
+            log.debug(
+              { roomId, userId: roomUserId, seatIndex: seatResult.seatIndex },
+              "Deferred seat clear fired",
+            );
+          }
+        })
+        .catch((err) =>
+          log.warn({ err, roomId, userId: roomUserId }, "Deferred leaveSeat failed"),
+        );
+    });
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
   } else if (client?.userId) {

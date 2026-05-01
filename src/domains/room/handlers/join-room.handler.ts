@@ -11,6 +11,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
+import { cancelSeatClear } from "@src/shared/seat-grace.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { z } from "zod";
@@ -127,6 +128,11 @@ async function processJoin(
   // Update client room index
   const userId = socket.data.user.id;
   clientManager.setClientRoom(socket.id, roomId);
+
+  // Cancel any pending grace-period seat clear for this user — they reconnected in time
+  if (cancelSeatClear(`${roomId}:${String(userId)}`)) {
+    logger.debug({ roomId, userId }, "Grace-period seat clear cancelled — user reconnected");
+  }
 
   // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
   // sharing the same Redis adapter, not just the local process.
