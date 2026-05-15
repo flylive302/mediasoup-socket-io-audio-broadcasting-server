@@ -30,13 +30,15 @@ const handleChatMessage = createHandler(
       return { success: false, error: Errors.RATE_LIMITED };
     }
 
-    // Lean payload: id + userId + content + type + timestamp.
-    // Frontend hydrates author name/avatar/frame from its participants map
-    // (populated by room:userJoined). Avoids re-broadcasting profile data
-    // on every message at scale.
+    // Include a lightweight author snapshot. The frontend still prefers its
+    // live participants map, but cross-region/rejoin races can leave that map
+    // incomplete when chat arrives before room:userJoined/profile sync.
     const message = {
       id: randomUUID(),
       userId,
+      userName: socket.data.user.name,
+      userAvatar: socket.data.user.avatar,
+      userFrame: socket.data.user.frame,
       content: payload.content,
       type: payload.type,
       timestamp: Date.now(),
