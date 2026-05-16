@@ -48,6 +48,7 @@ export const assignSeatHandler = createHandler(
     if (result.previousSeatIndex != null) {
       broadcastToRoom(socket.nsp, roomId, "seat:cleared", {
         seatIndex: result.previousSeatIndex,
+        userId: targetUserId,
       }, context.cascadeRelay);
     }
 

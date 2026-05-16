@@ -65,7 +65,7 @@ function afterLeave(
       socket,
       roomId,
       "seat:cleared",
-      { seatIndex: seatResult.seatIndex },
+      { seatIndex: seatResult.seatIndex, userId: Number(result.userId) },
       context.cascadeRelay,
     );
     logger.debug(

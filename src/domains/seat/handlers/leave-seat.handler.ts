@@ -25,7 +25,13 @@ export const leaveSeatHandler = createHandler(
     );
 
     // Broadcast to room (cascade-aware)
-    emitToRoom(socket, roomId, "seat:cleared", { seatIndex: result.seatIndex }, context.cascadeRelay);
+    emitToRoom(
+      socket,
+      roomId,
+      "seat:cleared",
+      { seatIndex: result.seatIndex, userId: socket.data.user.id },
+      context.cascadeRelay,
+    );
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService

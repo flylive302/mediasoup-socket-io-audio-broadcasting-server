@@ -35,7 +35,13 @@ export const lockSeatHandler = createHandler(
 
     // If someone was kicked, notify room and close their producer
     if (kicked) {
-      broadcastToRoom(socket.nsp, roomId, "seat:cleared", { seatIndex }, context.cascadeRelay);
+      broadcastToRoom(
+        socket.nsp,
+        roomId,
+        "seat:cleared",
+        { seatIndex, userId: Number(kicked) },
+        context.cascadeRelay,
+      );
 
       // Server-side producer close — don't rely on frontend
       const kickedClient = context.clientManager

@@ -38,6 +38,7 @@ export const takeSeatHandler = createHandler(
     if (result.previousSeatIndex != null) {
       emitToRoom(socket, roomId, "seat:cleared", {
         seatIndex: result.previousSeatIndex,
+        userId: socket.data.user.id,
       }, context.cascadeRelay);
     }
 

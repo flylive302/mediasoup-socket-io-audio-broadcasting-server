@@ -54,7 +54,13 @@ export const kickUserHandler = createHandler(
     const targetUserIdStr = String(targetUserId);
     const seatResult = await context.seatRepository.leaveSeat(roomId, targetUserIdStr);
     if (seatResult.success && seatResult.seatIndex !== undefined) {
-      emitToRoom(socket, roomId, "seat:cleared", { seatIndex: seatResult.seatIndex }, context.cascadeRelay);
+      emitToRoom(
+        socket,
+        roomId,
+        "seat:cleared",
+        { seatIndex: seatResult.seatIndex, userId: targetUserId },
+        context.cascadeRelay,
+      );
       logger.debug(
         { roomId, targetUserId, seatIndex: seatResult.seatIndex },
         "Kicked user's seat cleared",

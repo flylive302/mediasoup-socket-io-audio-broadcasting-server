@@ -209,7 +209,7 @@ async function handleDisconnect(
               socket,
               roomId,
               "seat:cleared",
-              { seatIndex: seatResult.seatIndex },
+              { seatIndex: seatResult.seatIndex, userId: Number(roomUserId) },
               cascadeRelay,
             );
             log.debug(

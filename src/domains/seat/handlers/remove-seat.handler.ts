@@ -48,7 +48,13 @@ export const removeSeatHandler = createHandler(
     );
 
     // Broadcast to room (cascade-aware)
-    emitToRoom(socket, roomId, "seat:cleared", { seatIndex: result.seatIndex }, context.cascadeRelay);
+    emitToRoom(
+      socket,
+      roomId,
+      "seat:cleared",
+      { seatIndex: result.seatIndex, userId: targetUserId },
+      context.cascadeRelay,
+    );
 
     return { success: true };
   },
