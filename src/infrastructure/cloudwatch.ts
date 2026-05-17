@@ -128,6 +128,36 @@ async function publishMetrics(
             Timestamp: now,
             Dimensions: dimensions,
           },
+          // EVIDENCE-REPORT alarm-dimension fix (F-14/F-28/F-86): CloudWatch
+          // alarms cannot use SEARCH() and cannot enumerate per-instance
+          // dimensions, so also publish these four DIMENSIONLESS. Every
+          // instance writes exactly one datapoint per 60s period into the same
+          // dimensionless stream, so a 60s-period alarm with statistic Sum
+          // (connections/workers) or Average (cpu) is a true fleet aggregate.
+          {
+            MetricName: "ActiveRooms",
+            Value: activeRooms,
+            Unit: "Count",
+            Timestamp: now,
+          },
+          {
+            MetricName: "ActiveConnections",
+            Value: activeConnections,
+            Unit: "Count",
+            Timestamp: now,
+          },
+          {
+            MetricName: "WorkerCount",
+            Value: workerCount,
+            Unit: "Count",
+            Timestamp: now,
+          },
+          {
+            MetricName: "WorkerCPU",
+            Value: workerCpuPercent,
+            Unit: "Percent",
+            Timestamp: now,
+          },
           {
             MetricName: "MaxRoomListeners",
             Value: maxRoomListeners,

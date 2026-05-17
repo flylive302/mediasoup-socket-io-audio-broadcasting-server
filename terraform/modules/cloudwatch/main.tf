@@ -27,92 +27,73 @@ resource "aws_sns_topic" "alerts" {
 # TIER0 (EVIDENCE-REPORT alarm-dimension mismatch / F-14 / F-28 / F-86):
 # apply during ops window — see plan.
 #
-# MSAB publishes EVERY FlyLive/MSAB metric WITH an `InstanceId` dimension, but
-# these alarms previously queried the namespace with `dimensions = {}` (no
-# dimension). CloudWatch only matches a metric when dimensions match exactly,
-# so the alarms have received ZERO datapoints since infra creation:
-#   - no-workers   → treat_missing=breaching → permanently ALARM (false)
-#   - high-conn/cpu → treat_missing=notBreaching → permanently OK (false)
-# Rewritten to metric-math over SEARCH() across InstanceId, the same pattern the
-# dashboard widgets already use, so they aggregate real per-instance data.
+# Root cause: MSAB published every FlyLive/MSAB metric ONLY with an
+# `InstanceId` dimension, but these alarms queried with `dimensions = {}`, so
+# they matched nothing and were deaf since infra creation. SEARCH() across
+# InstanceId is NOT an option — CloudWatch rejects SEARCH on metric alarms
+# ("SEARCH is not supported on Metric Alarms"). Fix: MSAB now ALSO publishes
+# these metrics DIMENSIONLESS (src/infrastructure/cloudwatch.ts); every
+# instance writes one datapoint per 60s period into the shared dimensionless
+# stream, so a simple 60s alarm with Sum (connections/workers) or Average
+# (cpu) is a true fleet aggregate. Statistics corrected from the original
+# (Maximum/Minimum were wrong for a fleet view).
 # =============================================================================
 
-# --- Alarm: High Connection Count (total across all instances) ---
+# --- Alarm: High Connection Count (fleet total) ---
 resource "aws_cloudwatch_metric_alarm" "high_connections" {
   alarm_name          = "${var.project_name}-high-connections-alert"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
+  metric_name         = "ActiveConnections"
+  namespace           = "FlyLive/MSAB"
+  period              = 60
+  statistic           = "Sum"
   threshold           = var.connection_alert_threshold
-  alarm_description   = "ALERT: total ActiveConnections > ${var.connection_alert_threshold} for 5 minutes"
+  alarm_description   = "ALERT: fleet ActiveConnections > ${var.connection_alert_threshold} for 5 minutes"
   treat_missing_data  = "notBreaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
 
-  metric_query {
-    id          = "per_instance"
-    expression  = "SEARCH('{FlyLive/MSAB,InstanceId} MetricName=\"ActiveConnections\"', 'Average', 60)"
-    return_data = false
-  }
-
-  metric_query {
-    id          = "total"
-    expression  = "SUM(per_instance)"
-    label       = "Total ActiveConnections"
-    return_data = true
-  }
+  dimensions = {}
 }
 
-# --- Alarm: No Healthy Workers (total workers across the fleet) ---
+# --- Alarm: No Healthy Workers (fleet total) ---
 resource "aws_cloudwatch_metric_alarm" "no_workers" {
   alarm_name          = "${var.project_name}-no-workers-alert"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
+  metric_name         = "WorkerCount"
+  namespace           = "FlyLive/MSAB"
+  period              = 60
+  statistic           = "Sum"
   threshold           = 1
-  alarm_description   = "CRITICAL: No healthy MediaSoup workers for 2 minutes"
+  alarm_description   = "CRITICAL: No healthy MediaSoup workers fleet-wide for 2 minutes"
   treat_missing_data  = "breaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
 
-  metric_query {
-    id          = "per_instance"
-    expression  = "SEARCH('{FlyLive/MSAB,InstanceId} MetricName=\"WorkerCount\"', 'Average', 60)"
-    return_data = false
-  }
-
-  metric_query {
-    id          = "total"
-    expression  = "SUM(per_instance)"
-    label       = "Total WorkerCount"
-    return_data = true
-  }
+  dimensions = {}
 }
 
-# --- Alarm: High CPU (average across all instances) ---
+# --- Alarm: High CPU (fleet average) ---
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   alarm_name          = "${var.project_name}-high-cpu-alert"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
+  metric_name         = "WorkerCPU"
+  namespace           = "FlyLive/MSAB"
+  period              = 60
+  statistic           = "Average"
   threshold           = var.cpu_alert_threshold
-  alarm_description   = "WARNING: Average CPU > ${var.cpu_alert_threshold}% for 5 minutes"
+  alarm_description   = "WARNING: fleet average CPU > ${var.cpu_alert_threshold}% for 5 minutes"
   treat_missing_data  = "notBreaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
 
-  metric_query {
-    id          = "per_instance"
-    expression  = "SEARCH('{FlyLive/MSAB,InstanceId} MetricName=\"WorkerCPU\"', 'Average', 60)"
-    return_data = false
-  }
-
-  metric_query {
-    id          = "fleet_avg"
-    expression  = "AVG(per_instance)"
-    label       = "Fleet average WorkerCPU"
-    return_data = true
-  }
+  dimensions = {}
 }
 
 # Reverse-pipe failure rate.
