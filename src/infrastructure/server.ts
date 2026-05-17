@@ -10,6 +10,7 @@ import { createEventIngestRoutes } from "./event-ingest.js";
 import { createAdminRoutes } from "./drain.js";
 import { createInternalRoutes } from "@src/api/internal.js";
 import { initializeSocket } from "@src/socket/index.js";
+import { RevocationBackfillPoller } from "@src/integrations/laravel/revocation-backfill-poller.js";
 
 import { logger } from "./logger.js";
 
@@ -36,6 +37,7 @@ export interface BootstrapResult {
   autoCloseJob: AutoCloseJob;
   roomRegistry: RoomRegistry;
   pipeManager: PipeManager;
+  revocationPoller: RevocationBackfillPoller;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -103,6 +105,14 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     logger.info("SFU cascade services wired (CASCADE_ENABLED=true)");
   }
 
+  // F-67: reconcile any revocations whose real-time SNS emit this instance missed.
+  const revocationPoller = new RevocationBackfillPoller(
+    pubClient,
+    appContext.laravelClient,
+    logger,
+  );
+  revocationPoller.start();
+
   // Register health check
   await fastify.register(createHealthRoutes(workerManager));
 
@@ -141,6 +151,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     autoCloseJob,
     roomRegistry,
     pipeManager,
+    revocationPoller,
   };
 }
 

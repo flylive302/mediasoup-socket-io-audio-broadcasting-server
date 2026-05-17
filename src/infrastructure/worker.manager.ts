@@ -9,6 +9,7 @@ import { execSync } from "child_process";
 import type { Logger } from "./logger.js";
 import { mediasoupConfig } from "@src/config/mediasoup.js";
 import { config } from "@src/config/index.js";
+import { metrics } from "./metrics.js";
 
 interface WorkerInfo {
   worker: mediasoup.types.Worker;
@@ -32,6 +33,15 @@ export class WorkerManager {
 
   getWorkerCount(): number {
     return this.workers.length;
+  }
+
+  /**
+   * F-4: keep the workers gauge live on every add/remove instead of only on
+   * Prometheus scrape. A worker death + 5-9s respawn window otherwise reports a
+   * stale (too-high) count between scrapes.
+   */
+  private syncWorkerGauge(): void {
+    metrics.workersActive.set(this.workers.length);
   }
 
   getExpectedWorkerCount(): number {
@@ -128,6 +138,7 @@ export class WorkerManager {
     }
     this.workers.length = 0;
     this.workerByPid.clear();
+    this.syncWorkerGauge();
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -183,6 +194,7 @@ export class WorkerManager {
       const info: WorkerInfo = { worker, webRtcServer, routerCount: 0 };
       this.workers.push(info);
       this.workerByPid.set(worker.pid, info);
+      this.syncWorkerGauge();
       this.logger.debug({ index, pid: worker.pid }, "Worker created");
     } catch (error) {
       this.logger.fatal({ error, index }, "Failed to create worker");
@@ -196,6 +208,7 @@ export class WorkerManager {
 
     this.workers.splice(idx, 1);
     this.workerByPid.delete(pid);
+    this.syncWorkerGauge();
 
     // ARCH-002 FIX: Await cleanup of orphaned rooms before re-creating worker
     if (this.onWorkerDied) {

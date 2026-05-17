@@ -20,7 +20,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -51,7 +51,13 @@ const start = async () => {
 
       logger.info({ signal }, "Graceful shutdown initiated");
 
-      const timeoutMs = 30_000;
+      // F-5: SIGTERM (ASG scale-in / deploy rotate) must give live calls a real
+      // chance to drain. Previously the ceiling was 15s — any room mid-call was
+      // force-closed. Raised to 120s. The overall hard-kill timeout must exceed
+      // drain + remaining cleanup, else it would pre-empt the longer drain.
+      // Pairs with F-87 (ASG terminate lifecycle heartbeat aligned to ~150s).
+      const DRAIN_CEILING_MS = 120_000;
+      const timeoutMs = DRAIN_CEILING_MS + 30_000;
       const shutdownTimeout = setTimeout(() => {
         logger.error("Shutdown timeout exceeded, forcing exit");
         process.exit(1);
@@ -61,9 +67,9 @@ const start = async () => {
         // 1. Enter drain mode and wait for rooms to close (or timeout)
         if (!isDraining()) {
           await new Promise<void>((resolve) => {
-            const drainTimeout = setTimeout(resolve, 15_000); // max 15s drain wait
+            const drainTimeout = setTimeout(resolve, DRAIN_CEILING_MS);
             startDrain(roomManager, {
-              timeoutMs: 15_000,
+              timeoutMs: DRAIN_CEILING_MS,
               onComplete: () => {
                 clearTimeout(drainTimeout);
                 resolve();
@@ -76,8 +82,10 @@ const start = async () => {
         // 2. Close Socket.IO (disconnect remaining clients)
         io.close();
 
-        // 3. Stop auto-close job
+        // 3. Stop auto-close job + F-34 ownership heartbeat
         autoCloseJob.stop();
+        roomManager.stopOwnershipHeartbeat();
+        revocationPoller.stop();
 
         if (giftHandler) {
           await giftHandler.stop();

@@ -12,6 +12,7 @@ import { setRoomOwner } from "@src/domains/seat/index.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
 import { cancelSeatClear } from "@src/shared/seat-grace.js";
+import { performRoomLeave } from "@src/domains/room/room-leave.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { z } from "zod";
@@ -125,8 +126,21 @@ async function processJoin(
     setRoomOwner(roomId, String(ownerId));
   }
 
-  // Update client room index
+  // F-31: if this socket is still a member of a DIFFERENT room (room switch
+  // without an explicit room:leave), tear that prior room down first —
+  // otherwise the user stays a ghost member: still in the old Socket.IO room,
+  // still holding its seat, its participant count never decremented.
   const userId = socket.data.user.id;
+  const priorRoomId = clientManager.getClient(socket.id)?.roomId;
+  if (priorRoomId && priorRoomId !== roomId) {
+    logger.info(
+      { socketId: socket.id, userId, priorRoomId, roomId },
+      "Room switch detected — leaving prior room before join",
+    );
+    await performRoomLeave(socket, context, priorRoomId);
+  }
+
+  // Update client room index
   clientManager.setClientRoom(socket.id, roomId);
 
   // Cancel any pending grace-period seat clear for this user — they reconnected in time

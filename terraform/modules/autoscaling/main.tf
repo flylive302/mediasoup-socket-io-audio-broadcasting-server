@@ -75,20 +75,20 @@ resource "aws_launch_template" "msab" {
 
   # User data script — same as compute module
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
-    region               = var.region
-    project_name         = var.project_name
-    ecr_repo_url         = var.ecr_repo_url
-    app_port             = var.app_port
-    rtc_min_port         = var.rtc_min_port
-    rtc_max_port         = var.rtc_max_port
-    redis_host           = var.redis_host
-    redis_port           = var.redis_port
-    laravel_internal_key = var.laravel_internal_key
-    jwt_secret           = var.jwt_secret
-    session_secret       = var.session_secret
-    audio_domain         = var.audio_domain
-    cors_origins         = var.cors_origins
-    laravel_api_url      = var.laravel_api_url
+    region                  = var.region
+    project_name            = var.project_name
+    ecr_repo_url            = var.ecr_repo_url
+    app_port                = var.app_port
+    rtc_min_port            = var.rtc_min_port
+    rtc_max_port            = var.rtc_max_port
+    redis_host              = var.redis_host
+    redis_port              = var.redis_port
+    laravel_internal_key    = var.laravel_internal_key
+    jwt_secret              = var.jwt_secret
+    session_secret          = var.session_secret
+    audio_domain            = var.audio_domain
+    cors_origins            = var.cors_origins
+    laravel_api_url         = var.laravel_api_url
     cascade_enabled         = var.cascade_enabled
     cloudflare_turn_api_key = var.cloudflare_turn_api_key
     cloudflare_turn_key_id  = var.cloudflare_turn_key_id

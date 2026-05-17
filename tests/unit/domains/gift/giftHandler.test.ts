@@ -28,6 +28,9 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftBatchSize: { observe: vi.fn() },
     giftsProcessed: { inc: vi.fn() },
     giftDeadLetterSize: { set: vi.fn() },
+    // F-3: createHandler now records per-event throughput/latency.
+    eventsTotal: { inc: vi.fn() },
+    eventLatency: { observe: vi.fn() },
   },
 }));
 

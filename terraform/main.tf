@@ -19,7 +19,7 @@ terraform {
   #   cp backend.hcl.example backend.hcl  (fill in your account ID)
   #   terraform init -backend-config=backend.hcl
   backend "s3" {
-    bucket       = "flylive-audio-tfstate-013453151767"  # ← change this
+    bucket       = "flylive-audio-tfstate-013453151767" # ← change this
     key          = "phase1/terraform.tfstate"
     region       = "ap-south-1"
     use_lockfile = true
@@ -288,9 +288,9 @@ module "autoscaling_mumbai" {
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 
   # MSAB Application Config
-  jwt_max_age_seconds  = var.jwt_max_age_seconds
+  jwt_max_age_seconds    = var.jwt_max_age_seconds
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
-  ice_stun_urls        = var.ice_stun_urls
+  ice_stun_urls          = var.ice_stun_urls
 
   # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
   min_instances     = 2
@@ -330,9 +330,9 @@ module "autoscaling_frankfurt" {
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
 
   # MSAB Application Config
-  jwt_max_age_seconds  = var.jwt_max_age_seconds
+  jwt_max_age_seconds    = var.jwt_max_age_seconds
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
-  ice_stun_urls        = var.ice_stun_urls
+  ice_stun_urls          = var.ice_stun_urls
 
   # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
   min_instances     = 2

@@ -140,6 +140,16 @@ export async function initializeConfig(): Promise<void> {
         "[config] INSTANCE_ID could not be resolved — IMDSv2 unreachable AND os.hostname() returned empty/unknown. This indicates a real outage, not a config issue.",
       );
     }
+    // F-16: TURN must be configured in production. STUN-only silently fails
+    // for users behind symmetric NAT (common on India/EU mobile carriers) —
+    // the prime suspect for "audio won't connect". Fail fast at boot instead
+    // of degrading invisibly. Dev/test still boot STUN-only (iceServers.ts).
+    if (!config.CLOUDFLARE_TURN_API_KEY || !config.CLOUDFLARE_TURN_KEY_ID) {
+      throw new Error(
+        "[config] Production requires CLOUDFLARE_TURN_API_KEY and CLOUDFLARE_TURN_KEY_ID. " +
+          "STUN-only mode cannot serve users behind symmetric NAT. Set both (Cloudflare Dashboard → Calls → TURN).",
+      );
+    }
     if (config.CASCADE_ENABLED && !config.INTERNAL_API_KEY) {
       throw new Error(
         "[config] CASCADE_ENABLED=true requires INTERNAL_API_KEY. Cross-instance HTTP calls will fail without it.",

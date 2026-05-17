@@ -12,6 +12,7 @@ import { config } from "@src/config/index.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { RoomRegistry } from "./room-registry.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -24,6 +25,11 @@ export class RoomManager {
   private cascadeCoordinator: CascadeCoordinator | null = null;
   private cascadeRelay: CascadeRelay | null = null;
   private roomRegistry: RoomRegistry | null = null;
+
+  // F-34: periodic CAS ownership heartbeat (short TTL is refreshed here so a
+  // live-but-idle origin keeps its claim; a crashed origin's claim expires).
+  private ownershipHeartbeat: NodeJS.Timeout | null = null;
+  private static readonly OWNERSHIP_HEARTBEAT_MS = 30_000;
 
   constructor(
     private readonly workerManager: WorkerManager,
@@ -59,10 +65,50 @@ export class RoomManager {
    */
   setRoomRegistry(registry: RoomRegistry): void {
     this.roomRegistry = registry;
+    this.startOwnershipHeartbeat();
+  }
+
+  /**
+   * F-34: every ~30s refresh the CAS ownership claim for every room hosted on
+   * this instance. `refreshOwnership` is a no-op (Lua-guarded) for any room
+   * this instance no longer owns, so iterating all local rooms is safe.
+   */
+  private startOwnershipHeartbeat(): void {
+    if (this.ownershipHeartbeat) return;
+    this.ownershipHeartbeat = setInterval(() => {
+      const registry = this.roomRegistry;
+      if (!registry || this.rooms.size === 0) return;
+      const selfId = config.INSTANCE_ID;
+      for (const roomId of this.rooms.keys()) {
+        registry
+          .refreshOwnership(roomId, selfId)
+          .catch((err) =>
+            logger.warn({ err, roomId }, "Ownership heartbeat refresh failed"),
+          );
+      }
+    }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
+    // Don't keep the event loop (or tests) alive solely for the heartbeat.
+    this.ownershipHeartbeat.unref?.();
+  }
+
+  /** Stop the ownership heartbeat — called during graceful shutdown. */
+  stopOwnershipHeartbeat(): void {
+    if (this.ownershipHeartbeat) {
+      clearInterval(this.ownershipHeartbeat);
+      this.ownershipHeartbeat = null;
+    }
   }
 
   getRoomCount(): number {
     return this.rooms.size;
+  }
+
+  /**
+   * F-2: keep the Prometheus rooms gauge in lockstep with the rooms map.
+   * Called on every add/remove so it can never drift between scrapes.
+   */
+  private syncRoomGauge(): void {
+    metrics.roomsActive.set(this.rooms.size);
   }
 
   /** Max listeners in any single room on this instance (for CloudWatch) */
@@ -122,26 +168,52 @@ export class RoomManager {
       cluster.setActiveSpeakerDetector(detector);
     }
 
+    // F-33/F-36: do NOT register the cluster in `this.rooms` until Redis state
+    // and Laravel are initialized. Registering early means a transient Redis or
+    // Laravel failure leaves a permanently cached half-initialized "ghost room"
+    // (no Redis state → never auto-closes; getOrCreateRoom fast-path keeps
+    // returning the broken cluster). On any init failure we tear the cluster
+    // down and release the CAS claim so the next join re-creates cleanly.
+    try {
+      // 3. Initialize State (source of truth for auto-close + participant count)
+      await this.stateRepo.save({
+        id: roomId,
+        status: "ACTIVE",
+        participantCount: 0,
+        seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+      });
+
+      // 4. Notify Laravel Live (including hosting info for cross-region cascade)
+      await this.laravelClient.updateRoomStatus(roomId, {
+        is_live: true,
+        participant_count: 0,
+        hosting_region: config.AWS_REGION,
+        hosting_ip: config.PUBLIC_IP,
+        hosting_port: config.PORT,
+      });
+    } catch (err) {
+      logger.error(
+        { err, roomId },
+        "Room init failed after cluster create — tearing down to avoid ghost room",
+      );
+      await cluster.close().catch((closeErr) =>
+        logger.error({ err: closeErr, roomId }, "Cluster close during ghost-room cleanup failed"),
+      );
+      if (this.roomRegistry) {
+        await this.roomRegistry
+          .cleanup(roomId)
+          .catch((rrErr) =>
+            logger.error({ err: rrErr, roomId }, "CAS release during ghost-room cleanup failed"),
+          );
+      }
+      throw err;
+    }
+
+    // 5. Only now is the room safe to serve — register it.
     this.rooms.set(roomId, cluster);
-
-    // 3. Initialize State
-    await this.stateRepo.save({
-      id: roomId,
-      status: "ACTIVE",
-      participantCount: 0,
-      seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
-      createdAt: Date.now(),
-      lastActivityAt: Date.now(),
-    });
-
-    // 4. Notify Laravel Live (including hosting info for cross-region cascade)
-    await this.laravelClient.updateRoomStatus(roomId, {
-      is_live: true,
-      participant_count: 0,
-      hosting_region: config.AWS_REGION,
-      hosting_ip: config.PUBLIC_IP,
-      hosting_port: config.PORT,
-    });
+    this.syncRoomGauge();
 
     return cluster;
   }
@@ -175,6 +247,7 @@ export class RoomManager {
           logger.error({ err, roomId, workerPid }, "Error closing orphaned room");
           // Even if closeRoom fails, ensure we remove from local map
           this.rooms.delete(roomId);
+          this.syncRoomGauge();
         }),
       ),
     );
@@ -250,6 +323,7 @@ export class RoomManager {
     clearRoomOwner(roomId);
 
     this.rooms.delete(roomId);
+    this.syncRoomGauge();
   }
 
   // ROOM-PERF-002 FIX: Synchronous — Map.get() has no async work

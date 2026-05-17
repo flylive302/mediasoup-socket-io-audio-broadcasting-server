@@ -238,6 +238,46 @@ export class LaravelClient {
   }
 
   /**
+   * F-67: fetch user-token revocations recorded at/after `since` (unix
+   * seconds). Backs the MSAB revocation backfill poller — recovers
+   * revocations whose real-time SNS emit this instance missed.
+   */
+  async getRevokedSince(
+    since: number,
+  ): Promise<{ revoked: Array<{ user_id: number; revoked_at: number }>; server_time: number }> {
+    const response = await this.get(
+      `/api/v1/internal/users/revoked?since=${encodeURIComponent(String(since))}`,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch revoked users: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    const parsed = (await response.json()) as {
+      revoked?: Array<{ user_id?: unknown; revoked_at?: unknown }>;
+      server_time?: unknown;
+    };
+
+    const revoked = Array.isArray(parsed.revoked)
+      ? parsed.revoked
+          .filter(
+            (r): r is { user_id: number; revoked_at: number } =>
+              typeof r.user_id === "number" && typeof r.revoked_at === "number",
+          )
+          .map((r) => ({ user_id: r.user_id, revoked_at: r.revoked_at }))
+      : [];
+
+    const serverTime =
+      typeof parsed.server_time === "number"
+        ? parsed.server_time
+        : Math.floor(Date.now() / 1000);
+
+    return { revoked, server_time: serverTime };
+  }
+
+  /**
    * Check if a user is a room admin/owner
    * Returns the user's role in the room or null if not a member
    */

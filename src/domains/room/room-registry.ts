@@ -1,12 +1,19 @@
 /**
- * Room Registry — Redis-backed cascade topology tracker
+ * Room Registry — Redis-backed origin ownership tracker
  *
- * Tracks which instances host each room (origin vs. edge) and their
- * listener counts for load-balanced routing decisions.
+ * Tracks which instance is the origin for each room (CAS ownership) so
+ * single-instance-per-room routing is safe across restarts.
+ *
+ * F-32: the cross-edge load-balancing surface (registerEdge /
+ * updateListenerCount / getTotalListeners / findBestInstance) was dead code —
+ * never called by any live path, writing garbage `listenerCount` data. It has
+ * been removed. Cascade multi-edge routing is a deferred, scale-gated project;
+ * if revived, the LB layer must be rebuilt from scratch — see CASCADE.md.
  *
  * Redis key schema:
+ *   cascade:room:{roomId}:owner   → string instanceId (short-TTL CAS claim)
  *   cascade:room:{roomId}:origin  → JSON string { instanceId, ip, port, listenerCount }
- *   cascade:room:{roomId}:edges   → Hash { [instanceId]: JSON string { ip, port, listenerCount } }
+ *   cascade:room:{roomId}:edges   → Hash { [instanceId]: JSON } (edge-dereg only)
  */
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
@@ -19,7 +26,15 @@ export interface InstanceInfo {
 }
 
 const KEY_PREFIX = "cascade:room:";
-const TTL_SECONDS = 86_400; // 24 hours (matches RoomStateRepository)
+const TTL_SECONDS = 86_400; // 24 hours — origin info key (matches RoomStateRepository)
+
+/**
+ * F-34: the ownership CAS key uses a SHORT TTL refreshed by a heartbeat. A 24h
+ * TTL meant an origin SIGKILL/OOM made every room it hosted un-claimable for
+ * 24 hours. With a 90s TTL + ~30s heartbeat (RoomManager.startOwnershipHeartbeat),
+ * a crashed origin's rooms self-recover within ~90s.
+ */
+const OWNER_TTL_SECONDS = 90;
 
 export interface ClaimResult {
   /** True if this instance won the claim and should become origin. */
@@ -50,7 +65,7 @@ export class RoomRegistry {
    */
   async claimOwnership(roomId: string, instanceId: string): Promise<ClaimResult> {
     const key = `${KEY_PREFIX}${roomId}:owner`;
-    const set = await this.redis.set(key, instanceId, "EX", TTL_SECONDS, "NX");
+    const set = await this.redis.set(key, instanceId, "EX", OWNER_TTL_SECONDS, "NX");
 
     if (set === "OK") {
       this.logger.debug({ roomId, instanceId }, "RoomRegistry: ownership claimed");
@@ -63,9 +78,9 @@ export class RoomRegistry {
   }
 
   /**
-   * Refresh ownership TTL — called when the owner observes activity in the room.
-   * Prevents the 24h orphan window if a long-running celebrity broadcast survives
-   * past the original claim TTL.
+   * F-34: refresh the short-TTL ownership claim. Called both on room activity
+   * (join) and by RoomManager's periodic heartbeat so an idle but live origin
+   * keeps its claim, while a crashed origin's claim expires in ≤OWNER_TTL_SECONDS.
    */
   async refreshOwnership(roomId: string, instanceId: string): Promise<void> {
     const key = `${KEY_PREFIX}${roomId}:owner`;
@@ -80,16 +95,36 @@ export class RoomRegistry {
       1,
       key,
       instanceId,
-      TTL_SECONDS.toString(),
+      OWNER_TTL_SECONDS.toString(),
     );
   }
 
   // ─── Origin Info ────────────────────────────────────────────────
 
-  /** Register this instance as origin for a room (call AFTER cluster is initialized) */
+  /**
+   * Register this instance as origin for a room (call AFTER cluster is initialized).
+   *
+   * F-32: previously a blind SETEX that reset `listenerCount` to whatever the
+   * caller passed (always 0) on EVERY join, clobbering any prior value. Now it
+   * preserves an existing `listenerCount` if the origin key already exists.
+   * Non-atomic read-merge is acceptable: with the cross-edge LB layer removed
+   * there is no concurrent `listenerCount` writer.
+   */
   async registerOrigin(roomId: string, info: InstanceInfo): Promise<void> {
     const key = `${KEY_PREFIX}${roomId}:origin`;
-    await this.redis.setex(key, TTL_SECONDS, JSON.stringify(info));
+    let listenerCount = info.listenerCount;
+    const existing = await this.redis.get(key);
+    if (existing) {
+      try {
+        const prev = JSON.parse(existing) as Partial<InstanceInfo>;
+        if (typeof prev.listenerCount === "number") {
+          listenerCount = prev.listenerCount;
+        }
+      } catch {
+        // Corrupt prior value — fall through and overwrite with fresh info.
+      }
+    }
+    await this.redis.setex(key, TTL_SECONDS, JSON.stringify({ ...info, listenerCount }));
     this.logger.debug({ roomId, instanceId: info.instanceId }, "RoomRegistry: origin registered");
   }
 
@@ -101,14 +136,10 @@ export class RoomRegistry {
   }
 
   // ─── Edges ──────────────────────────────────────────────────────
-
-  /** Register an edge instance for a room */
-  async registerEdge(roomId: string, info: InstanceInfo): Promise<void> {
-    const key = `${KEY_PREFIX}${roomId}:edges`;
-    await this.redis.hset(key, info.instanceId, JSON.stringify(info));
-    await this.redis.expire(key, TTL_SECONDS);
-    this.logger.debug({ roomId, instanceId: info.instanceId }, "RoomRegistry: edge registered");
-  }
+  // F-32: registerEdge removed (dead code — edges hash was never written by
+  // any live path). getEdges/removeEdge retained only for the cascade
+  // edge-deregistration endpoint; they operate on a never-populated hash while
+  // cascade is disabled. See CASCADE.md.
 
   /** Remove an edge instance */
   async removeEdge(roomId: string, instanceId: string): Promise<void> {
@@ -124,101 +155,12 @@ export class RoomRegistry {
     return Object.values(hash).map((v) => JSON.parse(v) as InstanceInfo);
   }
 
-  // ─── Listener Counts ───────────────────────────────────────────
-
-  /**
-   * Atomically adjust the listener count for an instance (origin or edge).
-   * Returns the new listener count.
-   *
-   * P-3 FIX: Uses Lua script for atomic read-modify-write to prevent
-   * lost-update race under concurrent listener count adjustments.
-   */
-  async updateListenerCount(
-    roomId: string,
-    instanceId: string,
-    delta: number,
-  ): Promise<number> {
-    const originKey = `${KEY_PREFIX}${roomId}:origin`;
-    const edgesKey = `${KEY_PREFIX}${roomId}:edges`;
-
-    // Lua script: try origin key first, then edge hash field
-    const result = await this.redis.eval(
-      `
-      -- Try origin first
-      local originData = redis.call('GET', KEYS[1])
-      if originData then
-        local origin = cjson.decode(originData)
-        if origin.instanceId == ARGV[1] then
-          origin.listenerCount = math.max(0, origin.listenerCount + tonumber(ARGV[2]))
-          redis.call('SETEX', KEYS[1], ${TTL_SECONDS}, cjson.encode(origin))
-          return origin.listenerCount
-        end
-      end
-
-      -- Try edge hash
-      local edgeData = redis.call('HGET', KEYS[2], ARGV[1])
-      if edgeData then
-        local edge = cjson.decode(edgeData)
-        edge.listenerCount = math.max(0, edge.listenerCount + tonumber(ARGV[2]))
-        redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(edge))
-        return edge.listenerCount
-      end
-
-      return -1
-      `,
-      2,
-      originKey,
-      edgesKey,
-      instanceId,
-      delta.toString(),
-    ) as number;
-
-    if (result === -1) {
-      this.logger.warn({ roomId, instanceId }, "RoomRegistry: instance not found for listener count update");
-      return 0;
-    }
-
-    return result;
-  }
-
-  /** Get total listener count across origin + all edges */
-  async getTotalListeners(roomId: string): Promise<number> {
-    let total = 0;
-
-    const origin = await this.getOrigin(roomId);
-    if (origin) total += origin.listenerCount;
-
-    const edges = await this.getEdges(roomId);
-    for (const edge of edges) {
-      total += edge.listenerCount;
-    }
-
-    return total;
-  }
-
-  /** Find the least-loaded instance (origin or edge) for a new listener */
-  async findBestInstance(roomId: string): Promise<InstanceInfo> {
-    const origin = await this.getOrigin(roomId);
-    const edges = await this.getEdges(roomId);
-
-    const candidates: InstanceInfo[] = [];
-    if (origin) candidates.push(origin);
-    candidates.push(...edges);
-
-    if (candidates.length === 0) {
-      throw new Error(`No instances found for room ${roomId}`);
-    }
-
-    // Return instance with fewest listeners
-    let best = candidates[0]!;
-    for (let i = 1; i < candidates.length; i++) {
-      if (candidates[i]!.listenerCount < best.listenerCount) {
-        best = candidates[i]!;
-      }
-    }
-
-    return best;
-  }
+  // ─── Listener Counts / cross-edge LB ───────────────────────────
+  // F-32: updateListenerCount, getTotalListeners, findBestInstance removed.
+  // They were the cross-edge load-balancing surface — entirely dead code (zero
+  // callers), and `registerOrigin` reset their backing `listenerCount` to 0 on
+  // every join so the data was garbage anyway. Cascade multi-edge LB is a
+  // deferred scale-gated project; rebuild from scratch if revived (CASCADE.md).
 
   // ─── Cleanup ────────────────────────────────────────────────────
 

@@ -24,6 +24,16 @@ const EventPayloadSchema = z.object({
   correlation_id: z.string().default("unknown"),
 });
 
+/**
+ * F-40: bound how many Laravel events route concurrently. A Laravel burst
+ * (gift cascade, agency dissolve, force-disconnect sweep) would otherwise
+ * flood the event loop — ping/pong timeouts → mass socket disconnects during
+ * the burst. Over the cap we return 503 so the SNS delivery policy retries
+ * with backoff instead of piling more work on.
+ */
+const MAX_CONCURRENT_EVENTS = 100;
+let inFlightEvents = 0;
+
 export const createEventIngestRoutes = (
   eventRouter: EventRouter,
 ): FastifyPluginAsync => {
@@ -112,19 +122,37 @@ export const createEventIngestRoutes = (
 
       const event: LaravelEvent = result.data;
 
+      // F-40: backpressure — shed load past the concurrency cap so a burst
+      // can't saturate the event loop. SNS retries 503s with backoff.
+      if (inFlightEvents >= MAX_CONCURRENT_EVENTS) {
+        fastify.log.warn(
+          { inFlight: inFlightEvents, event: event.event },
+          "Event ingest at capacity — shedding (503)",
+        );
+        return reply
+          .code(503)
+          .header("Retry-After", "1")
+          .send({ status: "error", message: "Event ingest at capacity, retry" });
+      }
+
       fastify.log.info(
         { event: event.event, userId: event.user_id, roomId: event.room_id, correlationId: event.correlation_id },
         "Event ingest: routing event",
       );
 
       // --- Route Event ---
-      const routingResult = await eventRouter.route(event);
+      inFlightEvents++;
+      try {
+        const routingResult = await eventRouter.route(event);
 
-      return reply.code(200).send({
-        status: "ok",
-        delivered: routingResult.delivered,
-        target_count: routingResult.targetCount,
-      });
+        return reply.code(200).send({
+          status: "ok",
+          delivered: routingResult.delivered,
+          target_count: routingResult.targetCount,
+        });
+      } finally {
+        inFlightEvents--;
+      }
     });
   };
 };

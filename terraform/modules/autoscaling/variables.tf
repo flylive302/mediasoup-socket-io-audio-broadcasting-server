@@ -148,7 +148,14 @@ variable "scale_down_threshold" {
 variable "drain_timeout_seconds" {
   description = "Maximum time (seconds) to wait for drain before termination"
   type        = number
-  default     = 900 # 15 minutes
+  # TIER0 (F-87): apply during ops window — see plan.
+  # Was 900s. MSAB's SIGTERM drain ceiling is 120s (F-5); a 900s heartbeat
+  # stranded a terminating instance for ~14m45s of paid-but-idle compute per
+  # scale-in/deploy. 150s = 120s drain + 30s margin. Further optimization
+  # (remove the residual wait entirely): have MSAB's drain-complete path call
+  # `aws autoscaling complete-lifecycle-action` — tracked as an MSAB-runtime
+  # follow-up, out of scope for this tf-only pass.
+  default = 150
 }
 
 variable "cascade_enabled" {

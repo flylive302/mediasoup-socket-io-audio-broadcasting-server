@@ -29,6 +29,14 @@ export class RoomMediaCluster {
   /** Distribution routers where listeners consume */
   private readonly distributionRouters: DistributionRouter[] = [];
 
+  /**
+   * F-29: in-flight distribution-router creation. A burst of N concurrent
+   * listeners would otherwise each see "no router with capacity" and spawn
+   * its own router (N routers instead of 1, exhausting workers). Concurrent
+   * callers needing a new router await this single promise instead.
+   */
+  private pendingDistRouter: Promise<DistributionRouter> | null = null;
+
   /** Maps transportId → which DistributionRouter owns it (PERF-LOW-001: O(1) lookup) */
   private readonly transportOwnership = new Map<string, DistributionRouter>();
 
@@ -128,13 +136,21 @@ export class RoomMediaCluster {
       return transport;
     }
 
-    // Listeners consume on a distribution router
+    // Listeners consume on a distribution router. getOrCreateDistributionRouter
+    // has ALREADY reserved a listener slot (incremented listenerCount) for us
+    // — F-30: the slot must be reserved before the await, otherwise concurrent
+    // callers all pass the capacity check against the same pre-increment value
+    // and over-fill the router. Release the reservation if transport creation
+    // fails (the close-observer handles the normal-lifecycle decrement).
     const distRouter = await this.getOrCreateDistributionRouter();
-    const transport = await distRouter.routerManager.createWebRtcTransport(
-      false,
-    );
+    let transport: mediasoup.types.WebRtcTransport;
+    try {
+      transport = await distRouter.routerManager.createWebRtcTransport(false);
+    } catch (err) {
+      distRouter.listenerCount = Math.max(0, distRouter.listenerCount - 1);
+      throw err;
+    }
     this.transportOwnership.set(transport.id, distRouter);
-    distRouter.listenerCount++;
 
     // ARCH-001 FIX: Decrement listener count when transport closes
     transport.observer.on("close", () => {
@@ -325,17 +341,34 @@ export class RoomMediaCluster {
    * if all are at capacity.
    */
   private async getOrCreateDistributionRouter(): Promise<DistributionRouter> {
-    // Find an existing distribution router with capacity
+    // F-30: scan + reserve synchronously. There is NO await between the
+    // capacity check and the increment, so the slot reservation is atomic
+    // relative to other callers (JS is single-threaded). Caller must release
+    // the slot if it fails to use it.
     for (const dist of this.distributionRouters) {
-      if (
-        dist.listenerCount < config.MAX_LISTENERS_PER_DISTRIBUTION_ROUTER
-      ) {
+      if (dist.listenerCount < config.MAX_LISTENERS_PER_DISTRIBUTION_ROUTER) {
+        dist.listenerCount++;
         return dist;
       }
     }
 
-    // All at capacity (or none exist) — create a new one
-    return this.createDistributionRouter();
+    // None with capacity — F-29: coalesce concurrent creation so a burst
+    // creates ONE new router, not one per caller.
+    if (!this.pendingDistRouter) {
+      this.pendingDistRouter = this.createDistributionRouter().finally(() => {
+        this.pendingDistRouter = null;
+      });
+    }
+    const created = await this.pendingDistRouter;
+
+    // The coalesced router may already be full if the burst exceeds one
+    // router's capacity. Re-check + reserve synchronously; recurse (which
+    // re-coalesces) to spin up another only when this one is genuinely full.
+    if (created.listenerCount < config.MAX_LISTENERS_PER_DISTRIBUTION_ROUTER) {
+      created.listenerCount++;
+      return created;
+    }
+    return this.getOrCreateDistributionRouter();
   }
 
   /**

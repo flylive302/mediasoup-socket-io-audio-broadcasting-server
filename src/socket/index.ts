@@ -106,6 +106,9 @@ export async function initializeSocket(
     // Register Client in ClientManager (local instance tracking)
     clientManager.addClient(socket);
 
+    // F-1: live connection gauge — drives CW ActiveConnections + ASG scaling
+    metrics.socketConnections.inc();
+
     // RL-013 FIX: Register socket with retry (Redis-backed for cross-instance)
     if (userId) {
       registerWithRetry(userSocketRepository, userId, socket.id, logger);
@@ -258,6 +261,9 @@ async function handleDisconnect(
   }
 
   clientManager.removeClient(socket.id);
+
+  // F-1: pair with the .inc() in the connection handler
+  metrics.socketConnections.dec();
 }
 
 // ─────────────────────────────────────────────────────────────────

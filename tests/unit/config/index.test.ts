@@ -11,6 +11,10 @@ const REQUIRED_ENV = {
   JWT_SECRET: "x".repeat(32),
   LARAVEL_API_URL: "https://example.test",
   LARAVEL_INTERNAL_KEY: "y".repeat(32),
+  // F-16: production now requires TURN keys; set them by default so the other
+  // production assertions can be exercised in isolation.
+  CLOUDFLARE_TURN_API_KEY: "t".repeat(32),
+  CLOUDFLARE_TURN_KEY_ID: "k".repeat(16),
 };
 
 describe("config assertions", () => {
@@ -76,6 +80,17 @@ describe("config assertions", () => {
 
     const { initializeConfig } = await import("@src/config/index.js");
     await expect(initializeConfig()).rejects.toThrow(/PUBLIC_IP/);
+  });
+
+  it("throws in production when TURN keys are missing (F-16)", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.CASCADE_ENABLED = "false";
+    process.env.INSTANCE_ID_OVERRIDE = "i-prod-turn";
+    delete process.env.CLOUDFLARE_TURN_API_KEY;
+    delete process.env.CLOUDFLARE_TURN_KEY_ID;
+
+    const { initializeConfig } = await import("@src/config/index.js");
+    await expect(initializeConfig()).rejects.toThrow(/CLOUDFLARE_TURN/);
   });
 
   it("throws in production when INSTANCE_ID resolves to 'unknown'", async () => {

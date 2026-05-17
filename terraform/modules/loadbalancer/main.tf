@@ -43,8 +43,17 @@ resource "aws_lb_target_group" "app" {
     interval            = 30
   }
 
+  # TIER0 (F-85): apply during ops window — see plan.
+  # source_ip stickiness on the NLB combined with Global Accelerator (which
+  # presents a small set of edge IPs, client_ip_preservation_enabled=false)
+  # collapses new connections onto whichever instance an edge IP hashes to —
+  # one box soaks all traffic while the rest idle. Disabling stickiness lets
+  # the NLB flow-hash distribute connections. WebRTC media is UDP direct to
+  # the instance and unaffected; only the signaling TCP flow is rebalanced.
+  # Rollout: apply off-peak, then watch per-target NewFlowCount/connection
+  # counts equalize before declaring done.
   stickiness {
-    enabled = true
+    enabled = false
     type    = "source_ip"
   }
 

@@ -8,6 +8,22 @@ import { logger } from "@src/infrastructure/logger.js";
 import { generateCorrelationId } from "./crypto.js";
 import { Errors } from "./errors.js";
 import type { AppContext } from "@src/context.js";
+import { metrics } from "@src/infrastructure/metrics.js";
+
+/**
+ * F-3: record per-event throughput + latency for every wrapped handler.
+ * Without this the entire flylive_socket_events_total /
+ * flylive_socket_event_latency_seconds series are empty and any
+ * dashboard/alert built on them silently never fires.
+ */
+function recordEvent(
+  eventName: string,
+  status: "ok" | "fail" | "error",
+  startTime: number,
+): void {
+  metrics.eventsTotal.inc({ event: eventName, status });
+  metrics.eventLatency.observe({ event: eventName }, (Date.now() - startTime) / 1000);
+}
 
 /**
  * Standard handler result shape
@@ -82,6 +98,7 @@ export function createHandler<TPayload>(
           },
           "Validation failed",
         );
+        recordEvent(eventName, "fail", startTime);
         callback?.({ success: false, error: Errors.INVALID_PAYLOAD });
         return;
       }
@@ -91,6 +108,7 @@ export function createHandler<TPayload>(
         const result = await handler(parseResult.data, socket, context);
 
         const durationMs = Date.now() - startTime;
+        recordEvent(eventName, result.success ? "ok" : "fail", startTime);
         logger.debug(
           {
             requestId,
@@ -105,6 +123,7 @@ export function createHandler<TPayload>(
         callback?.(result);
       } catch (err) {
         const durationMs = Date.now() - startTime;
+        recordEvent(eventName, "error", startTime);
         logger.error(
           {
             err,
@@ -139,6 +158,7 @@ export function createSimpleHandler(
         const result = await handler(socket, context);
 
         const durationMs = Date.now() - startTime;
+        recordEvent(eventName, result.success ? "ok" : "fail", startTime);
         logger.debug(
           {
             requestId,
@@ -153,6 +173,7 @@ export function createSimpleHandler(
         callback?.(result);
       } catch (err) {
         const durationMs = Date.now() - startTime;
+        recordEvent(eventName, "error", startTime);
         logger.error(
           {
             err,
