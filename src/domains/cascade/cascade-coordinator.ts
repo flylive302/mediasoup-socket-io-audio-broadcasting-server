@@ -629,7 +629,11 @@ export class CascadeCoordinator {
     name: string;
     signature: string;
     avatar: string;
-    frame: string;
+    frame_id: number | null;
+    chat_bubble_id: number | null;
+    entry_animation_id: number | null;
+    data_card_id: number | null;
+    mice_wave_id: number | null;
     gender: number;
     country: string;
     wealth_xp: string;
@@ -670,7 +674,11 @@ export class CascadeCoordinator {
             name: string;
             signature: string;
             avatar: string;
-            frame: string;
+            frame_id: number | null;
+            chat_bubble_id: number | null;
+            entry_animation_id: number | null;
+            data_card_id: number | null;
+            mice_wave_id: number | null;
             gender: number;
             country: string;
             wealth_xp: string;

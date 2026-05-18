@@ -157,7 +157,11 @@ async function processJoin(
     name: string;
     signature: string;
     avatar: string;
-    frame: string;
+    frame_id: number | null;
+    chat_bubble_id: number | null;
+    entry_animation_id: number | null;
+    data_card_id: number | null;
+    mice_wave_id: number | null;
     gender: number;
     country: string;
     wealth_xp: string;
@@ -182,7 +186,11 @@ async function processJoin(
       name: remoteUser.name,
       signature: remoteUser.signature,
       avatar: remoteUser.avatar,
-      frame: remoteUser.frame,
+      frame_id: remoteUser.frame_id,
+      chat_bubble_id: remoteUser.chat_bubble_id,
+      entry_animation_id: remoteUser.entry_animation_id,
+      data_card_id: remoteUser.data_card_id,
+      mice_wave_id: remoteUser.mice_wave_id,
       gender: remoteUser.gender,
       country: remoteUser.country,
       wealth_xp: remoteUser.wealth_xp,

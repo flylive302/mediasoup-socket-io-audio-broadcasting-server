@@ -194,7 +194,11 @@ export const createInternalRoutes = (
         name: string;
         signature: string;
         avatar: string;
-        frame: string;
+        frame_id: number | null;
+        chat_bubble_id: number | null;
+        entry_animation_id: number | null;
+        data_card_id: number | null;
+        mice_wave_id: number | null;
         gender: number;
         country: string;
         wealth_xp: string;
@@ -212,7 +216,11 @@ export const createInternalRoutes = (
           name: u.name,
           signature: u.signature,
           avatar: u.avatar,
-          frame: u.frame,
+          frame_id: u.frame_id,
+          chat_bubble_id: u.chat_bubble_id,
+          entry_animation_id: u.entry_animation_id,
+          data_card_id: u.data_card_id,
+          mice_wave_id: u.mice_wave_id,
           gender: u.gender,
           country: u.country,
           wealth_xp: u.wealth_xp,
