@@ -54,6 +54,11 @@ const configSchema = z.object({
   MAX_LISTENERS_PER_DISTRIBUTION_ROUTER: z.coerce.number().default(700),
   MAX_ACTIVE_SPEAKERS_FORWARDED: z.coerce.number().default(3),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
+  // F-44: deliberate fail-policy for the rate limiter on a Redis error.
+  // Default false = fail-closed (preserves prior production behavior: deny on
+  // Redis blip). Set true to fail-open (allow), matching jwtValidator's
+  // fail-open revocation lookup — a conscious trade-off, not a silent change.
+  RATE_LIMIT_FAIL_OPEN: booleanEnvSchema,
 
   // Mediasoup Workers
   MEDIASOUP_NUM_WORKERS: z.coerce.number().optional(), // If not set, uses os.cpus().length

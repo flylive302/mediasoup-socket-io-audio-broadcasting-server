@@ -293,4 +293,36 @@ describe("GiftBuffer", () => {
     expect(mockRedis.llen).toHaveBeenCalledWith("gifts:dead_letter");
     expect(metrics.giftDeadLetterSize.set).toHaveBeenCalledWith(42);
   });
+
+  // ─── F-39: stop() waits for an in-flight flush before returning ─────
+
+  it("stop() awaits an in-flight flush instead of no-op'ing on the isFlushing guard (F-39)", async () => {
+    vi.useRealTimers(); // real timers — the waitForIdle loop uses 50ms polls
+
+    // First flush call is "in-flight": never resolves until we let it.
+    let releaseFirst!: (v: unknown[]) => void;
+    const firstFlushItems = new Promise<unknown[]>((resolve) => {
+      releaseFirst = resolve;
+    });
+    // The Lua LPOP_N call is the awaited primitive in flush(); make it hang
+    // on the first call and resolve to [] on the final stop()-driven call.
+    mockRedis.eval
+      .mockReturnValueOnce(firstFlushItems)
+      .mockResolvedValueOnce([]);
+
+    // Kick off the "in-flight" flush (no await).
+    const inFlight = (buffer as unknown as { flush(): Promise<void> }).flush();
+
+    // stop() runs while isFlushing is still true; it must NOT no-op.
+    const stopped = buffer.stop();
+
+    // Drive the in-flight flush to completion.
+    releaseFirst([]);
+    await inFlight;
+    await stopped;
+
+    // The final-flush call inside stop() must have actually called eval again.
+    // (First call = in-flight, second = final flush during stop.)
+    expect(mockRedis.eval).toHaveBeenCalledTimes(2);
+  });
 });

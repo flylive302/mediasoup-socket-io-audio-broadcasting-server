@@ -63,8 +63,10 @@ interface ReverseCloseBody {
   edgeProducerId: string;
   /** Optional — present when the edge knows origin's transportId from the
    *  offer response. Lets origin close partial-setup (pre-finalize) entries
-   *  that aren't yet keyed by edgeProducerId in reverseInboundByEdge. */
-  transportId?: string;
+   *  that aren't yet keyed by edgeProducerId in reverseInboundByEdge. F-35:
+   *  may be null when the edge speaker disconnected before the offer
+   *  round-trip (origin then falls back to the edgeProducerId lookup). */
+  transportId?: string | null;
 }
 
 interface CascadeRelayBody {
@@ -678,6 +680,12 @@ export const createInternalRoutes = (
       // below for events that carry instance-local IDs (e.g. producerId).
       let broadcastData = data;
 
+      // F-42: when THIS edge fails to set up its pipe for a relayed
+      // audio:newProducer, forwarding the original origin-keyed payload to
+      // other remotes propagates a producer this edge can't serve. Suppress
+      // the onward relay for that case (teardown events still always relay).
+      let suppressRelay = false;
+
       // Handle special cascade lifecycle events BEFORE broadcasting so we can
       // rewrite payloads that reference origin-local IDs that local listeners
       // wouldn't be able to resolve.
@@ -718,15 +726,18 @@ export const createInternalRoutes = (
                 { roomId, originProducerId },
                 "Cascade relay: edge pipe setup failed; suppressing audio:newProducer broadcast",
               );
-              // Skip the local broadcast — listeners would just fail to consume.
-              // Still forward to other remotes below so they get a chance.
+              // Skip the local broadcast — listeners would just fail to
+              // consume — and skip the onward relay (F-42): we cannot vouch
+              // for a producer we failed to pipe.
               broadcastData = null;
+              suppressRelay = true;
             } else {
               broadcastData = { ...producerData, producerId: edgeProducerId };
             }
           } catch (err) {
             logger.error({ err, roomId, originProducerId }, "Failed to handle remote new producer");
             broadcastData = null;
+            suppressRelay = true;
           }
         }
       } else if (event === "audio:producerClosed" && cascadeCoordinator) {
@@ -780,7 +791,7 @@ export const createInternalRoutes = (
 
       // Forward to other remote instances using the ORIGINAL data so each
       // hop performs its own producer-id rewrite (their edge IDs differ).
-      if (cascadeRelay) {
+      if (cascadeRelay && !suppressRelay) {
         await cascadeRelay.relayToRemote(roomId, event, data, sourceInstanceId);
       }
 

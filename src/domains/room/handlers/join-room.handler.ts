@@ -11,7 +11,6 @@ import { logger } from "@src/infrastructure/logger.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
-import { cancelSeatClear } from "@src/shared/seat-grace.js";
 import { performRoomLeave } from "@src/domains/room/room-leave.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
@@ -143,8 +142,10 @@ async function processJoin(
   // Update client room index
   clientManager.setClientRoom(socket.id, roomId);
 
-  // Cancel any pending grace-period seat clear for this user — they reconnected in time
-  if (cancelSeatClear(`${roomId}:${String(userId)}`)) {
+  // F-6/F-37: cancel any pending Redis-backed seat clear for this user — they
+  // reconnected in time. cancel() is cross-instance, so a reconnect on a
+  // different instance than the one that scheduled the clear still cancels it.
+  if (await context.seatGrace.cancel(roomId, String(userId))) {
     logger.debug({ roomId, userId }, "Grace-period seat clear cancelled — user reconnected");
   }
 

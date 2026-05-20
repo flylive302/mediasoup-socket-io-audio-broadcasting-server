@@ -38,8 +38,19 @@ export class ClientManager {
     });
   }
 
-  removeClient(socketId: string): void {
+  /**
+   * Remove a client.
+   *
+   * F-41: a `connectionStateRecovery` resume re-runs `io.on("connection")` and
+   * calls `addClient` with the SAME socket.id while the original disconnect
+   * handler is still draining asynchronously. If `expected` is supplied, the
+   * delete only happens when the live entry is still the exact object the
+   * caller captured — a fresh `addClient` allocates a new ClientData, so a
+   * stale disconnect cannot clobber the recovered session.
+   */
+  removeClient(socketId: string, expected?: ClientData): void {
     const client = this.clients.get(socketId);
+    if (expected !== undefined && client !== expected) return;
     if (client?.roomId) {
       const roomSet = this.roomClients.get(client.roomId);
       if (roomSet) {

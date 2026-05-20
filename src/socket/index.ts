@@ -3,7 +3,6 @@ import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
-import { scheduleSeatClear } from "@src/shared/seat-grace.js";
 import { authMiddleware } from "@src/auth/middleware.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
@@ -21,6 +20,7 @@ import { registerAllDomains } from "@src/domains/index.js";
 
 // Domain modules
 import { SeatRepository } from "@src/domains/seat/seat.repository.js";
+import { SeatGraceService } from "@src/domains/seat/seat-grace.service.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
@@ -35,6 +35,26 @@ import { metrics } from "@src/infrastructure/metrics.js";
 
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { getLifecycleHooks, type DisconnectContext } from "@src/shared/lifecycle.js";
+
+// ─────────────────────────────────────────────────────────────────
+// F-7: track in-flight disconnect handlers so graceful shutdown can
+// await them between io.close() (which fires `disconnect` for every
+// socket) and workerManager.shutdown() (which tears down the routers
+// those handlers are still touching). Without this the handlers race
+// cluster teardown — transports may not close cleanly.
+// ─────────────────────────────────────────────────────────────────
+
+const activeDisconnects = new Set<Promise<void>>();
+
+export function waitForActiveDisconnects(timeoutMs: number): Promise<void> {
+  if (activeDisconnects.size === 0) return Promise.resolve();
+  const drained = Promise.allSettled([...activeDisconnects]).then(() => {});
+  const timed = new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, timeoutMs);
+    t.unref?.();
+  });
+  return Promise.race([drained, timed]);
+}
 
 export async function initializeSocket(
   io: Server,
@@ -56,6 +76,11 @@ export async function initializeSocket(
   const roomManager = new RoomManager(workerManager, redis, io, laravelClient, seatRepository);
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
+
+  // F-6/F-37: Redis-backed seat grace (cross-instance correct, survives
+  // instance death). cascadeRelay is wired AFTER bootstrap in server.ts via
+  // seatGrace.setCascadeRelay().
+  const seatGrace = new SeatGraceService(redis, seatRepository, io);
 
   // Initialize auto-close system
   const autoCloseService = new AutoCloseService(redis);
@@ -89,6 +114,7 @@ export async function initializeSocket(
     autoCloseService,
     autoCloseJob,
     seatRepository,
+    seatGrace,
     userSocketRepository,
     userRoomRepository,
 
@@ -97,6 +123,10 @@ export async function initializeSocket(
     cascadeRelay: null,       // Wired in server.ts after bootstrap
     roomRegistry: null,       // Wired in server.ts after bootstrap
   };
+
+  // F-6/F-37: start the seat-grace sweeper (one sweeper per instance; due
+  // entries are atomically claimed so duplicates are impossible).
+  seatGrace.start();
 
   io.on("connection", (socket) => {
     const userId = socket.data.user?.id;
@@ -125,20 +155,22 @@ export async function initializeSocket(
     giftHandler.handle(socket, appContext);
 
     // Disconnect — LT-5: uses lifecycle hooks for domain-specific cleanup
-    socket.on("disconnect", (reason) =>
-      handleDisconnect(socket, reason, {
+    socket.on("disconnect", (reason) => {
+      // F-7: register the in-flight handler so shutdown can await it.
+      const p = handleDisconnect(socket, reason, {
         io,
         redis,
         clientManager,
         userSocketRepository,
         userRoomRepository,
-        seatRepository,
         roomManager,
         logger,
         cascadeRelay: appContext.cascadeRelay,
         appContext,
-      }),
-    );
+      });
+      activeDisconnects.add(p);
+      void p.finally(() => activeDisconnects.delete(p));
+    });
   });
 
   return appContext;
@@ -154,7 +186,6 @@ interface DisconnectDeps {
   clientManager: ClientManager;
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;
-  seatRepository: SeatRepository;
   roomManager: RoomManager;
   logger: typeof logger;
   cascadeRelay: CascadeRelay | null;
@@ -166,7 +197,7 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, userRoomRepository, seatRepository, roomManager, logger: log, cascadeRelay, appContext } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, roomManager, logger: log, cascadeRelay, appContext } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
@@ -201,30 +232,13 @@ async function handleDisconnect(
       roomManager.state.adjustParticipantCount(roomId, -1),
     ]);
 
-    // Schedule deferred seat clear (15 s grace period).
-    // join-room handler cancels this if the user reconnects in time.
-    scheduleSeatClear(`${roomId}:${roomUserId}`, () => {
-      seatRepository
-        .leaveSeat(roomId, roomUserId)
-        .then((seatResult) => {
-          if (seatResult.success && seatResult.seatIndex !== undefined) {
-            emitToRoom(
-              socket,
-              roomId,
-              "seat:cleared",
-              { seatIndex: seatResult.seatIndex, userId: Number(roomUserId) },
-              cascadeRelay,
-            );
-            log.debug(
-              { roomId, userId: roomUserId, seatIndex: seatResult.seatIndex },
-              "Deferred seat clear fired",
-            );
-          }
-        })
-        .catch((err) =>
-          log.warn({ err, roomId, userId: roomUserId }, "Deferred leaveSeat failed"),
-        );
-    });
+    // F-6/F-37: schedule deferred seat clear via the Redis-backed grace
+    // service. cancel() works from any instance, the sweeper survives
+    // instance death, and the eventual broadcast goes through the namespace
+    // adapter (not a stale socket `.local`) so a user who reconnected on a
+    // different instance still receives `seat:cleared`. join-room cancels
+    // via context.seatGrace.cancel().
+    void appContext.seatGrace.schedule(roomId, roomUserId);
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
   } else if (client?.userId) {
@@ -260,7 +274,10 @@ async function handleDisconnect(
     });
   }
 
-  clientManager.removeClient(socket.id);
+  // F-41: identity-guarded — if a connectionStateRecovery resume re-registered
+  // a fresh ClientData under this socket.id while we were draining, `client`
+  // (captured at handler entry) no longer matches and the delete is skipped.
+  clientManager.removeClient(socket.id, client ?? undefined);
 
   // F-1: pair with the .inc() in the connection handler
   metrics.socketConnections.dec();

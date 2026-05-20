@@ -4,6 +4,7 @@ import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
 import { startDrain, isDraining } from "./infrastructure/drain.js";
+import { waitForActiveDisconnects } from "./socket/index.js";
 
 // ─── Module-Level Shutdown Reference ─────────────────────────────
 // Set after bootstrap so process error handlers can invoke graceful shutdown.
@@ -20,7 +21,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, seatGrace, revocationPoller } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -82,9 +83,16 @@ const start = async () => {
         // 2. Close Socket.IO (disconnect remaining clients)
         io.close();
 
-        // 3. Stop auto-close job + F-34 ownership heartbeat
+        // F-7: io.close() fired `disconnect` for every remaining socket; those
+        // handlers run async and touch the room clusters. Await them (bounded)
+        // BEFORE workerManager.shutdown() tears those clusters down, so
+        // transports close cleanly. Bound stays well under the F-5 ceiling.
+        await waitForActiveDisconnects(15_000);
+
+        // 3. Stop auto-close job + F-34 ownership heartbeat + F-6 seat-grace
         autoCloseJob.stop();
         roomManager.stopOwnershipHeartbeat();
+        seatGrace.stop();
         revocationPoller.stop();
 
         if (giftHandler) {

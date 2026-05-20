@@ -21,6 +21,7 @@ import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
+import type { SeatGraceService } from "@src/domains/seat/seat-grace.service.js";
 import { RoomRegistry } from "@src/domains/room/room-registry.js";
 import { PipeManager } from "@src/domains/media/pipe-manager.js";
 import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
@@ -35,6 +36,7 @@ export interface BootstrapResult {
   workerManager: WorkerManager;
   giftHandler: GiftHandler;
   autoCloseJob: AutoCloseJob;
+  seatGrace: SeatGraceService;
   roomRegistry: RoomRegistry;
   pipeManager: PipeManager;
   revocationPoller: RevocationBackfillPoller;
@@ -79,7 +81,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   });
 
   const appContext = await initializeSocket(io, pubClient);
-  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter } = appContext;
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, seatGrace } = appContext;
 
   // SFU Cascade — conditionally wire coordinator and relay
   const roomRegistry = new RoomRegistry(pubClient, logger);
@@ -104,6 +106,10 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     roomManager.setCascadeServices(cascadeCoordinator, cascadeRelay);
     logger.info("SFU cascade services wired (CASCADE_ENABLED=true)");
   }
+
+  // F-37: cross-region parity for the seat-grace sweeper's `seat:cleared`
+  // broadcast. Setter is a no-op when cascade is disabled (relay is null).
+  seatGrace.setCascadeRelay(cascadeRelay);
 
   // F-67: reconcile any revocations whose real-time SNS emit this instance missed.
   const revocationPoller = new RevocationBackfillPoller(
@@ -149,6 +155,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     workerManager,
     giftHandler,
     autoCloseJob,
+    seatGrace,
     roomRegistry,
     pipeManager,
     revocationPoller,

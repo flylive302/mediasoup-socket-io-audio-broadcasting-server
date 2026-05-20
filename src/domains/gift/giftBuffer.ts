@@ -66,8 +66,33 @@ export class GiftBuffer {
       this.timer = null;
     }
     this.logger.info("Gift buffer stopping, flushing pending items...");
+
+    // F-39: a flush triggered by the last interval tick may still be in flight.
+    // `flush()` early-returns while `isFlushing` is true, so a naive
+    // `await this.flush()` here would be a no-op and shutdown would race the
+    // in-flight Laravel HTTP / Redis re-queue against `redis.quit()`, dropping
+    // popped-but-undelivered gifts. Wait (bounded) for the in-flight flush to
+    // finish, THEN do one final flush to drain anything still queued.
+    await this.waitForIdle();
     await this.flush();
     this.logger.info("Gift buffer stopped");
+  }
+
+  /**
+   * F-39: poll until no flush is in flight, capped so shutdown can never hang.
+   * The cap is generous relative to a single batch's Laravel round-trip.
+   */
+  private async waitForIdle(maxWaitMs = 10_000): Promise<void> {
+    const deadline = Date.now() + maxWaitMs;
+    while (this.isFlushing && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (this.isFlushing) {
+      this.logger.warn(
+        { maxWaitMs },
+        "Gift buffer still flushing at shutdown deadline — proceeding with final flush attempt",
+      );
+    }
   }
 
   /** Add gift to buffer (called on each gift event) */

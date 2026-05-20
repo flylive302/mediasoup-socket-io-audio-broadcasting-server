@@ -71,7 +71,23 @@ export const LEAVE_SEAT_SCRIPT = `
   
   -- P-4 FIX: O(1) lookup via reverse index instead of HGETALL linear scan
   local seatIndex = redis.call('GET', userSeatKey)
+
+  -- F-38 FIX: TTL skew can expire the per-user reverse index while the shared
+  -- seats hash (re-EXPIRE'd whenever ANY user takes a seat) still holds this
+  -- user's entry, orphaning a seat the user/disconnect-grace can never release.
+  -- Fall back to a scan of the bounded seats hash (<= seatCount entries, still
+  -- atomic in this single EVALSHA) so the orphan is releasable.
   if not seatIndex then
+    local all = redis.call('HGETALL', seatsKey)
+    for i = 1, #all, 2 do
+      local idx = all[i]
+      local ok, data = pcall(cjson.decode, all[i + 1])
+      if ok and tostring(data.userId) == tostring(userId) then
+        redis.call('HDEL', seatsKey, idx)
+        redis.call('DEL', userSeatKey)
+        return cjson.encode({success = true, seatIndex = tonumber(idx)})
+      end
+    end
     return cjson.encode({success = false, error = "NOT_SEATED"})
   end
   

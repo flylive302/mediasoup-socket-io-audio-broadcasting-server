@@ -228,4 +228,44 @@ describe("ClientManager", () => {
     expect(client.transports.size).toBe(0);
     expect(client.roomId).toBe("roomA");
   });
+
+  // ─── F-41: removeClient identity guard ────────────────────────────
+
+  describe("removeClient (F-41 identity guard)", () => {
+    it("skips the delete when `expected` does not match the live client", () => {
+      const cm = new ClientManager();
+      const sock = createMockSocket("s1", 1);
+      cm.addClient(sock);
+      const stale = cm.getClient("s1")!;
+
+      // Simulate connectionStateRecovery: a fresh addClient overwrites the
+      // ClientData under the same socket.id. The stale disconnect handler
+      // (which captured the original `stale` ref) must NOT delete the fresh
+      // entry — otherwise the recovered session loses its tracking.
+      cm.addClient(sock);
+      const fresh = cm.getClient("s1")!;
+      expect(fresh).not.toBe(stale);
+
+      cm.removeClient("s1", stale);
+      expect(cm.getClient("s1")).toBe(fresh);
+    });
+
+    it("deletes when `expected` matches the live client (normal disconnect)", () => {
+      const cm = new ClientManager();
+      const sock = createMockSocket("s1", 1);
+      cm.addClient(sock);
+      const live = cm.getClient("s1")!;
+
+      cm.removeClient("s1", live);
+      expect(cm.getClient("s1")).toBeUndefined();
+    });
+
+    it("falls back to unconditional delete when no `expected` is passed", () => {
+      const cm = new ClientManager();
+      const sock = createMockSocket("s1", 1);
+      cm.addClient(sock);
+      cm.removeClient("s1");
+      expect(cm.getClient("s1")).toBeUndefined();
+    });
+  });
 });

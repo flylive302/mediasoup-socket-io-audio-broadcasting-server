@@ -358,6 +358,15 @@ export class PipeManager {
     this.trackTransport(roomId, transport);
     this.pendingReverseInbound.set(transport.id, transport);
 
+    // F-43: auto-drain pendingReverseInbound when the transport closes — both
+    // via the explicit close paths (finalize, closeReverseInboundByEdgeProducer
+    // already delete the entry) and the room-cleanup path (closePipes closes
+    // every tracked transport but only `roomPipes` had a close-observer).
+    // Without this, a closePipes-during-pre-finalize leaks a map entry.
+    transport.observer.on("close", () => {
+      this.pendingReverseInbound.delete(transport.id);
+    });
+
     const tuple = transport.tuple;
     this.logger.debug(
       {
@@ -460,7 +469,7 @@ export class PipeManager {
   async closeReverseInboundByEdgeProducer(
     roomId: string,
     edgeProducerId: string,
-    transportId?: string,
+    transportId?: string | null,
   ): Promise<boolean> {
     if (transportId) {
       const pending = this.pendingReverseInbound.get(transportId);

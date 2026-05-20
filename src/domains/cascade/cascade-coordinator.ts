@@ -94,8 +94,10 @@ export class CascadeCoordinator {
       {
         outboundTransport: import("mediasoup").types.PlainTransport;
         /** Origin's transport id from /reverse-offer — sent on close so
-         *  origin can clean partial setups (offer succeeded, finalize didn't). */
-        originTransportId: string;
+         *  origin can clean partial setups (offer succeeded, finalize didn't).
+         *  F-35: null while the entry is "pending" (cached before the offer
+         *  round-trip so a disconnect during Phase 1→2 is still cleanable). */
+        originTransportId: string | null;
         /** null until finalize completes; close still works without it because
          *  origin can look up by transportId. */
         originProducerId: string | null;
@@ -483,7 +485,24 @@ export class CascadeCoordinator {
       );
     }
 
-    // Close all pipes for this room
+    // F-43: drain in-flight pipe/bootstrap setups for this room BEFORE closing
+    // pipes and deleting state. Otherwise a late-completing requestPipe /
+    // fetchAndPipeExistingProducers would register a producer/transport
+    // against a freshly-closed cluster (unhandled throw, ghost resources).
+    // pendingPipes keys are `${roomId}:${producerId}`; bootstraps are keyed
+    // by roomId directly.
+    const inflight: Promise<unknown>[] = [];
+    for (const [key, p] of this.pendingPipes) {
+      if (key.startsWith(`${roomId}:`)) inflight.push(p);
+    }
+    const bootstrap = this.pendingBootstraps.get(roomId);
+    if (bootstrap) inflight.push(bootstrap);
+    if (inflight.length > 0) {
+      await Promise.allSettled(inflight);
+    }
+
+    // Close all pipes for this room (also closes tracked reverse-inbound
+    // transports — they are trackTransport'd into roomPipes).
     await this.pipeManager.closePipes(roomId);
 
     // Clean up relay registrations
@@ -1107,6 +1126,25 @@ export class CascadeCoordinator {
       // to send to origin.
       outbound = await this.pipeManager.createReverseOutboundTransport(router, roomId);
 
+      // F-35: register a PENDING cache entry the instant the outbound
+      // transport exists — BEFORE the offer round-trip. Previously the entry
+      // was only written after Phase 2, so an edge-speaker disconnect during
+      // the offer await left closeReversePipe with no entry (early return),
+      // and setup then completed and produced an origin-side producer that
+      // was never cleaned up (phantom audio source for ~5 min). With the
+      // pending entry, closeReversePipe can run, and the re-checks below let
+      // this setup self-abort if it was cancelled mid-flight.
+      let perRoom = this.reversedProducers.get(roomId);
+      if (!perRoom) {
+        perRoom = new Map();
+        this.reversedProducers.set(roomId, perRoom);
+      }
+      perRoom.set(edgeProducer.id, {
+        outboundTransport: outbound.transport,
+        originTransportId: null,
+        originProducerId: null,
+      });
+
       // Use PUBLIC_IP so origin can reach us across the public network —
       // tuple.localAddress is 0.0.0.0.
       const edgePublicIp = config.PUBLIC_IP || outbound.ip;
@@ -1122,23 +1160,29 @@ export class CascadeCoordinator {
       );
       if (!offerResponse) {
         outbound.transport.close();
+        perRoom.delete(edgeProducer.id);
+        if (perRoom.size === 0) this.reversedProducers.delete(roomId);
         return null;
       }
 
-      // Cache the offer-side state immediately so a failure between offer and
-      // finalize still has a recoverable cleanup path: closeReversePipe will
-      // send the transportId to origin which can close the pre-finalize
-      // (pending) transport.
-      let perRoom = this.reversedProducers.get(roomId);
-      if (!perRoom) {
-        perRoom = new Map();
-        this.reversedProducers.set(roomId, perRoom);
+      // F-35: if the speaker disconnected during the offer await,
+      // closeReversePipe already removed the entry. Origin may now hold a
+      // pending inbound transport (offerResponse.transportId) — abort and
+      // tell origin to close it, so it doesn't leak until room cleanup.
+      const pendingEntry = perRoom.get(edgeProducer.id);
+      if (!pendingEntry) {
+        outbound.transport.close();
+        await this.notifyOriginReverseClose(
+          originBaseUrl,
+          roomId,
+          edgeProducer.id,
+          offerResponse.transportId,
+        );
+        metrics.reversePipeSetup.inc({ result: "failure" });
+        return null;
       }
-      perRoom.set(edgeProducer.id, {
-        outboundTransport: outbound.transport,
-        originTransportId: offerResponse.transportId,
-        originProducerId: null,
-      });
+      // Promote pending → offer-known so a later close sends the transportId.
+      pendingEntry.originTransportId = offerResponse.transportId;
 
       // Phase 3: edge connects + consumes its local producer with origin's
       // rtpCapabilities so the consumer's rtpParameters match what origin
@@ -1175,6 +1219,19 @@ export class CascadeCoordinator {
       const entry = perRoom.get(edgeProducer.id);
       if (entry) {
         entry.originProducerId = finalizeResponse.originProducerId;
+      } else {
+        // F-35: cancelled during Phase 3/4. Origin already finalized and
+        // produced — closeReversePipe found no entry, so tear down origin's
+        // now-live transport (closes its producer) here.
+        outbound?.transport.close();
+        await this.notifyOriginReverseClose(
+          originBaseUrl,
+          roomId,
+          edgeProducer.id,
+          offerResponse.transportId,
+        );
+        metrics.reversePipeSetup.inc({ result: "failure" });
+        return null;
       }
 
       // If our local outbound transport closes (e.g. mediasoup teardown,
@@ -1238,6 +1295,30 @@ export class CascadeCoordinator {
     const originBaseUrl = this.originUrls.get(roomId);
     if (!originBaseUrl) return;
 
+    // F-35: originTransportId may be null if the speaker disconnected before
+    // the offer round-trip completed. Origin's reverse-close handler falls
+    // back to an edgeProducerId lookup when transportId is absent, so the
+    // pending (pre-offer) state is still cleanable.
+    await this.notifyOriginReverseClose(
+      originBaseUrl,
+      roomId,
+      edgeProducerId,
+      entry.originTransportId,
+    );
+  }
+
+  /**
+   * POST /internal/pipe/reverse-close to origin. `transportId` lets origin
+   * clean partial setups where finalize never reached it (offer succeeded);
+   * when null, origin falls back to an edgeProducerId lookup. Best-effort —
+   * origin's transport self-times-out if the call fails.
+   */
+  private async notifyOriginReverseClose(
+    originBaseUrl: string,
+    roomId: string,
+    edgeProducerId: string,
+    transportId: string | null,
+  ): Promise<void> {
     try {
       await fetch(`${originBaseUrl}/internal/pipe/reverse-close`, {
         method: "POST",
@@ -1245,20 +1326,13 @@ export class CascadeCoordinator {
           "Content-Type": "application/json",
           "X-Internal-Key": config.INTERNAL_API_KEY || "",
         },
-        // transportId lets origin clean up partial setups where finalize
-        // never reached it (only offer succeeded). It's always known after
-        // the offer response.
-        body: JSON.stringify({
-          roomId,
-          edgeProducerId,
-          transportId: entry.originTransportId,
-        }),
+        body: JSON.stringify({ roomId, edgeProducerId, transportId }),
         signal: AbortSignal.timeout(5_000),
       });
     } catch (err) {
       this.logger.warn(
         { err, roomId, edgeProducerId },
-        "closeReversePipe: notify origin failed (origin will close on its own when its transport times out)",
+        "notifyOriginReverseClose: notify origin failed (origin will close on its own when its transport times out)",
       );
     }
   }

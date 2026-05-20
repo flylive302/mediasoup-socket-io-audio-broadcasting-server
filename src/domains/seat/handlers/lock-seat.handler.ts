@@ -54,11 +54,27 @@ export const lockSeatHandler = createHandler(
           const room = context.roomManager.getRoom(roomId);
           const producer = room?.getProducer(audioProducerId);
           if (producer && !producer.closed) {
-            producer.close();
-            logger.info(
-              { roomId, producerId: audioProducerId, kickedUserId: kicked },
-              "Producer closed (seat locked)",
-            );
+            // F-45: verify the producer still belongs to the kicked user before
+            // closing. A rapid disconnect→reconnect→produce (or mute/unmute)
+            // can replace the tracked producer id; without this guard a brand
+            // new producer the user just created post-reconnect could be closed.
+            if (producer.appData.userId === Number(kicked)) {
+              producer.close();
+              logger.info(
+                { roomId, producerId: audioProducerId, kickedUserId: kicked },
+                "Producer closed (seat locked)",
+              );
+            } else {
+              logger.warn(
+                {
+                  roomId,
+                  producerId: audioProducerId,
+                  kickedUserId: kicked,
+                  producerUserId: producer.appData.userId,
+                },
+                "Skipped producer close on seat lock — producer no longer owned by kicked user (F-45)",
+              );
+            }
           }
           kickedClient.producers.delete("audio");
           kickedClient.isSpeaker = kickedClient.producers.size > 0;
