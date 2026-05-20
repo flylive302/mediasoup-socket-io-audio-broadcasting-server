@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mock config + logger BEFORE importing the service — `src/config` validates
+// env via Zod at module load and `process.env` is empty in CI.
+vi.mock("@src/config/index.js", () => ({ config: {} }));
+vi.mock("@src/infrastructure/logger.js", () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 import { SeatGraceService } from "@src/domains/seat/seat-grace.service.js";
 import type { Redis } from "ioredis";
 import type { Server } from "socket.io";

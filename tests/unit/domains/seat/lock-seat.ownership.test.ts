@@ -1,4 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mock config + logger BEFORE importing the handler — `src/config` validates
+// env via Zod at module load and `process.env` is empty in CI.
+vi.mock("@src/config/index.js", () => ({ config: {} }));
+vi.mock("@src/infrastructure/logger.js", () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock("@src/infrastructure/metrics.js", () => ({
+  metrics: {
+    eventsTotal: { inc: vi.fn() },
+    eventLatency: { observe: vi.fn() },
+  },
+}));
+
 import { lockSeatHandler } from "@src/domains/seat/handlers/lock-seat.handler.js";
 
 // F-45: seat:lock must not close a producer that no longer belongs to the

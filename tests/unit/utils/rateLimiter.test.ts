@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mock config + logger BEFORE importing the module under test — `src/config`
+// validates env via Zod at module load and `process.env` is empty in CI.
+vi.mock("@src/config/index.js", () => ({
+  config: { RATE_LIMIT_FAIL_OPEN: false },
+}));
+vi.mock("@src/infrastructure/logger.js", () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
 import { config } from "@src/config/index.js";
 import type { Redis } from "ioredis";
