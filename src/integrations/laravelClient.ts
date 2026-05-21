@@ -157,6 +157,8 @@ export class LaravelClient {
           "Content-Type": "application/json",
           Accept: "application/json",
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
+          // F-64: per-instance throttle key so MSAB instances don't share one bucket
+          "X-Instance-ID": config.INSTANCE_ID,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -179,6 +181,8 @@ export class LaravelClient {
           "Content-Type": "application/json",
           Accept: "application/json",
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
+          // F-64: per-instance throttle key so MSAB instances don't share one bucket
+          "X-Instance-ID": config.INSTANCE_ID,
         },
         signal: controller.signal,
       });

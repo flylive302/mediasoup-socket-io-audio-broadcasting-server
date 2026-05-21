@@ -391,7 +391,7 @@ export class EventRouter {
    */
   private writeRevocationKey(userId: number, revokedAt: number): void {
     const key = `auth:user_revoked:${userId}`;
-    const ttl = config.JWT_MAX_AGE_SECONDS; // 30 days — matches JWT lifetime
+    const ttl = config.JWT_MAX_AGE_SECONDS; // 24h — matches JWT lifetime (F-56)
     this.redis
       .set(key, String(revokedAt), "EX", ttl)
       .then(() => {

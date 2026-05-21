@@ -12,11 +12,17 @@ export async function authMiddleware(
   next: (err?: Error) => void,
 ) {
   // ── GATE: Validate origin ──────────────────────────────
-  // Connections without an Origin header are allowed intentionally —
-  // native mobile apps and server-to-server clients do not send Origin.
+  // F-63: require an allowlisted Origin header. Every legitimate client is
+  // browser-backed (the TWA runs in Chrome Custom Tabs, the PWA in the
+  // browser), so all real connections carry Origin: https://flyliveapp.com.
+  // MSAB has no native socket client and no server-to-server socket.io caller
+  // (no socket.io-client dependency), so a missing Origin only ever indicates
+  // curl/script reuse of a leaked JWT — reject it. (Origin is browser-enforced
+  // but spoofable by a determined attacker; the primary control remains JWT
+  // signature + revocation + the shortened token lifetime, F-56.)
   const origin = socket.handshake.headers.origin;
-  if (origin && !config.CORS_ORIGINS.has(origin)) {
-    logger.warn({ socketId: socket.id, origin }, "Origin not allowed");
+  if (!origin || !config.CORS_ORIGINS.has(origin)) {
+    logger.warn({ socketId: socket.id, origin: origin ?? null }, "Origin not allowed");
     metrics.authAttempts.inc({ result: "origin_blocked" });
     return next(new Error(Errors.ORIGIN_NOT_ALLOWED));
   }

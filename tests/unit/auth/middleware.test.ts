@@ -113,11 +113,11 @@ describe("authMiddleware", () => {
     expect(metrics.authAttempts.inc).toHaveBeenCalledWith({ result: "origin_blocked" });
   });
 
-  it("allows connection without origin header (mobile clients)", async () => {
+  it("rejects connection without origin header (F-63: leaked-JWT curl/script reuse)", async () => {
     const socket = createMockSocket({
       handshake: {
         auth: { token: "some.jwt.token" },
-        headers: {}, // No origin — mobile/native client
+        headers: {}, // No origin — every legit client (TWA/PWA) is browser-backed and sends one
       },
     });
     const next = vi.fn();
@@ -125,8 +125,8 @@ describe("authMiddleware", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await authMiddleware(socket as any, next);
 
-    expect(next).toHaveBeenCalledWith(); // No error
-    expect(metrics.authAttempts.inc).toHaveBeenCalledWith({ result: "success" });
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: "Origin not allowed" }));
+    expect(metrics.authAttempts.inc).toHaveBeenCalledWith({ result: "origin_blocked" });
   });
 
   it("strips Bearer prefix from authorization header", async () => {

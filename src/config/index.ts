@@ -36,7 +36,11 @@ const configSchema = z.object({
 
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),
-  JWT_MAX_AGE_SECONDS: z.coerce.number().default(2_592_000), // 30 days fallback
+  // F-56: 24h, matching the Laravel-issued JWT lifetime. Two uses: (1) the no-exp
+  // max-age ceiling in jwtValidator (Laravel always sets exp, so rarely hit), and
+  // (2) the TTL for `auth:user_revoked:*` Redis keys in the event-router and backfill
+  // poller — a revocation only needs to outlive the longest-lived still-valid token.
+  JWT_MAX_AGE_SECONDS: z.coerce.number().default(86_400),
 
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
