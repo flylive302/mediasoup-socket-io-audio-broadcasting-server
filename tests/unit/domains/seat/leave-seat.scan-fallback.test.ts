@@ -5,7 +5,7 @@ import { LEAVE_SEAT_SCRIPT } from "@src/domains/seat/seat.lua-scripts.js";
 // the shared seats hash — refreshed by ANY user's take — still holds this
 // user's entry. The old LEAVE_SEAT script returned NOT_SEATED, orphaning the
 // seat permanently. The fix adds a bounded HGETALL scan fallback so the orphan
-// is releasable by `seat:leave` and by the seat-grace sweeper. This script is
+// is releasable by `seat:leave` and by the disconnect leave path. This script is
 // exercised end-to-end against Redis in seat.repository tests; here we assert
 // the structural invariants of the Lua source so an accidental revert would
 // fail CI.

@@ -21,7 +21,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, seatGrace, revocationPoller } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -89,10 +89,9 @@ const start = async () => {
         // transports close cleanly. Bound stays well under the F-5 ceiling.
         await waitForActiveDisconnects(15_000);
 
-        // 3. Stop auto-close job + F-34 ownership heartbeat + F-6 seat-grace
+        // 3. Stop auto-close job + F-34 ownership heartbeat + revocation poller
         autoCloseJob.stop();
         roomManager.stopOwnershipHeartbeat();
-        seatGrace.stop();
         revocationPoller.stop();
 
         if (giftHandler) {

@@ -142,13 +142,6 @@ async function processJoin(
   // Update client room index
   clientManager.setClientRoom(socket.id, roomId);
 
-  // F-6/F-37: cancel any pending Redis-backed seat clear for this user — they
-  // reconnected in time. cancel() is cross-instance, so a reconnect on a
-  // different instance than the one that scheduled the clear still cancels it.
-  if (await context.seatGrace.cancel(roomId, String(userId))) {
-    logger.debug({ roomId, userId }, "Grace-period seat clear cancelled — user reconnected");
-  }
-
   // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
   // sharing the same Redis adapter, not just the local process.
   // This replaces the old clientManager.getClientsInRoom() which was in-memory only.

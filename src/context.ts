@@ -11,7 +11,6 @@ import type {
   AutoCloseJob,
 } from "./domains/room/auto-close/index.js";
 import type { SeatRepository } from "./domains/seat/seat.repository.js";
-import type { SeatGraceService } from "./domains/seat/seat-grace.service.js";
 import type { UserSocketRepository } from "./integrations/laravel/user-socket.repository.js";
 import type { UserRoomRepository } from "./integrations/laravel/user-room.repository.js";
 
@@ -33,7 +32,6 @@ export interface AppContext {
   autoCloseService: AutoCloseService;
   autoCloseJob: AutoCloseJob;
   seatRepository: SeatRepository;
-  seatGrace: SeatGraceService;
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;
 

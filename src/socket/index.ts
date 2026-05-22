@@ -20,7 +20,6 @@ import { registerAllDomains } from "@src/domains/index.js";
 
 // Domain modules
 import { SeatRepository } from "@src/domains/seat/seat.repository.js";
-import { SeatGraceService } from "@src/domains/seat/seat-grace.service.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
@@ -77,11 +76,6 @@ export async function initializeSocket(
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
 
-  // F-6/F-37: Redis-backed seat grace (cross-instance correct, survives
-  // instance death). cascadeRelay is wired AFTER bootstrap in server.ts via
-  // seatGrace.setCascadeRelay().
-  const seatGrace = new SeatGraceService(redis, seatRepository, io);
-
   // Initialize auto-close system
   const autoCloseService = new AutoCloseService(redis);
   const autoCloseJob = new AutoCloseJob(
@@ -114,7 +108,6 @@ export async function initializeSocket(
     autoCloseService,
     autoCloseJob,
     seatRepository,
-    seatGrace,
     userSocketRepository,
     userRoomRepository,
 
@@ -123,10 +116,6 @@ export async function initializeSocket(
     cascadeRelay: null,       // Wired in server.ts after bootstrap
     roomRegistry: null,       // Wired in server.ts after bootstrap
   };
-
-  // F-6/F-37: start the seat-grace sweeper (one sweeper per instance; due
-  // entries are atomically claimed so duplicates are impossible).
-  seatGrace.start();
 
   io.on("connection", (socket) => {
     const userId = socket.data.user?.id;
@@ -223,22 +212,32 @@ async function handleDisconnect(
       }
     }
 
-    // RT-002 FIX: Parallel Redis cleanup — don't await sequentially
-    // Seat clear is intentionally excluded here: it runs after a grace period
-    // so a fast reconnect (mobile background, iOS PWA suspension) retains the seat.
+    // Connection lost (network drop, app close, tab close) = full immediate
+    // leave. There is NO seat-retention grace: a dead socket means the user is
+    // gone, so clear their seat now and broadcast it, exactly like an explicit
+    // room:leave. Transient blips are already absorbed by the socket-level
+    // pingTimeout (the `disconnect` event does not fire until the socket is
+    // genuinely dead); fast app-close cleanup comes from the client's
+    // `pagehide` → room:leave. (Supersedes the F-6/F-37 seat-grace model after
+    // the retain-on-reconnect requirement was dropped.)
+    const seatResult = await appContext.seatRepository.leaveSeat(roomId, roomUserId);
+
     await Promise.allSettled([
       userSocketRepository.unregisterSocket(client.userId, socket.id),
       userRoomRepository.clearUserRoom(client.userId),
       roomManager.state.adjustParticipantCount(roomId, -1),
     ]);
 
-    // F-6/F-37: schedule deferred seat clear via the Redis-backed grace
-    // service. cancel() works from any instance, the sweeper survives
-    // instance death, and the eventual broadcast goes through the namespace
-    // adapter (not a stale socket `.local`) so a user who reconnected on a
-    // different instance still receives `seat:cleared`. join-room cancels
-    // via context.seatGrace.cancel().
-    void appContext.seatGrace.schedule(roomId, roomUserId);
+    // Emit seat:cleared before room:userLeft, matching performRoomLeave's order.
+    if (seatResult.success && seatResult.seatIndex !== undefined) {
+      emitToRoom(
+        socket,
+        roomId,
+        "seat:cleared",
+        { seatIndex: seatResult.seatIndex, userId: client.userId },
+        cascadeRelay,
+      );
+    }
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
   } else if (client?.userId) {

@@ -21,7 +21,6 @@ import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
-import type { SeatGraceService } from "@src/domains/seat/seat-grace.service.js";
 import { RoomRegistry } from "@src/domains/room/room-registry.js";
 import { PipeManager } from "@src/domains/media/pipe-manager.js";
 import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
@@ -36,7 +35,6 @@ export interface BootstrapResult {
   workerManager: WorkerManager;
   giftHandler: GiftHandler;
   autoCloseJob: AutoCloseJob;
-  seatGrace: SeatGraceService;
   roomRegistry: RoomRegistry;
   pipeManager: PipeManager;
   revocationPoller: RevocationBackfillPoller;
@@ -72,16 +70,24 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       credentials: true,
     },
     adapter: createAdapter(pubClient, subClient),
-    // Resume the same socket session if the client reconnects within the window —
-    // skips the full room:join cycle on transient drops (tab switch, brief network blip).
-    connectionStateRecovery: {
-      maxDisconnectionDuration: 2 * 60 * 1000,
-      skipMiddlewares: true,
-    },
+    // Detect a dead/offline socket fast so the disconnect-driven full leave
+    // (seat clear + room:userLeft) fires promptly. socket.io defaults
+    // (25s interval / 20s timeout) left an offline user lingering ~45s.
+    // 5s/5s → a genuinely gone client is detected within ~10s. Policy is
+    // "connection lost = leave" (no seat retention), so we tune for prompt
+    // removal. Trade-off: a network stall >5s is treated as gone and the user
+    // re-joins on return — acceptable (and intended) under the no-retention rule.
+    pingInterval: 5_000,
+    pingTimeout: 5_000,
+    // connectionStateRecovery intentionally DISABLED. Under the no-retention
+    // policy a reconnect must be a CLEAN fresh join (re-emit room:join, rebuild
+    // transports, reconcile a fresh snapshot) — not a silent session resume that
+    // leaves the client half-restored after the server already cleared its seat
+    // (which stranded kicked/offline users in an "audio seat loading" state).
   });
 
   const appContext = await initializeSocket(io, pubClient);
-  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, seatGrace } = appContext;
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter } = appContext;
 
   // SFU Cascade — conditionally wire coordinator and relay
   const roomRegistry = new RoomRegistry(pubClient, logger);
@@ -106,10 +112,6 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     roomManager.setCascadeServices(cascadeCoordinator, cascadeRelay);
     logger.info("SFU cascade services wired (CASCADE_ENABLED=true)");
   }
-
-  // F-37: cross-region parity for the seat-grace sweeper's `seat:cleared`
-  // broadcast. Setter is a no-op when cascade is disabled (relay is null).
-  seatGrace.setCascadeRelay(cascadeRelay);
 
   // F-67: reconcile any revocations whose real-time SNS emit this instance missed.
   const revocationPoller = new RevocationBackfillPoller(
@@ -155,7 +157,6 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     workerManager,
     giftHandler,
     autoCloseJob,
-    seatGrace,
     roomRegistry,
     pipeManager,
     revocationPoller,
