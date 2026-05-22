@@ -136,6 +136,20 @@ describe("SeatRepository", () => {
 
       expect(result.success).toBe(false);
     });
+
+    it("F-41: passes through clearedSeatIndices for healed ghost seats", async () => {
+      redis.seatTake.mockResolvedValue(
+        JSON.stringify({ success: true, seatIndex: 3, clearedSeatIndices: [0, 1] }),
+      );
+
+      const result = await repo.takeSeat("room1", "user42", 3, 15);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.seatIndex).toBe(3);
+        expect(result.clearedSeatIndices).toEqual([0, 1]);
+      }
+    });
   });
 
   // ─── leaveSeat (Lua) ──────────────────────────────────────────

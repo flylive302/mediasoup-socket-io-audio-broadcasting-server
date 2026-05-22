@@ -39,12 +39,25 @@ export const TAKE_SEAT_SCRIPT = `
     return cjson.encode({success = false, error = "SEAT_TAKEN"})
   end
 
-  -- Remove user from any existing seat first (O(1) via reverse index).
-  -- Capture the prior index so the handler can broadcast seat:cleared
-  -- to keep other clients' UIs in sync during a move.
-  local previousSeatIndex = redis.call('GET', userSeatKey)
-  if previousSeatIndex then
-    redis.call('HDEL', seatsKey, previousSeatIndex)
+  -- F-41: Single-occupancy heal. Remove this user from EVERY seat they hold,
+  -- not just the reverse-index one. The per-user reverse index (userSeatKey)
+  -- can expire or desync while the shared seats hash — re-EXPIRE'd by ANY
+  -- user's take, so effectively immortal in an active room — still holds this
+  -- user's entry. Relying on GET userSeatKey alone (the old behaviour) then
+  -- skipped the HDEL and let the same user accumulate ghosts across seats,
+  -- each reading as SEAT_TAKEN forever. A bounded HGETALL scan (<= seatCount
+  -- entries, atomic in this EVALSHA) clears them all and self-heals corrupted
+  -- rooms on the user's next move. Returns every vacated index so the handler
+  -- can broadcast seat:cleared for each, keeping observers in sync.
+  local cleared = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and tostring(data.userId) == tostring(userId) and idx ~= tostring(seatIndex) then
+      redis.call('HDEL', seatsKey, idx)
+      table.insert(cleared, tonumber(idx))
+    end
   end
 
   -- Take the new seat
@@ -58,50 +71,41 @@ export const TAKE_SEAT_SCRIPT = `
   redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
   redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
 
-  if previousSeatIndex then
-    return cjson.encode({success = true, seatIndex = seatIndex, previousSeatIndex = tonumber(previousSeatIndex)})
-  end
-  return cjson.encode({success = true, seatIndex = seatIndex})
+  local resp = {success = true, seatIndex = seatIndex}
+  if #cleared > 0 then resp.clearedSeatIndices = cleared end
+  return cjson.encode(resp)
 `;
 
 export const LEAVE_SEAT_SCRIPT = `
   local seatsKey = KEYS[1]
   local userSeatKey = KEYS[2]
   local userId = ARGV[1]
-  
-  -- P-4 FIX: O(1) lookup via reverse index instead of HGETALL linear scan
-  local seatIndex = redis.call('GET', userSeatKey)
 
-  -- F-38 FIX: TTL skew can expire the per-user reverse index while the shared
-  -- seats hash (re-EXPIRE'd whenever ANY user takes a seat) still holds this
-  -- user's entry, orphaning a seat the user/disconnect-grace can never release.
-  -- Fall back to a scan of the bounded seats hash (<= seatCount entries, still
-  -- atomic in this single EVALSHA) so the orphan is releasable.
-  if not seatIndex then
-    local all = redis.call('HGETALL', seatsKey)
-    for i = 1, #all, 2 do
-      local idx = all[i]
-      local ok, data = pcall(cjson.decode, all[i + 1])
-      if ok and tostring(data.userId) == tostring(userId) then
-        redis.call('HDEL', seatsKey, idx)
-        redis.call('DEL', userSeatKey)
-        return cjson.encode({success = true, seatIndex = tonumber(idx)})
-      end
-    end
-    return cjson.encode({success = false, error = "NOT_SEATED"})
-  end
-  
-  -- Verify the seat actually belongs to this user (defensive)
-  local seatData = redis.call('HGET', seatsKey, seatIndex)
-  if seatData then
-    local data = cjson.decode(seatData)
-    if data.userId == userId then
-      redis.call('HDEL', seatsKey, seatIndex)
+  -- F-41 (supersedes the F-38 single-match fallback): always remove the user
+  -- from EVERY seat they hold via a bounded HGETALL scan, not just the one the
+  -- reverse index points at. The per-user reverse index can expire or desync
+  -- while the shared seats hash (kept alive by any user's take) still holds
+  -- this user's entries, so a single reverse-index lookup can leave orphaned
+  -- ghosts behind. Scanning the bounded hash (<= seatCount entries) clears them
+  -- all atomically in this one EVALSHA. Returns every vacated index so leave /
+  -- disconnect / kick can broadcast a seat:cleared per slot.
+  local cleared = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and tostring(data.userId) == tostring(userId) then
+      redis.call('HDEL', seatsKey, idx)
+      table.insert(cleared, tonumber(idx))
     end
   end
-  
+
   redis.call('DEL', userSeatKey)
-  return cjson.encode({success = true, seatIndex = tonumber(seatIndex)})
+
+  if #cleared > 0 then
+    return cjson.encode({success = true, seatIndex = cleared[1], clearedSeatIndices = cleared})
+  end
+  return cjson.encode({success = false, error = "NOT_SEATED"})
 `;
 
 export const ASSIGN_SEAT_SCRIPT = `
@@ -123,20 +127,30 @@ export const ASSIGN_SEAT_SCRIPT = `
     return cjson.encode({success = false, error = "SEAT_LOCKED"})
   end
 
-  -- Remove anyone currently on that seat + clean their reverse index
+  -- Remove anyone currently on that seat (a DIFFERENT user) + clean their
+  -- reverse index. (If it's the same user being assigned to their own seat the
+  -- entry is just re-written below.)
   local displaced = redis.call('HGET', seatsKey, tostring(seatIndex))
   if displaced then
-    local displacedUser = cjson.decode(displaced).userId
+    local dok, ddata = pcall(cjson.decode, displaced)
+    if dok and tostring(ddata.userId) ~= tostring(userId) then
+      redis.call('DEL', roomPrefix .. ddata.userId)
+    end
     redis.call('HDEL', seatsKey, tostring(seatIndex))
-    redis.call('DEL', roomPrefix .. displacedUser)
   end
 
-  -- Remove user from any existing seat (O(1) via reverse index).
-  -- Capture the prior index so the handler can broadcast seat:cleared
-  -- to keep other clients' UIs in sync during a move.
-  local previousSeatIndex = redis.call('GET', userSeatKey)
-  if previousSeatIndex then
-    redis.call('HDEL', seatsKey, previousSeatIndex)
+  -- F-41: Single-occupancy heal — remove the assigned user from EVERY other
+  -- seat via a bounded HGETALL scan (see TAKE_SEAT_SCRIPT for the rationale:
+  -- reverse-index desync would otherwise let one user accumulate ghosts).
+  local cleared = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and tostring(data.userId) == tostring(userId) and idx ~= tostring(seatIndex) then
+      redis.call('HDEL', seatsKey, idx)
+      table.insert(cleared, tonumber(idx))
+    end
   end
 
   -- Assign user to the seat
@@ -150,10 +164,9 @@ export const ASSIGN_SEAT_SCRIPT = `
   redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
   redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
 
-  if previousSeatIndex then
-    return cjson.encode({success = true, seatIndex = seatIndex, previousSeatIndex = tonumber(previousSeatIndex)})
-  end
-  return cjson.encode({success = true, seatIndex = seatIndex})
+  local resp = {success = true, seatIndex = seatIndex}
+  if #cleared > 0 then resp.clearedSeatIndices = cleared end
+  return cjson.encode(resp)
 `;
 
 export const SET_MUTE_SCRIPT = `

@@ -19,19 +19,20 @@ export const leaveSeatHandler = createHandler(
       return { success: false, error: result.error };
     }
 
-    logger.info(
-      { roomId, userId, seatIndex: result.seatIndex },
-      "User left seat",
-    );
+    // F-41: leaveSeat clears EVERY seat the user held; clear them all on clients.
+    const cleared = result.clearedSeatIndices ?? [result.seatIndex];
+    logger.info({ roomId, userId, clearedSeatIndices: cleared }, "User left seat");
 
     // Broadcast to room (cascade-aware)
-    emitToRoom(
-      socket,
-      roomId,
-      "seat:cleared",
-      { seatIndex: result.seatIndex, userId: socket.data.user.id },
-      context.cascadeRelay,
-    );
+    for (const seatIndex of cleared) {
+      emitToRoom(
+        socket,
+        roomId,
+        "seat:cleared",
+        { seatIndex, userId: socket.data.user.id },
+        context.cascadeRelay,
+      );
+    }
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService

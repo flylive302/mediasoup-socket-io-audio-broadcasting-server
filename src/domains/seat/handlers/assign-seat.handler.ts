@@ -39,15 +39,16 @@ export const assignSeatHandler = createHandler(
     }
 
     logger.info(
-      { roomId, targetUserId, seatIndex, assignedBy: userId, previousSeatIndex: result.previousSeatIndex ?? null },
+      { roomId, targetUserId, seatIndex, assignedBy: userId, clearedSeatIndices: result.clearedSeatIndices ?? [] },
       "User assigned to seat",
     );
 
-    // When assigned user is moved from another seat, broadcast the clear so
-    // every client (owner + everyone else) drops the source slot.
-    if (result.previousSeatIndex != null) {
+    // When the assigned user is moved off other seats (a normal move, or
+    // orphaned ghost slots from a reverse-index desync), broadcast the clear
+    // for each so every client (owner + everyone else) drops the source slots. (F-41)
+    for (const clearedIndex of result.clearedSeatIndices ?? []) {
       broadcastToRoom(socket.nsp, roomId, "seat:cleared", {
-        seatIndex: result.previousSeatIndex,
+        seatIndex: clearedIndex,
         userId: targetUserId,
       }, context.cascadeRelay);
     }

@@ -42,19 +42,23 @@ export const removeSeatHandler = createHandler(
       return { success: false, error: result.error };
     }
 
+    // F-41: removeSeat (leaveSeat) clears EVERY seat the user held.
+    const cleared = result.clearedSeatIndices ?? [result.seatIndex];
     logger.info(
-      { roomId, targetUserId, seatIndex: result.seatIndex, removedBy: requesterId },
+      { roomId, targetUserId, clearedSeatIndices: cleared, removedBy: requesterId },
       "User removed from seat",
     );
 
     // Broadcast to room (cascade-aware)
-    emitToRoom(
-      socket,
-      roomId,
-      "seat:cleared",
-      { seatIndex: result.seatIndex, userId: targetUserId },
-      context.cascadeRelay,
-    );
+    for (const seatIndex of cleared) {
+      emitToRoom(
+        socket,
+        roomId,
+        "seat:cleared",
+        { seatIndex, userId: targetUserId },
+        context.cascadeRelay,
+      );
+    }
 
     return { success: true };
   },

@@ -56,14 +56,18 @@ export async function performRoomLeave(
   ]);
 
   // REACT — emit BEFORE socket.leave so members still receive it.
-  if (seatResult.success && seatResult.seatIndex !== undefined) {
-    emitToRoom(
-      socket,
-      roomId,
-      "seat:cleared",
-      { seatIndex: seatResult.seatIndex, userId: Number(userId) },
-      context.cascadeRelay,
-    );
+  // F-41: leaveSeat clears EVERY seat the user held; clear them all on clients.
+  if (seatResult.success) {
+    const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
+    for (const seatIndex of cleared) {
+      emitToRoom(
+        socket,
+        roomId,
+        "seat:cleared",
+        { seatIndex, userId: Number(userId) },
+        context.cascadeRelay,
+      );
+    }
   }
 
   if (newCount !== null) {

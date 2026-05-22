@@ -1,32 +1,60 @@
 import { describe, it, expect } from "vitest";
-import { LEAVE_SEAT_SCRIPT } from "@src/domains/seat/seat.lua-scripts.js";
+import {
+  LEAVE_SEAT_SCRIPT,
+  TAKE_SEAT_SCRIPT,
+  ASSIGN_SEAT_SCRIPT,
+} from "@src/domains/seat/seat.lua-scripts.js";
 
-// F-38: TTL skew can expire the per-user reverse index (`userSeatKey`) while
-// the shared seats hash — refreshed by ANY user's take — still holds this
-// user's entry. The old LEAVE_SEAT script returned NOT_SEATED, orphaning the
-// seat permanently. The fix adds a bounded HGETALL scan fallback so the orphan
-// is releasable by `seat:leave` and by the disconnect leave path. This script is
-// exercised end-to-end against Redis in seat.repository tests; here we assert
-// the structural invariants of the Lua source so an accidental revert would
-// fail CI.
+// F-41 (supersedes F-38): a user must occupy at most one seat. The per-user
+// reverse index (`userSeatKey`) can expire or desync while the shared seats
+// hash — re-EXPIRE'd by ANY user's take — still holds the user's entry. Relying
+// on a single reverse-index lookup to clear the prior seat then left orphaned
+// "ghost" entries, so the same user accumulated across seats (each reading as
+// SEAT_TAKEN forever) and observers saw them duplicated. The fix makes every
+// mutation scan the bounded seats hash and HDEL EVERY entry for the user,
+// returning all vacated indices. These Lua scripts run end-to-end against Redis
+// in the seat.repository tests; here we assert the structural invariants of the
+// source so an accidental revert fails CI.
 
-describe("LEAVE_SEAT_SCRIPT (F-38 scan fallback)", () => {
-  it("falls back to an HGETALL scan when the reverse index is missing", () => {
-    expect(LEAVE_SEAT_SCRIPT).toContain("HGETALL");
-    expect(LEAVE_SEAT_SCRIPT).toMatch(/if not seatIndex then[\s\S]*HGETALL/);
+describe("Seat single-occupancy heal (F-41)", () => {
+  describe("LEAVE_SEAT_SCRIPT", () => {
+    it("always scans the bounded seats hash (no reverse-index fast path)", () => {
+      expect(LEAVE_SEAT_SCRIPT).toContain("HGETALL");
+      // The old `if not seatIndex then ... HGETALL` conditional fallback is gone.
+      expect(LEAVE_SEAT_SCRIPT).not.toMatch(/if not seatIndex then/);
+    });
+
+    it("collects and HDELs every matching entry for the user", () => {
+      expect(LEAVE_SEAT_SCRIPT).toMatch(/HGETALL[\s\S]*HDEL[\s\S]*table\.insert\(cleared/);
+    });
+
+    it("returns clearedSeatIndices and still returns NOT_SEATED when none found", () => {
+      expect(LEAVE_SEAT_SCRIPT).toContain("clearedSeatIndices = cleared");
+      expect(LEAVE_SEAT_SCRIPT).toContain('error = "NOT_SEATED"');
+    });
   });
 
-  it("HDELs the orphan seat and DELs the (now-set) reverse index in the fallback path", () => {
-    // Strip line breaks for a fuzzy ordering check inside the fallback branch.
-    const fallback = LEAVE_SEAT_SCRIPT.match(
-      /if not seatIndex then([\s\S]*?)return cjson\.encode\(\{success = false/,
-    )?.[1] ?? "";
-    expect(fallback).toContain("HDEL");
-    expect(fallback).toContain("DEL");
-    expect(fallback).toContain("seatIndex = tonumber(idx)");
+  describe("TAKE_SEAT_SCRIPT", () => {
+    it("scans for and clears all of the user's other seats before taking", () => {
+      expect(TAKE_SEAT_SCRIPT).toContain("HGETALL");
+      expect(TAKE_SEAT_SCRIPT).toMatch(/HDEL[\s\S]*table\.insert\(cleared/);
+      // Must not re-add the target seat to the cleared list.
+      expect(TAKE_SEAT_SCRIPT).toContain("idx ~= tostring(seatIndex)");
+    });
+
+    it("no longer relies on GET userSeatKey to find the prior seat", () => {
+      expect(TAKE_SEAT_SCRIPT).not.toMatch(/local previousSeatIndex = redis\.call\('GET'/);
+      expect(TAKE_SEAT_SCRIPT).toContain("clearedSeatIndices = cleared");
+    });
   });
 
-  it("still returns NOT_SEATED when neither the index nor the scan finds the user", () => {
-    expect(LEAVE_SEAT_SCRIPT).toContain('error = "NOT_SEATED"');
+  describe("ASSIGN_SEAT_SCRIPT", () => {
+    it("displaces a DIFFERENT occupant and scan-clears the assigned user's other seats", () => {
+      // Only clean the displaced user's reverse index when it's not the same user.
+      expect(ASSIGN_SEAT_SCRIPT).toMatch(/tostring\(ddata\.userId\) ~= tostring\(userId\)/);
+      expect(ASSIGN_SEAT_SCRIPT).toContain("HGETALL");
+      expect(ASSIGN_SEAT_SCRIPT).toMatch(/HDEL[\s\S]*table\.insert\(cleared/);
+      expect(ASSIGN_SEAT_SCRIPT).toContain("clearedSeatIndices = cleared");
+    });
   });
 });

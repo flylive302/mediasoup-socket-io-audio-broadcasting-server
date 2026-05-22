@@ -30,14 +30,15 @@ export const takeSeatHandler = createHandler(
       return { success: false, error: result.error };
     }
 
-    logger.info({ roomId, userId, seatIndex, previousSeatIndex: result.previousSeatIndex ?? null }, "User took seat");
+    logger.info({ roomId, userId, seatIndex, clearedSeatIndices: result.clearedSeatIndices ?? [] }, "User took seat");
 
-    // When the user moved seats, tell other clients to clear the prior slot
-    // first. Without this, observers would see the user occupying both seats
-    // until some unrelated event repaints the source.
-    if (result.previousSeatIndex != null) {
+    // When the user moved seats (or had orphaned ghost seats from a prior
+    // reverse-index desync), tell other clients to clear every prior slot
+    // first. Without this, observers would see the user occupying multiple
+    // seats until some unrelated event repaints the source. (F-41)
+    for (const clearedIndex of result.clearedSeatIndices ?? []) {
       emitToRoom(socket, roomId, "seat:cleared", {
-        seatIndex: result.previousSeatIndex,
+        seatIndex: clearedIndex,
         userId: socket.data.user.id,
       }, context.cascadeRelay);
     }

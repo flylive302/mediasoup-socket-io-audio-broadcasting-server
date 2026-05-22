@@ -229,14 +229,18 @@ async function handleDisconnect(
     ]);
 
     // Emit seat:cleared before room:userLeft, matching performRoomLeave's order.
-    if (seatResult.success && seatResult.seatIndex !== undefined) {
-      emitToRoom(
-        socket,
-        roomId,
-        "seat:cleared",
-        { seatIndex: seatResult.seatIndex, userId: client.userId },
-        cascadeRelay,
-      );
+    // F-41: leaveSeat clears EVERY seat the user held; clear them all on clients.
+    if (seatResult.success) {
+      const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
+      for (const seatIndex of cleared) {
+        emitToRoom(
+          socket,
+          roomId,
+          "seat:cleared",
+          { seatIndex, userId: client.userId },
+          cascadeRelay,
+        );
+      }
     }
 
     emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);

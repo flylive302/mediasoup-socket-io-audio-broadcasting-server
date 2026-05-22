@@ -53,16 +53,20 @@ export const kickUserHandler = createHandler(
     // 4. Clear user's seat if seated
     const targetUserIdStr = String(targetUserId);
     const seatResult = await context.seatRepository.leaveSeat(roomId, targetUserIdStr);
-    if (seatResult.success && seatResult.seatIndex !== undefined) {
-      emitToRoom(
-        socket,
-        roomId,
-        "seat:cleared",
-        { seatIndex: seatResult.seatIndex, userId: targetUserId },
-        context.cascadeRelay,
-      );
+    if (seatResult.success) {
+      // F-41: clear every seat the kicked user held (heals ghost slots too).
+      const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
+      for (const seatIndex of cleared) {
+        emitToRoom(
+          socket,
+          roomId,
+          "seat:cleared",
+          { seatIndex, userId: targetUserId },
+          context.cascadeRelay,
+        );
+      }
       logger.debug(
-        { roomId, targetUserId, seatIndex: seatResult.seatIndex },
+        { roomId, targetUserId, clearedSeatIndices: cleared },
         "Kicked user's seat cleared",
       );
     }
