@@ -42,8 +42,11 @@ describe("RateLimiter (F-44 sliding-window)", () => {
     mockRedis.rlSlidingWindow.mockResolvedValue(1);
     const allowed = await rateLimiter.isAllowed("user:123", 10, 60);
     expect(allowed).toBe(true);
+    // numberOfKeys:1 is baked into defineCommand, so the command is invoked as
+    // (key, ...args) with NO leading key-count. A leading count shifts every
+    // ARGV → Lua errors → fail-closed → all gift/chat denied (the bug this
+    // guards against).
     expect(mockRedis.rlSlidingWindow).toHaveBeenCalledWith(
-      1,
       "ratelimit:user:123",
       expect.any(String), // now ms
       "60000",            // windowMs

@@ -33,8 +33,12 @@ const SLIDING_WINDOW_LUA = `
 `;
 
 interface RedisWithRateLimit {
+  // Registered via defineCommand({ numberOfKeys: 1 }) — ioredis bakes the key
+  // count in, so the command is invoked as (key, ...args) with NO leading
+  // count. Passing a count shifts every ARGV by one (KEYS[1] becomes the
+  // literal "1", ARGV[1] becomes the key) so `tonumber(ARGV[1])` is nil, the
+  // Lua errors, and the catch fails closed → every gift/chat denied.
   rlSlidingWindow(
-    keyCount: 1,
     key: string,
     now: string,
     windowMs: string,
@@ -74,7 +78,6 @@ export class RateLimiter {
       const allowed = await (
         this.redis as unknown as RedisWithRateLimit
       ).rlSlidingWindow(
-        1,
         redisKey,
         String(now),
         String(windowMs),
