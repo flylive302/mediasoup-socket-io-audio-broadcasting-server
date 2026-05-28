@@ -653,6 +653,7 @@ export class CascadeCoordinator {
     entry_animation_id: number | null;
     data_card_id: number | null;
     mice_wave_id: number | null;
+    slides_id: number | null;
     gender: number;
     country: string;
     wealth_xp: string;
@@ -698,6 +699,7 @@ export class CascadeCoordinator {
             entry_animation_id: number | null;
             data_card_id: number | null;
             mice_wave_id: number | null;
+            slides_id: number | null;
             gender: number;
             country: string;
             wealth_xp: string;
