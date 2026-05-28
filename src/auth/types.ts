@@ -19,6 +19,7 @@ export const UserSchema = z.object({
   entry_animation_id: z.number().nullable().default(null),
   data_card_id: z.number().nullable().default(null),
   mice_wave_id: z.number().nullable().default(null),
+  slides_id: z.number().nullable().default(null),
   gender: z.coerce.number().default(0),
   date_of_birth: z.string().nullable().default(""), // ISO date string (YYYY-MM-DD) or empty
   phone: z.string().nullable().default(""),

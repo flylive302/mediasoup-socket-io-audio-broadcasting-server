@@ -156,6 +156,7 @@ async function processJoin(
     entry_animation_id: number | null;
     data_card_id: number | null;
     mice_wave_id: number | null;
+    slides_id: number | null;
     gender: number;
     country: string;
     wealth_xp: string;
@@ -185,6 +186,7 @@ async function processJoin(
       entry_animation_id: remoteUser.entry_animation_id,
       data_card_id: remoteUser.data_card_id,
       mice_wave_id: remoteUser.mice_wave_id,
+      slides_id: remoteUser.slides_id,
       gender: remoteUser.gender,
       country: remoteUser.country,
       wealth_xp: remoteUser.wealth_xp,

@@ -283,6 +283,7 @@ export const profileSyncSchema = z.object({
     entry_animation_id: z.number().nullable().optional(),
     data_card_id: z.number().nullable().optional(),
     mice_wave_id: z.number().nullable().optional(),
+    slides_id: z.number().nullable().optional(),
     gender: z.union([z.string(), z.number()]).optional(),
     vip_level: z.number().optional(),
   }),

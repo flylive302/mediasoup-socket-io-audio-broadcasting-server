@@ -201,6 +201,7 @@ export const createInternalRoutes = (
         entry_animation_id: number | null;
         data_card_id: number | null;
         mice_wave_id: number | null;
+        slides_id: number | null;
         gender: number;
         country: string;
         wealth_xp: string;
@@ -223,6 +224,7 @@ export const createInternalRoutes = (
           entry_animation_id: u.entry_animation_id,
           data_card_id: u.data_card_id,
           mice_wave_id: u.mice_wave_id,
+          slides_id: u.slides_id,
           gender: u.gender,
           country: u.country,
           wealth_xp: u.wealth_xp,
