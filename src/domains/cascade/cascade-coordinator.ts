@@ -437,11 +437,7 @@ export class CascadeCoordinator {
       }
       roomMap.set(producerId, { edgeProducerId: producer.id, transport: edgeListener.transport });
 
-      // Drop the cache entry if origin's producer (and therefore our pipe)
-      // closes — next caller should re-pipe instead of returning a stale id.
-      producer.on("transportclose", () => {
-        this.pipedProducers.get(roomId)?.delete(producerId);
-      });
+      this.reactOnPipeClose(producer, roomId, producerId);
 
       this.logger.info(
         {
@@ -868,6 +864,17 @@ export class CascadeCoordinator {
   }
 
   // ─── Private Helpers ──────────────────────────────────────────
+
+  /** Drop the cache entry when origin's producer (and therefore our pipe) closes. */
+  private reactOnPipeClose(
+    producer: import("mediasoup").types.Producer,
+    roomId: string,
+    producerId: string,
+  ): void {
+    producer.on("transportclose", () => {
+      this.pipedProducers.get(roomId)?.delete(producerId);
+    });
+  }
 
   /**
    * POST to origin's /internal/pipe/offer to create a pipe transport.

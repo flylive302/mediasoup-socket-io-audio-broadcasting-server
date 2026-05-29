@@ -22,6 +22,7 @@ import { emitToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
 import { getIceServers } from "@src/config/iceServers.js";
 import type { Socket } from "socket.io";
+import type { ClientData } from "@src/client/clientManager.js";
 
 // 1. Create Transport
 const transportCreateHandler = createHandler(
@@ -170,37 +171,7 @@ const audioProduceHandler = createHandler(
       );
     }
 
-    producer.on("transportclose", () => {
-      // Clean up client tracking
-      if (client) {
-        client.producers.delete(kind);
-        client.isSpeaker = client.producers.size > 0;
-      }
-      // CQ-LOW-001: Guard against double-close
-      if (!producer.closed) producer.close();
-
-      // Tear down the reverse pipe if we opened one. Origin will then close
-      // its inbound transport (which closes its producer and cascades
-      // audio:producerClosed to all listeners).
-      if (isEdgeRoom && context.cascadeCoordinator) {
-        context.cascadeCoordinator
-          .closeReversePipe(roomId, producer.id)
-          .catch((err) =>
-            logger.warn(
-              { err, roomId, edgeProducerId: producer.id },
-              "closeReversePipe failed",
-            ),
-          );
-      }
-
-      // Notify the room (incl. cross-region edges) so listener consumers
-      // get cleanup. Without this, edge-region listeners hold dead
-      // consumers (no RTP arriving) until full rejoin. Cascade-aware emit.
-      emitToRoom(socket, roomId, "audio:producerClosed", {
-        producerId: producer.id,
-        userId,
-      }, context.cascadeRelay);
-    });
+    reactOnProducerClose(producer, client, kind, isEdgeRoom, socket, roomId, context);
 
     return { success: true, data: { id: producer.id } };
   },
@@ -336,6 +307,50 @@ const selfUnmuteHandler = createHandler(
     return { success: true };
   },
 );
+
+// ─────────────────────────────────────────────────────────────────
+// REACT-stage helpers
+// ─────────────────────────────────────────────────────────────────
+
+export function reactOnProducerClose(
+  producer: mediasoup.types.Producer,
+  client: ClientData | undefined,
+  kind: string,
+  isEdgeRoom: boolean,
+  socket: Socket,
+  roomId: string,
+  context: AppContext,
+): void {
+  producer.on("transportclose", () => {
+    if (client) {
+      client.producers.delete(kind);
+      client.isSpeaker = client.producers.size > 0;
+    }
+    // CQ-LOW-001: Guard against double-close
+    if (!producer.closed) producer.close();
+
+    // Tear down the reverse pipe if we opened one. Origin will then close
+    // its inbound transport (which closes its producer and cascades
+    // audio:producerClosed to all listeners).
+    if (isEdgeRoom && context.cascadeCoordinator) {
+      context.cascadeCoordinator
+        .closeReversePipe(roomId, producer.id)
+        .catch((err) =>
+          logger.warn(
+            { err, roomId, edgeProducerId: producer.id },
+            "closeReversePipe failed",
+          ),
+        );
+    }
+
+    // Notify the room (incl. cross-region edges) so listener consumers
+    // get cleanup. Cascade-aware emit.
+    emitToRoom(socket, roomId, "audio:producerClosed", {
+      producerId: producer.id,
+      userId: socket.data.user.id as number,
+    }, context.cascadeRelay);
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Export: Register all media handlers on a socket
