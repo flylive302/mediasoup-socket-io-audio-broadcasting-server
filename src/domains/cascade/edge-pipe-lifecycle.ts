@@ -12,6 +12,7 @@ import type { PipeManager, PlainTransportInfo } from "@src/domains/media/pipe-ma
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { PipeOfferResponse } from "./types.js";
+import { OriginSnapshot } from "./origin-snapshot.js";
 
 const PIPE_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -41,13 +42,17 @@ export class EdgePipeLifecycle {
     Promise<Array<{ producerId: string; userId: number }>>
   >();
 
+  private readonly originSnapshot: OriginSnapshot;
+
   constructor(
     private readonly pipeManager: PipeManager,
     private readonly roomManager: RoomManager,
     /** Shared reference from CascadeCoordinator — read-only here. */
     private readonly originUrls: ReadonlyMap<string, string>,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.originSnapshot = new OriginSnapshot(logger);
+  }
 
   // ─── Public API ───────────────────────────────────────────────────
 
@@ -317,7 +322,7 @@ export class EdgePipeLifecycle {
     const originBaseUrl = this.originUrls.get(roomId);
     if (!originBaseUrl) return [];
 
-    const list = await this.fetchOriginProducers(originBaseUrl, roomId);
+    const list = await this.originSnapshot.fetchOriginProducers(originBaseUrl, roomId);
     if (!list || list.length === 0) return [];
 
     const results = await Promise.all(
@@ -337,45 +342,6 @@ export class EdgePipeLifecycle {
     );
 
     return successful;
-  }
-
-  private async fetchOriginProducers(
-    originBaseUrl: string,
-    roomId: string,
-  ): Promise<Array<{ producerId: string; userId: number; kind: string }> | null> {
-    const url = `${originBaseUrl}/internal/room/${encodeURIComponent(roomId)}/producers`;
-
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), PIPE_REQUEST_TIMEOUT_MS);
-
-      try {
-        const response = await fetch(url, {
-          method: "GET",
-          headers: { "X-Internal-Key": config.INTERNAL_API_KEY || "" },
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          this.logger.warn(
-            { roomId, status: response.status },
-            "EdgePipeLifecycle: origin producers fetch failed",
-          );
-          return null;
-        }
-
-        const body = (await response.json()) as {
-          status: string;
-          producers: Array<{ producerId: string; userId: number; kind: string }>;
-        };
-        return body.producers ?? [];
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    } catch (err) {
-      this.logger.error({ err, roomId }, "EdgePipeLifecycle: origin producers fetch error");
-      return null;
-    }
   }
 
   /** Drop the cache entry when origin's producer (and therefore our pipe) closes. */

@@ -64,3 +64,37 @@ export interface RemoteInstance {
   instanceId: string;
   baseUrl: string;
 }
+
+// ─── Origin Snapshot Types ──────────────────────────────────────
+
+export interface OriginParticipant {
+  id: number;
+  name: string;
+  signature: string;
+  avatar: string;
+  frame_id: number | null;
+  chat_bubble_id: number | null;
+  entry_animation_id: number | null;
+  data_card_id: number | null;
+  mice_wave_id: number | null;
+  slides_id: number | null;
+  gender: number;
+  country: string;
+  wealth_xp: string;
+  charm_xp: string;
+  vip_level: number;
+  isSpeaker: boolean;
+}
+
+export interface OriginRoomSnapshot {
+  seats: Array<{ seatIndex: number; userId: number; isMuted: boolean }>;
+  lockedSeats: number[];
+  seatCount: number;
+  musicPlayer: {
+    userId: number;
+    title: string;
+    duration: number;
+    position: number;
+    isPaused: boolean;
+  } | null;
+}
