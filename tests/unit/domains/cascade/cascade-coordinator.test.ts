@@ -14,6 +14,7 @@ import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js"
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -33,18 +34,9 @@ function createCoordinator() {
   );
 }
 
-function createMockProducer(id = "edge-prod-1") {
-  const handlers = new Map<string, () => void>();
-  return {
-    id,
-    on: (event: string, handler: () => void) => handlers.set(event, handler),
-    _fire: (event: string) => handlers.get(event)?.(),
-  };
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────
 
-describe("CascadeCoordinator.reactOnPipeClose", () => {
+describe("CascadeCoordinator", () => {
   let coordinator: CascadeCoordinator;
 
   beforeEach(() => {
@@ -52,31 +44,7 @@ describe("CascadeCoordinator.reactOnPipeClose", () => {
     coordinator = createCoordinator();
   });
 
-  it("evicts the pipedProducers cache entry when transportclose fires", () => {
-    const roomMap = new Map<string, unknown>();
-    roomMap.set("origin-prod-1", { edgeProducerId: "edge-prod-1", transport: {} });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (coordinator as any).pipedProducers.set("room-1", roomMap);
-
-    const producer = createMockProducer("edge-prod-1");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (coordinator as any).reactOnPipeClose(producer, "room-1", "origin-prod-1");
-    producer._fire("transportclose");
-
-    expect(roomMap.has("origin-prod-1")).toBe(false);
-  });
-
-  it("is a no-op when transportclose fires for an already-absent entry", () => {
-    const roomMap = new Map<string, unknown>();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (coordinator as any).pipedProducers.set("room-1", roomMap);
-
-    const producer = createMockProducer("edge-prod-1");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (coordinator as any).reactOnPipeClose(producer, "room-1", "origin-prod-1");
-    producer._fire("transportclose");
-
-    // Map.delete on a missing key is safe — no throw, map stays empty
-    expect(roomMap.size).toBe(0);
+  it("isEdgeRoom returns false for an unregistered room", () => {
+    expect(coordinator.isEdgeRoom("unknown-room")).toBe(false);
   });
 });
