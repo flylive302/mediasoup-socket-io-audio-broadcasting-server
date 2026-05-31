@@ -83,6 +83,7 @@ export interface OriginParticipant {
   wealth_xp: string;
   charm_xp: string;
   vip_level: number;
+  date_of_birth: string | null;
   isSpeaker: boolean;
 }
 

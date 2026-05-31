@@ -162,6 +162,7 @@ async function processJoin(
     wealth_xp: string;
     charm_xp: string;
     vip_level: number;
+    date_of_birth: string | null;
     isSpeaker: boolean;
   }[] = [];
   const existingProducers: { producerId: string; userId: number }[] = [];
@@ -175,7 +176,6 @@ async function processJoin(
     if (seenUserIds.has(remoteUser.id)) continue;
     seenUserIds.add(remoteUser.id);
 
-    // B-1 FIX: Only include visual/identity fields — exclude PII (phone, email, date_of_birth)
     participants.push({
       id: remoteUser.id,
       name: remoteUser.name,
@@ -192,6 +192,7 @@ async function processJoin(
       wealth_xp: remoteUser.wealth_xp,
       charm_xp: remoteUser.charm_xp,
       vip_level: remoteUser.vip_level ?? 0,
+      date_of_birth: remoteUser.date_of_birth ?? null,
       isSpeaker: false, // Will be updated below from local clientManager
     });
   }
@@ -357,11 +358,32 @@ function afterJoin(
   }
 
   // Broadcast to room (cascade-aware)
+  const u = socket.data.user;
   emitToRoom(
     socket,
     roomId,
     "room:userJoined",
-    { userId: socket.data.user.id, user: socket.data.user },
+    {
+      userId: u.id,
+      user: {
+        id: u.id,
+        name: u.name,
+        signature: u.signature,
+        avatar: u.avatar,
+        frame_id: u.frame_id,
+        chat_bubble_id: u.chat_bubble_id,
+        entry_animation_id: u.entry_animation_id,
+        data_card_id: u.data_card_id,
+        mice_wave_id: u.mice_wave_id,
+        slides_id: u.slides_id,
+        gender: u.gender,
+        country: u.country,
+        wealth_xp: u.wealth_xp,
+        charm_xp: u.charm_xp,
+        vip_level: u.vip_level ?? 0,
+        date_of_birth: u.date_of_birth ?? null,
+      },
+    },
     context.cascadeRelay,
   );
 

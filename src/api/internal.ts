@@ -207,6 +207,7 @@ export const createInternalRoutes = (
         wealth_xp: string;
         charm_xp: string;
         vip_level: number;
+        date_of_birth: string | null;
         isSpeaker: boolean;
       }> = [];
 
@@ -230,6 +231,7 @@ export const createInternalRoutes = (
           wealth_xp: u.wealth_xp,
           charm_xp: u.charm_xp,
           vip_level: u.vip_level ?? 0,
+          date_of_birth: u.date_of_birth ?? null,
           isSpeaker: speakerUserIds.has(u.id),
         });
       }
