@@ -271,7 +271,8 @@ export const getUserRoomSchema = z.object({
 /**
  * Schema for user:profileSync — frontend pushes updated profile fields
  * directly through the socket for immediate room propagation.
- * Only visual/identity fields are accepted; financial data is excluded.
+ * Visual/identity fields plus XP (updated via balance.updated) are accepted;
+ * private balance fields (coins, diamonds) are excluded.
  */
 export const profileSyncSchema = z.object({
   profile: z.object({
@@ -286,6 +287,8 @@ export const profileSyncSchema = z.object({
     slides_id: z.number().nullable().optional(),
     gender: z.union([z.string(), z.number()]).optional(),
     vip_level: z.number().optional(),
+    wealth_xp: z.string().optional(),
+    charm_xp: z.string().optional(),
   }),
 });
 
