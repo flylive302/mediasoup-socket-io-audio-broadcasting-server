@@ -268,4 +268,38 @@ describe("ClientManager", () => {
       expect(cm.getClient("s1")).toBeUndefined();
     });
   });
+
+  // ─── updateUserProfile — equipped_badges replace ─────────────────────────────
+
+  describe("updateUserProfile — equipped_badges", () => {
+    it("replaces equipped_badges array (not deep-merge) when profile carries the field", () => {
+      const cm = new ClientManager();
+      const sock = createMockSocket("s1", 42);
+      cm.addClient(sock);
+
+      const initial = [{ slot_position: 1, badge_id: 10, image_url: "https://cdn/b10.png" }];
+      const updated = [
+        { slot_position: 1, badge_id: 20, image_url: "https://cdn/b20.png" },
+        { slot_position: 2, badge_id: 30, image_url: null },
+      ];
+
+      // Seed initial equipped_badges
+      cm.updateUserProfile(42, { equipped_badges: initial } as Parameters<typeof cm.updateUserProfile>[1]);
+      expect(cm.getClient("s1")!.user.equipped_badges).toEqual(initial);
+
+      // Replace with a different array — must not deep-merge
+      cm.updateUserProfile(42, { equipped_badges: updated } as Parameters<typeof cm.updateUserProfile>[1]);
+      expect(cm.getClient("s1")!.user.equipped_badges).toEqual(updated);
+      expect(cm.getClient("s1")!.user.equipped_badges).toHaveLength(2);
+    });
+
+    it("returns the set of rooms the user is in", () => {
+      const cm = new ClientManager();
+      cm.addClient(createMockSocket("s1", 42));
+      cm.setClientRoom("s1", "roomA");
+
+      const rooms = cm.updateUserProfile(42, { name: "Updated" });
+      expect(rooms.has("roomA")).toBe(true);
+    });
+  });
 });

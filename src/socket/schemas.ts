@@ -289,6 +289,11 @@ export const profileSyncSchema = z.object({
     vip_level: z.number().optional(),
     wealth_xp: z.string().optional(),
     charm_xp: z.string().optional(),
+    equipped_badges: z.array(z.object({
+      slot_position: z.number().int(),
+      badge_id: z.number().int(),
+      image_url: z.string().nullable(),
+    })).optional(),
   }),
 });
 

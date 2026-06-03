@@ -31,6 +31,12 @@ export const UserSchema = z.object({
   is_blocked: z.boolean().default(false),
   vip_level: z.number().default(0),
   isSpeaker: z.boolean().default(false),
+  badge_slot_limit: z.number().default(6),
+  equipped_badges: z.array(z.object({
+    slot_position: z.number().int(),
+    badge_id: z.number().int(),
+    image_url: z.string().nullable().default(null),
+  })).default([]),
 });
 
 /** User type derived from Zod schema */

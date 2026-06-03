@@ -164,6 +164,7 @@ async function processJoin(
     vip_level: number;
     date_of_birth: string | null;
     isSpeaker: boolean;
+    equipped_badges?: { slot_position: number; badge_id: number; image_url: string | null }[];
   }[] = [];
   const existingProducers: { producerId: string; userId: number }[] = [];
 
@@ -194,6 +195,7 @@ async function processJoin(
       vip_level: remoteUser.vip_level ?? 0,
       date_of_birth: remoteUser.date_of_birth ?? null,
       isSpeaker: false, // Will be updated below from local clientManager
+      equipped_badges: remoteUser.equipped_badges,
     });
   }
 
@@ -382,6 +384,7 @@ function afterJoin(
         charm_xp: u.charm_xp,
         vip_level: u.vip_level ?? 0,
         date_of_birth: u.date_of_birth ?? null,
+        equipped_badges: u.equipped_badges ?? [],
       },
     },
     context.cascadeRelay,
