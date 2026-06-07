@@ -135,6 +135,12 @@ export const RELAY_EVENTS = {
     LUCKY_ROOM_ANNOUNCEMENT: "lucky:room_announcement",
     LUCKY_APP_ANNOUNCEMENT: "lucky:app_announcement",
   },
+
+  /** Mission: Recharge Activity winner announcement + finale snapshot signal */
+  mission: {
+    MISSION_WINNER: "mission.winner",
+    MISSION_FINALE_READY: "mission.finale.ready",
+  },
 } as const;
 
 /**
