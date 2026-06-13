@@ -136,6 +136,15 @@ export const RELAY_EVENTS = {
     LUCKY_APP_ANNOUNCEMENT: "lucky:app_announcement",
   },
 
+  /**
+   * Slide overlay (unified-slide-overlay): a resolved triggered SVGA banner.
+   * Pure pass-through — routed by room_id presence (room emit) or null
+   * (broadcast to all connected users, including those in no room).
+   */
+  slide: {
+    SLIDE_PLAY: "slide:play",
+  },
+
   /** Mission: Recharge Activity winner announcement + finale snapshot signal */
   mission: {
     MISSION_WINNER: "mission.winner",
