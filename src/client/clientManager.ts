@@ -143,6 +143,25 @@ export class ClientManager {
   }
 
   /**
+   * Resolve a user's socket id(s) **within a specific room**.
+   *
+   * Used for targeted, room-scoped delivery (e.g. the owner force-take's
+   * `audioPlayer:revoked`, which must reach exactly the displaced DJ's sockets
+   * in this room and never leak to other participants). A user may have
+   * multiple sockets (multi-device); all that are in `roomId` are returned.
+   */
+  getSocketIdsByUserInRoom(userId: number, roomId: string): string[] {
+    const socketIds = this.roomClients.get(roomId);
+    if (!socketIds) return [];
+    const result: string[] = [];
+    for (const sid of socketIds) {
+      const client = this.clients.get(sid);
+      if (client?.userId === userId) result.push(sid);
+    }
+    return result;
+  }
+
+  /**
    * Update in-memory user profile for all sockets belonging to a user.
    * Called when `user.profile.updated` event is received from Laravel.
    * Returns the set of room IDs the user is currently in (for broadcasting).

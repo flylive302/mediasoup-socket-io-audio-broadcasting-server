@@ -11,13 +11,14 @@ import type { AppContext } from "@src/context.js";
 import { logger } from "@src/infrastructure/logger.js";
 import {
   audioPlayerPlaySchema,
+  audioPlayerTakeoverSchema,
   audioPlayerStopSchema,
   audioPlayerStateUpdateSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom, emitToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
-import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { verifyRoomManager, verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Redis key helpers
@@ -99,6 +100,90 @@ const playHandler = createHandler(
       { roomId, userId, title, duration },
       "Audio player started",
     );
+
+    return { success: true };
+  },
+);
+
+/**
+ * audioPlayer:takeover — Owner force-takes a live music slot (ADR-0006).
+ *
+ * Owner-only (`verifyRoomOwner`): non-owner admins are rejected and the current
+ * DJ keeps playing. On success the mutex is force-reassigned to the owner, a
+ * **targeted** `audioPlayer:revoked` is emitted to the displaced DJ's socket(s)
+ * in this room only (so the Room never hears two tracks), and the normal
+ * `audioPlayer:stateChanged` is broadcast. The displaced DJ's queue is local and
+ * untouched — they resume via the normal acquire path when the slot frees.
+ */
+const takeoverHandler = createHandler(
+  "audioPlayer:takeover",
+  audioPlayerTakeoverSchema,
+  async (payload, socket, context) => {
+    const { roomId, title, duration } = payload;
+    const userId = socket.data.user.id;
+
+    const client = context.clientManager.getClient(socket.id);
+    if (!client?.roomId || client.roomId !== roomId) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
+    // Owner-only — admins cannot interrupt a live DJ (kept distinct from the
+    // permissive verifyRoomManager tier; see SEAT-012).
+    const authorization = await verifyRoomOwner(roomId, String(userId), context);
+    if (!authorization.allowed) {
+      return { success: false, error: authorization.error };
+    }
+
+    // Identify the displaced DJ (if any) BEFORE overwriting the mutex.
+    const displaced = await context.redis.get(musicPlayerKey(roomId));
+
+    // Force-overwrite the mutex (no NX) — reassign the slot to the owner.
+    await context.redis.set(
+      musicPlayerKey(roomId),
+      String(userId),
+      "EX",
+      MUSIC_PLAYER_TTL_SECONDS,
+    );
+
+    const state = JSON.stringify({
+      userId,
+      title,
+      duration,
+      startedAt: Date.now(),
+      isPaused: false,
+      position: 0,
+    });
+    await context.redis.setex(musicStateKey(roomId), MUSIC_PLAYER_TTL_SECONDS, state);
+
+    // Targeted revoke to the displaced DJ's socket(s) in THIS room only — never
+    // the whole Room. This is what stops the displaced stream so there is no
+    // overlap; their local queue is preserved for resume.
+    if (displaced && displaced !== String(userId)) {
+      const socketIds = context.clientManager.getSocketIdsByUserInRoom(
+        Number(displaced),
+        roomId,
+      );
+      if (socketIds.length > 0) {
+        context.io.to(socketIds).emit("audioPlayer:revoked", { roomId, byUserId: userId });
+      }
+    }
+
+    // Broadcast the new now-playing to everyone (incl. owner for UI confirmation).
+    broadcastToRoom(
+      context.io,
+      roomId,
+      "audioPlayer:stateChanged",
+      {
+        state: "playing",
+        userId,
+        title,
+        duration,
+        position: 0,
+      },
+      context.cascadeRelay,
+    );
+
+    logger.info({ roomId, userId, displaced }, "Audio player force-taken by owner");
 
     return { success: true };
   },
@@ -269,6 +354,7 @@ export async function getMusicPlayerState(
 
 export const audioPlayerHandler = (socket: Socket, context: AppContext) => {
   socket.on("audioPlayer:play", playHandler(socket, context));
+  socket.on("audioPlayer:takeover", takeoverHandler(socket, context));
   socket.on("audioPlayer:stop", stopHandler(socket, context));
   socket.on("audioPlayer:stateUpdate", stateUpdateHandler(socket, context));
 };

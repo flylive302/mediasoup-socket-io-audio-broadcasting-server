@@ -307,6 +307,14 @@ export const audioPlayerPlaySchema = z.object({
   duration: z.number().positive(), // Duration in seconds
 });
 
+// Owner force-take: same metadata shape as play; authorization (owner-only)
+// and the force-overwrite of the mutex are enforced in the handler.
+export const audioPlayerTakeoverSchema = z.object({
+  roomId: roomIdSchema,
+  title: z.string().min(1).max(200),
+  duration: z.number().positive(),
+});
+
 export const audioPlayerStopSchema = z.object({
   roomId: roomIdSchema,
 });

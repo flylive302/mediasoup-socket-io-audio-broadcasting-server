@@ -24,8 +24,10 @@ vi.mock("@src/shared/room-emit.js", () => ({
 }));
 
 const verifyRoomManagerMock = vi.fn();
+const verifyRoomOwnerMock = vi.fn();
 vi.mock("@src/domains/seat/seat.owner.js", () => ({
   verifyRoomManager: (...args: unknown[]) => verifyRoomManagerMock(...args),
+  verifyRoomOwner: (...args: unknown[]) => verifyRoomOwnerMock(...args),
 }));
 
 import {
@@ -62,6 +64,38 @@ function getPlayHandler(socket: any, context: any) {
   audioPlayerHandler(socket, context);
   const call = socket.on.mock.calls.find(([event]: [string]) => event === "audioPlayer:play");
   return call[1];
+}
+
+function getTakeoverHandler(socket: any, context: any) {
+  audioPlayerHandler(socket, context);
+  const call = socket.on.mock.calls.find(([event]: [string]) => event === "audioPlayer:takeover");
+  return call[1];
+}
+
+/** Context with a chainable `io.to(...).emit(...)` spy and room-scoped lookup. */
+function createTakeoverContext(opts: {
+  clientRoomId: string | null;
+  currentPlayer: string | null;
+  displacedSocketIds?: string[];
+}) {
+  const emitMock = vi.fn();
+  return {
+    context: {
+      clientManager: {
+        getClient: vi.fn().mockReturnValue(opts.clientRoomId ? { roomId: opts.clientRoomId } : null),
+        getSocketIdsByUserInRoom: vi.fn().mockReturnValue(opts.displacedSocketIds ?? []),
+      },
+      redis: {
+        set: vi.fn().mockResolvedValue("OK"),
+        setex: vi.fn().mockResolvedValue("OK"),
+        get: vi.fn().mockResolvedValue(opts.currentPlayer),
+        del: vi.fn().mockResolvedValue(1),
+      },
+      io: { to: vi.fn().mockReturnValue({ emit: emitMock }) },
+      cascadeRelay: null,
+    } as any,
+    emitMock,
+  };
 }
 
 describe("audioPlayer:play — MSAB play role gate", () => {
@@ -143,6 +177,84 @@ describe("audioPlayer:play — MSAB play role gate", () => {
     expect(verifyRoomManagerMock).not.toHaveBeenCalled();
     expect(context.redis.set).not.toHaveBeenCalled();
     expect(cb).toHaveBeenCalledWith({ success: false, error: Errors.NOT_IN_ROOM });
+  });
+});
+
+describe("audioPlayer:takeover — owner force-take", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects a non-owner admin and leaves the current DJ playing", async () => {
+    verifyRoomOwnerMock.mockResolvedValue({ allowed: false, error: Errors.NOT_AUTHORIZED });
+    const socket = createMockSocket(20); // admin
+    const { context, emitMock } = createTakeoverContext({
+      clientRoomId: "room-1",
+      currentPlayer: "10", // a different DJ is live
+    });
+    const handler = getTakeoverHandler(socket, context);
+
+    const cb = vi.fn();
+    await handler({ roomId: "room-1", title: "Song X", duration: 150 }, cb);
+
+    expect(verifyRoomOwnerMock).toHaveBeenCalledWith("room-1", "20", context);
+    expect(context.redis.set).not.toHaveBeenCalled(); // mutex untouched
+    expect(emitMock).not.toHaveBeenCalled(); // no revoke
+    expect(broadcastToRoomMock).not.toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledWith({ success: false, error: Errors.NOT_AUTHORIZED });
+  });
+
+  it("owner force-takes: reassigns mutex, targets revoke at displaced DJ, broadcasts stateChanged", async () => {
+    verifyRoomOwnerMock.mockResolvedValue({ allowed: true });
+    const socket = createMockSocket(10); // owner
+    const { context, emitMock } = createTakeoverContext({
+      clientRoomId: "room-1",
+      currentPlayer: "20", // displaced DJ
+      displacedSocketIds: ["sock-a", "sock-b"],
+    });
+    const handler = getTakeoverHandler(socket, context);
+
+    const cb = vi.fn();
+    await handler({ roomId: "room-1", title: "Owner Song", duration: 200 }, cb);
+
+    // Mutex force-overwritten (no NX argument).
+    expect(context.redis.set).toHaveBeenCalledWith(
+      "room:room-1:musicPlayer",
+      "10",
+      "EX",
+      7200,
+    );
+    // Targeted revoke to the displaced DJ's sockets in this room only.
+    expect(context.clientManager.getSocketIdsByUserInRoom).toHaveBeenCalledWith(20, "room-1");
+    expect(context.io.to).toHaveBeenCalledWith(["sock-a", "sock-b"]);
+    expect(emitMock).toHaveBeenCalledWith("audioPlayer:revoked", { roomId: "room-1", byUserId: 10 });
+    // Normal now-playing broadcast.
+    expect(broadcastToRoomMock).toHaveBeenCalledWith(
+      context.io,
+      "room-1",
+      "audioPlayer:stateChanged",
+      expect.objectContaining({ state: "playing", userId: 10, title: "Owner Song" }),
+      context.cascadeRelay,
+    );
+    expect(cb).toHaveBeenCalledWith({ success: true });
+  });
+
+  it("owner takes a free slot without emitting a revoke", async () => {
+    verifyRoomOwnerMock.mockResolvedValue({ allowed: true });
+    const socket = createMockSocket(10); // owner
+    const { context, emitMock } = createTakeoverContext({
+      clientRoomId: "room-1",
+      currentPlayer: null, // nobody playing
+    });
+    const handler = getTakeoverHandler(socket, context);
+
+    const cb = vi.fn();
+    await handler({ roomId: "room-1", title: "Owner Song", duration: 200 }, cb);
+
+    expect(context.redis.set).toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled(); // no displaced DJ → no revoke
+    expect(broadcastToRoomMock).toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledWith({ success: true });
   });
 });
 
