@@ -17,6 +17,7 @@ import {
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom, emitToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
+import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Redis key helpers
@@ -46,6 +47,12 @@ const playHandler = createHandler(
     const client = context.clientManager.getClient(socket.id);
     if (!client?.roomId || client.roomId !== roomId) {
       return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
+    // Only the room owner or an admin may start music playback
+    const authorization = await verifyRoomManager(roomId, String(userId), context);
+    if (!authorization.allowed) {
+      return { success: false, error: authorization.error };
     }
 
     // Acquire mutex — only one music player per room
