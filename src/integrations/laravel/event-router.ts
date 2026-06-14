@@ -20,6 +20,7 @@ import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
+import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { config } from "@src/config/index.js";
 
 /** Payload for auth.force_disconnect relay event */
@@ -30,6 +31,9 @@ interface ForceDisconnectPayload {
 }
 
 export class EventRouter {
+  /** Records app-scope slides so late joiners can replay them (see room:join). */
+  private readonly activeAppSlides: ActiveAppSlidesRepository;
+
   constructor(
     private readonly io: Server,
     private readonly userSocketRepo: UserSocketRepository,
@@ -37,7 +41,9 @@ export class EventRouter {
     private readonly logger: Logger,
     private readonly redis: Redis,
     private readonly roomStateRepo?: RoomStateRepository,
-  ) {}
+  ) {
+    this.activeAppSlides = new ActiveAppSlidesRepository(this.redis);
+  }
 
   /**
    * Route an event to appropriate Socket.IO targets
@@ -193,6 +199,21 @@ export class EventRouter {
         event.room_id !== null
       ) {
         this.syncRoomSettings(String(event.room_id), event.payload);
+      }
+
+      // REACT: record app-scope slides (room_id null = broadcast to every room)
+      // so a user joining a room mid-slide replays it from their join response.
+      if (
+        result.delivered &&
+        event.event === RELAY_EVENTS.slide.SLIDE_PLAY &&
+        event.room_id === null &&
+        (event.payload as { scope?: string }).scope === "app"
+      ) {
+        this.activeAppSlides
+          .record(event.payload)
+          .catch((err) =>
+            this.logger.warn({ err }, "Failed to record active app slide"),
+          );
       }
 
       return result;

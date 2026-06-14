@@ -269,6 +269,7 @@ describe("GiftHandler", () => {
       // Payload with an extra field that should NOT be leaked
       const payloadWithExtra = {
         ...payload,
+        batchId: "batch-abc",
         extraField: "should-not-be-emitted",
       };
       const sendGift = extractHandler(socket, "gift:send");
@@ -276,7 +277,9 @@ describe("GiftHandler", () => {
 
       const emittedPayload = socket._emit.mock.calls[0]?.[1];
       expect(emittedPayload).not.toHaveProperty("extraField");
+      expect(emittedPayload?.batchId).toBe("batch-abc");
       expect(Object.keys(emittedPayload!).sort()).toEqual([
+        "batchId",
         "giftId",
         "quantity",
         "recipientId",

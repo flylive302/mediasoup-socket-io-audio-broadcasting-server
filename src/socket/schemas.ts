@@ -191,6 +191,10 @@ export const sendGiftSchema = z.object({
   giftId: z.number().int().positive(),
   recipientId: z.number().int().positive(),
   quantity: z.number().int().positive().max(9999).default(1),
+  // Groups all per-recipient emits from a single send/combo press. Receivers
+  // coalesce events sharing a batchId into one full-screen playback, so a
+  // fan-out to N seats plays once while N separate combo presses play N times.
+  batchId: z.string().min(1).max(64).optional(),
 });
 
 export const prepareGiftSchema = z.object({

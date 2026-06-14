@@ -11,6 +11,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
+import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { performRoomLeave } from "@src/domains/room/room-leave.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
@@ -322,6 +323,13 @@ async function processJoin(
   // Origin's musicPlayer state wins for edges (per-region Redis again).
   const musicPlayer = originSnapshot ? originSnapshot.musicPlayer : localMusicPlayer;
 
+  // Late-joiner replay: any app-scope slide still inside its window plays for
+  // this joiner too (app slides show in *every* live room). Failure is
+  // non-fatal — a missed slide must never block the join.
+  const activeAppSlides = await new ActiveAppSlidesRepository(context.redis)
+    .getActive()
+    .catch(() => [] as unknown[]);
+
   return {
     rtpCapabilities,
     participants,
@@ -329,6 +337,7 @@ async function processJoin(
     lockedSeats,
     existingProducers,
     musicPlayer,
+    activeAppSlides,
     newCount,
     userId,
   };
@@ -423,6 +432,7 @@ export const joinRoomHandler = createHandler(
       lockedSeats: result.lockedSeats,
       existingProducers: result.existingProducers,
       musicPlayer: result.musicPlayer,
+      activeAppSlides: result.activeAppSlides,
     } as HandlerResult;
   },
 );

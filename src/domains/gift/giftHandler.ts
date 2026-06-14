@@ -84,6 +84,7 @@ export class GiftHandler {
           giftId: payload.giftId,
           recipientId: payload.recipientId,
           quantity: payload.quantity,
+          batchId: payload.batchId,
         }, context.cascadeRelay);
 
         // BL-001 FIX: Record room activity to prevent auto-close during active gifting
