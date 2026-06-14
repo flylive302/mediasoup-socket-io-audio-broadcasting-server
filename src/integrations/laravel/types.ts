@@ -129,11 +129,13 @@ export const RELAY_EVENTS = {
     FORCE_DISCONNECT: "auth.force_disconnect",
   },
 
-  /** Lucky draw: cashback results, room/app announcements */
+  /**
+   * Lucky draw: the sender's floating cashback multiplier. Big-win room/app
+   * announcements now flow through the unified slide overlay (`slide:play`),
+   * not lucky-specific events — see Laravel unified-slide-overlay (ADR 0009).
+   */
   lucky: {
     LUCKY_RESULT: "lucky:result",
-    LUCKY_ROOM_ANNOUNCEMENT: "lucky:room_announcement",
-    LUCKY_APP_ANNOUNCEMENT: "lucky:app_announcement",
   },
 
   /**
