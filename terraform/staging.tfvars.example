@@ -1,0 +1,38 @@
+# =============================================================================
+# FlyLive Audio — STAGING var file (template)
+# =============================================================================
+# Usage:
+#   cp staging.tfvars.example staging.tfvars   # then fill in the secrets
+#   AWS_PROFILE=flylive-staging terraform plan  -var-file=staging.tfvars -out=tfplan
+#   AWS_PROFILE=flylive-staging terraform apply tfplan
+#
+# staging.tfvars is gitignored (contains secrets). This .example is committed.
+# Secrets must EQUAL the staging Laravel Cloud env vars (see docs/deployment-migration-runbook.md §3):
+#   laravel_internal_key  == Laravel MSAB_INTERNAL_KEY (staging)
+#   jwt_secret            == Laravel MSAB_JWT_SECRET   (staging)
+# =============================================================================
+
+# --- Environment-specific (non-secret) ---
+environment     = "staging"
+audio_domain    = "audio.staging.flyliveapp.com"
+cors_origins    = "https://app.staging.flyliveapp.com"
+laravel_api_url = "https://app.staging.flyliveapp.com"
+
+ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
+
+# --- Cost lever (per-region) ---
+# Full replica = 2 (matches prod). To cut cost between test cycles, drop to 1
+# (or 0) and re-apply — keeps the GA/NLB/ACM stack intact so the next push to
+# `staging` still auto-deploys (terraform destroy would break deploy.yml).
+min_instances     = 2
+desired_instances = 2
+
+# --- Secrets (generate with: openssl rand -hex 32) ---
+jwt_secret           = "CHANGE_ME_64_hex"
+laravel_internal_key = "CHANGE_ME_64_hex"
+session_secret       = "CHANGE_ME_64_hex"
+redis_auth_token     = "CHANGE_ME_16_to_128_chars_no_@_/_or_quotes"
+
+# --- Cloudflare Realtime TURN (staging key from Cloudflare dashboard) ---
+cloudflare_turn_api_key = "CHANGE_ME"
+cloudflare_turn_key_id  = "CHANGE_ME"

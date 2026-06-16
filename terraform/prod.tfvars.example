@@ -1,0 +1,32 @@
+# =============================================================================
+# FlyLive Audio — PRODUCTION var file (template)
+# =============================================================================
+# Usage:
+#   cp prod.tfvars.example prod.tfvars   # then fill in the secrets
+#   AWS_PROFILE=flylive-prod terraform plan  -var-file=prod.tfvars -out=tfplan
+#   AWS_PROFILE=flylive-prod terraform apply tfplan
+#
+# prod.tfvars is gitignored (contains secrets). This .example is committed.
+# Secrets must EQUAL the production Laravel Cloud env vars (runbook §3):
+#   laravel_internal_key  == Laravel MSAB_INTERNAL_KEY (production)
+#   jwt_secret            == Laravel MSAB_JWT_SECRET   (production)
+# =============================================================================
+
+# --- Environment-specific (non-secret) ---
+# These match the variable defaults; listed explicitly so prod is self-documenting.
+environment     = "production"
+audio_domain    = "audio.flyliveapp.com"
+cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com"
+laravel_api_url = "https://app.flyliveapp.com"
+
+ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
+
+# --- Secrets (generate with: openssl rand -hex 32) ---
+jwt_secret           = "CHANGE_ME_64_hex"
+laravel_internal_key = "CHANGE_ME_64_hex"
+session_secret       = "CHANGE_ME_64_hex"
+redis_auth_token     = "CHANGE_ME_16_to_128_chars_no_@_/_or_quotes"
+
+# --- Cloudflare Realtime TURN (prod key from Cloudflare dashboard) ---
+cloudflare_turn_api_key = "CHANGE_ME"
+cloudflare_turn_key_id  = "CHANGE_ME"

@@ -8,6 +8,41 @@ variable "project_name" {
   default     = "flylive-audio"
 }
 
+variable "environment" {
+  description = "Deployment environment — used for the Environment tag only (cost allocation). Resource names are isolated by AWS account, not this value."
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment must be \"staging\" or \"production\"."
+  }
+}
+
+variable "cors_origins" {
+  description = "Comma-separated CORS origins the MSAB app accepts (the web frontend). Staging overrides with https://app.staging.flyliveapp.com."
+  type        = string
+  default     = "https://flyliveapp.com,https://app.flyliveapp.com"
+}
+
+variable "laravel_api_url" {
+  description = "Base URL the MSAB instances use to reach the Laravel backend. Staging overrides with the staging app origin."
+  type        = string
+  default     = "https://app.flyliveapp.com"
+}
+
+variable "min_instances" {
+  description = "ASG minimum instances per region. Default 2 for production HA (AUDIT-004). Staging may set 1 (or 0) between test cycles to cut cost without destroying the stack."
+  type        = number
+  default     = 2
+}
+
+variable "desired_instances" {
+  description = "ASG desired instances per region. Default 2 for production HA. Staging may lower between test cycles; keep >= min_instances."
+  type        = number
+  default     = 2
+}
+
 variable "aws_region" {
   description = "AWS region to deploy into"
   type        = string

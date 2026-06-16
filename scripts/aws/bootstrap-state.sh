@@ -2,16 +2,27 @@
 # =============================================================================
 # FlyLive Audio Server — Bootstrap Terraform State Backend
 # =============================================================================
-# Creates S3 bucket + DynamoDB table for remote Terraform state.
-# Run this ONCE before enabling the backend block in terraform/main.tf.
+# Creates the S3 bucket for remote Terraform state and writes terraform/backend.hcl
+# for the CURRENT AWS account. Run ONCE per account (staging and production).
+#
+# Locking uses S3 native lockfiles (terraform { backend "s3" { use_lockfile = true }})
+# — no DynamoDB table is required.
+#
+# Usage:
+#   AWS_PROFILE=flylive-staging ./scripts/aws/bootstrap-state.sh
+#   AWS_PROFILE=flylive-prod    ./scripts/aws/bootstrap-state.sh
 # =============================================================================
 
 set -euo pipefail
 
-REGION="ap-south-1"
-BUCKET_NAME="flylive-audio-tfstate-778477255323"
-DYNAMO_TABLE="flylive-audio-terraform-locks"
+REGION="${AWS_REGION:-ap-south-1}"
 
+# Account ID is derived from the active credentials — never hardcoded, so the same
+# script works in any account.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+BUCKET_NAME="flylive-audio-tfstate-${ACCOUNT_ID}"
+
+echo "🔎 Account: ${ACCOUNT_ID}  Region: ${REGION}"
 echo "🪣 Creating S3 bucket: $BUCKET_NAME"
 aws s3api create-bucket \
   --bucket "$BUCKET_NAME" \
@@ -39,19 +50,16 @@ aws s3api put-public-access-block \
 
 echo "🔒 Created S3 bucket with versioning + encryption + public access blocked"
 
-echo "📋 Creating DynamoDB table: $DYNAMO_TABLE"
-aws dynamodb create-table \
-  --table-name "$DYNAMO_TABLE" \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region "$REGION" \
-  2>/dev/null || echo "   Table already exists"
+# Write the account-specific backend config (gitignored).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_HCL="${SCRIPT_DIR}/../../terraform/backend.hcl"
+printf 'bucket = "%s"\n' "$BUCKET_NAME" > "$BACKEND_HCL"
+echo "📝 Wrote ${BACKEND_HCL}"
 
 echo ""
 echo "✅ State backend ready!"
 echo ""
 echo "Next steps:"
-echo "  1. Uncomment the backend \"s3\" block in terraform/main.tf"
-echo "  2. Run: cd terraform && terraform init -migrate-state"
-echo "  3. Confirm migration when prompted"
+echo "  cd terraform"
+echo "  terraform init -reconfigure -backend-config=backend.hcl"
+echo "  terraform plan -var-file=<staging|prod>.tfvars -out=tfplan"

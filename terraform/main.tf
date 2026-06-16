@@ -14,12 +14,13 @@ terraform {
     }
   }
 
-  # Remote state in S3 (created via bootstrap)
-  # Bucket is account-specific — provided at init time:
-  #   cp backend.hcl.example backend.hcl  (fill in your account ID)
-  #   terraform init -backend-config=backend.hcl
+  # Remote state in S3 (created via scripts/aws/bootstrap-state.sh).
+  # The bucket is account-specific and MUST be supplied at init time — never
+  # hardcoded here (the literal below is an intentional placeholder):
+  #   ./scripts/aws/bootstrap-state.sh           # writes backend.hcl for this account
+  #   terraform init -reconfigure -backend-config=backend.hcl
   backend "s3" {
-    bucket       = "flylive-audio-tfstate-013453151767" # ← change this
+    bucket       = "REPLACED_BY_backend.hcl" # override via -backend-config=backend.hcl
     key          = "phase1/terraform.tfstate"
     region       = "ap-south-1"
     use_lockfile = true
@@ -39,7 +40,7 @@ provider "aws" {
     tags = {
       Project     = var.project_name
       ManagedBy   = "terraform"
-      Environment = "production"
+      Environment = var.environment
       Region      = "mumbai"
     }
   }
@@ -54,7 +55,7 @@ provider "aws" {
     tags = {
       Project     = var.project_name
       ManagedBy   = "terraform"
-      Environment = "production"
+      Environment = var.environment
       Region      = "frankfurt"
     }
   }
@@ -68,7 +69,7 @@ provider "aws" {
     tags = {
       Project     = var.project_name
       ManagedBy   = "terraform"
-      Environment = "production"
+      Environment = var.environment
     }
   }
 }
@@ -203,14 +204,15 @@ module "sns" {
   laravel_internal_key = var.laravel_internal_key
 
   # Fan-out to BOTH regional MSAB endpoints via custom domains (not raw NLB DNS names).
-  # SNS verifies TLS certificates — the ACM cert covers *.audio.flyliveapp.com but NOT
+  # SNS verifies TLS certificates — the ACM cert covers *.${audio_domain} but NOT
   # the raw NLB hostnames (*.elb.amazonaws.com). Using raw NLB URLs causes
   # SubscriptionConfirmation to fail permanently (SNS rejects the TLS handshake).
   # GA would route to nearest region only — we need ALL regions to receive every event.
   # Map keys are static region names so for_each is resolvable at plan time.
+  # Derived from var.audio_domain so staging (audio.staging.flyliveapp.com) works unchanged.
   msab_endpoint_urls = {
-    mumbai    = "https://mumbai.audio.flyliveapp.com/api/events"
-    frankfurt = "https://frankfurt.audio.flyliveapp.com/api/events"
+    mumbai    = "https://mumbai.${var.audio_domain}/api/events"
+    frankfurt = "https://frankfurt.${var.audio_domain}/api/events"
   }
 }
 
@@ -283,6 +285,8 @@ module "autoscaling_mumbai" {
   jwt_secret              = var.jwt_secret
   session_secret          = var.session_secret
   audio_domain            = var.audio_domain
+  cors_origins            = var.cors_origins
+  laravel_api_url         = var.laravel_api_url
   cascade_enabled         = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
@@ -292,9 +296,11 @@ module "autoscaling_mumbai" {
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
   ice_stun_urls          = var.ice_stun_urls
 
-  # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
-  min_instances     = 2
-  desired_instances = 2
+  # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
+  # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
+  # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
+  min_instances     = var.min_instances
+  desired_instances = var.desired_instances
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer_mumbai.target_group_arn_suffix
@@ -325,6 +331,8 @@ module "autoscaling_frankfurt" {
   jwt_secret              = var.jwt_secret
   session_secret          = var.session_secret
   audio_domain            = var.audio_domain
+  cors_origins            = var.cors_origins
+  laravel_api_url         = var.laravel_api_url
   cascade_enabled         = true
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
@@ -334,9 +342,11 @@ module "autoscaling_frankfurt" {
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
   ice_stun_urls          = var.ice_stun_urls
 
-  # AUDIT-004 FIX: HA — always run 2 instances to eliminate single point of failure
-  min_instances     = 2
-  desired_instances = 2
+  # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
+  # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
+  # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
+  min_instances     = var.min_instances
+  desired_instances = var.desired_instances
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer_frankfurt.target_group_arn_suffix

@@ -6,6 +6,9 @@
 .terraform.lock.hcl
 terraform.tfvars
 *.auto.tfvars
+# Per-environment var files contain secrets — never commit. Templates (*.tfvars.example) are safe.
+*.tfvars
+!*.tfvars.example
 crash.log
 crash.*.log
 override.tf

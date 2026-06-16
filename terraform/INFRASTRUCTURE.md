@@ -337,14 +337,24 @@ Scaling is handled by CPU target tracking (60%) — the connection alarms are fo
 
 ## 3. Critical Review
 
-### 3.1 🔴 BLOCKER — S3 Backend Hardcoded to Old Account ID
+### 3.1 ✅ RESOLVED — S3 Backend No Longer Hardcoded to an Account ID
 
-**File:** `main.tf:19`  
-**Issue:** `bucket = "flylive-audio-tfstate-778477255323"` embeds the old AWS account ID. A new account cannot access this bucket, and `terraform init` will fail immediately.
+**History:** the S3 backend embedded a dead account ID, and the repo was
+**inconsistent** — `bootstrap-state.sh`/this doc referenced `778477255323` while
+`main.tf`/`backend.hcl` referenced `013453151767` (both accounts gone). There is no
+tfstate to migrate — this is a greenfield apply.
 
-**Fix (Phase 4 step 0):**
-1. Create a new S3 bucket in the new account (see § 4.4)
-2. Change the bucket name in `main.tf` OR use `-backend-config` override at init time
+**Fixed:** `main.tf`'s backend `bucket` is now a placeholder (`REPLACED_BY_backend.hcl`)
+that **must** be overridden via `-backend-config=backend.hcl`.
+`scripts/aws/bootstrap-state.sh` derives the account ID from
+`aws sts get-caller-identity`, creates `flylive-audio-tfstate-<account>`, and writes
+`backend.hcl` automatically — so the same script works in any account. Run per
+account:
+```bash
+AWS_PROFILE=flylive-staging ./scripts/aws/bootstrap-state.sh   # or flylive-prod
+cd terraform && terraform init -reconfigure -backend-config=backend.hcl
+```
+See the cross-cutting runbook `docs/deployment-migration-runbook.md` (root) §5.1, §7.5.
 
 ---
 
