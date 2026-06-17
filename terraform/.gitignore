@@ -11,6 +11,9 @@ terraform.tfvars
 !*.tfvars.example
 crash.log
 crash.*.log
+# Saved plan files (binary, may embed sensitive values)
+tfplan
+*.tfplan
 override.tf
 override.tf.json
 *_override.tf

@@ -15,8 +15,10 @@
 # --- Environment-specific (non-secret) ---
 environment     = "staging"
 audio_domain    = "audio.staging.flyliveapp.com"
-cors_origins    = "https://app.staging.flyliveapp.com"
-laravel_api_url = "https://app.staging.flyliveapp.com"
+# cors_origins = the browser ORIGIN that opens the audio socket = the FRONTEND host
+# (src/auth/middleware.ts allowlists Origin; prod mirrors apex + app.). NOT the backend alone.
+cors_origins    = "https://staging.flyliveapp.com,https://app.staging.flyliveapp.com"
+laravel_api_url = "https://app.staging.flyliveapp.com"  # MSAB→Laravel internal calls (backend host)
 
 ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
 

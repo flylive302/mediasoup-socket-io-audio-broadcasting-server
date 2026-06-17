@@ -427,23 +427,17 @@ See the cross-cutting runbook `docs/deployment-migration-runbook.md` (root) §5.
 
 ---
 
-### 3.7 🟡 MISSING VALIDATION — Empty Session Secret Not Caught
+### 3.7 ✅ RESOLVED (verified 2026-06-17) — Empty Session Secret Now Validated
 
-**File:** `variables.tf:82–84`, `modules/autoscaling/user-data.sh:113–127`  
-**Issue:** `session_secret` has `default = ""`. The bootstrap validation checks JWT, LARAVEL_INTERNAL_KEY, and REDIS_AUTH — but NOT session_secret. If the operator omits this variable, the app starts with an empty session signing key, making all sessions trivially forgeable.
-
-**Fix:** Add `session_secret` to the validation loop in user-data.sh.
+**File:** `modules/autoscaling/user-data.sh:133`  
+**Was:** `session_secret` was not in the bootstrap fail-fast loop → empty key = forgeable sessions.
+**Now:** the validation loop includes `"SESSION_SECRET:$SECRET_SESSION"` and aborts bootstrap if empty. No action needed.
 
 ---
 
-### 3.8 🟡 STALE CODE — `compute` Module Is Orphaned
+### 3.8 ✅ RESOLVED (verified 2026-06-17) — Orphaned `compute` Module Deleted
 
-**File:** `modules/compute/` (directory exists)  
-**Issue:** This module was the original single-EC2 deployment. It is not referenced anywhere in `main.tf`. Comments say it ran "alongside" the ASG during cutover, but the cutover is complete. The directory is dead code.
-
-**Risk:** Future readers may confuse it for active infrastructure.
-
-**Fix:** Delete `modules/compute/`.
+**File:** `modules/compute/` — **no longer exists** (already deleted). No `module "compute"` reference in any `.tf`. No action needed.
 
 ---
 
