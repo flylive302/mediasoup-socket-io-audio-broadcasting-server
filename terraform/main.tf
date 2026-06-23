@@ -1,7 +1,7 @@
 # =============================================================================
 # FlyLive Audio Server — Terraform Root Configuration
 # =============================================================================
-# Phase 2: Multi-region deployment (Mumbai, UAE, Frankfurt)
+# Phase 2: Multi-region deployment (Mumbai, Frankfurt; Singapore ap-southeast-1 planned 3rd region)
 # =============================================================================
 
 terraform {

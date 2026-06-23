@@ -2,7 +2,6 @@ import type { Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
-import { emitToRoom } from "@src/shared/room-emit.js";
 import { authMiddleware } from "@src/auth/middleware.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
@@ -23,6 +22,8 @@ import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
+import { PresenceTracker } from "@src/domains/room/presence-tracker.js";
+import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
 
 // Events module (Laravel pub/sub integration)
 import {
@@ -76,8 +77,13 @@ export async function initializeSocket(
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
 
-  // Initialize auto-close system
-  const autoCloseService = new AutoCloseService(redis);
+  // realtime-01: presence is the authoritative source of "who is in a Room".
+  // Built from roomManager.state so it can heal the advisory integer + TTL.
+  const presenceTracker = new PresenceTracker(io, roomManager.state);
+  roomManager.setPresenceTracker(presenceTracker);
+
+  // Initialize auto-close system (presence-gated, not integer-gated)
+  const autoCloseService = new AutoCloseService(redis, presenceTracker);
   const autoCloseJob = new AutoCloseJob(
     autoCloseService,
     async (roomId: string, reason: string) => {
@@ -107,6 +113,7 @@ export async function initializeSocket(
     laravelClient,
     autoCloseService,
     autoCloseJob,
+    presenceTracker,
     seatRepository,
     userSocketRepository,
     userRoomRepository,
@@ -186,64 +193,34 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, userRoomRepository, roomManager, logger: log, cascadeRelay, appContext } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, logger: log, appContext } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
   const client = clientManager.getClient(socket.id);
+  // Capture the room BEFORE finalizeLeave (which clears client.roomId) so the
+  // lifecycle-hook context below still carries it.
+  const disconnectRoomId = client?.roomId ?? null;
 
   if (client?.roomId) {
     const roomId = client.roomId;
-    const roomUserId = String(client.userId);
 
-    // RT-002 FIX: Close all transports synchronously (mediasoup close() is sync)
-    // Single room lookup instead of per-transport
-    const cluster = roomManager.getRoom(roomId);
-    if (cluster) {
-      for (const [transportId] of client.transports) {
-        try {
-          const transport = cluster.getTransport(transportId);
-          if (transport && !transport.closed) {
-            transport.close();
-          }
-        } catch {
-          // Worker may already be dead
-        }
-      }
-    }
+    // realtime-01: a dead socket is a full leave. Run the ONE symmetric teardown
+    // (transports, seat, client/user room, activity, seat:cleared + room:userLeft,
+    // presence-authoritative count → Laravel is_live/participant_count). This is
+    // the path that previously skipped the Laravel update entirely (Cause A / H3:
+    // disconnect is the dominant mobile leave, so Rooms showed phantom-live).
+    // There is no seat-retention grace: a dead socket means the user is gone;
+    // transient blips are absorbed by the socket pingTimeout (disconnect does not
+    // fire until the socket is genuinely dead).
+    await finalizeLeave(socket, appContext, roomId, { viaDisconnect: true });
 
-    // Connection lost (network drop, app close, tab close) = full immediate
-    // leave. There is NO seat-retention grace: a dead socket means the user is
-    // gone, so clear their seat now and broadcast it, exactly like an explicit
-    // room:leave. Transient blips are already absorbed by the socket-level
-    // pingTimeout (the `disconnect` event does not fire until the socket is
-    // genuinely dead); fast app-close cleanup comes from the client's
-    // `pagehide` → room:leave. (Supersedes the F-6/F-37 seat-grace model after
-    // the retain-on-reconnect requirement was dropped.)
-    const seatResult = await appContext.seatRepository.leaveSeat(roomId, roomUserId);
-
-    await Promise.allSettled([
-      userSocketRepository.unregisterSocket(client.userId, socket.id),
-      userRoomRepository.clearUserRoom(client.userId),
-      roomManager.state.adjustParticipantCount(roomId, -1),
-    ]);
-
-    // Emit seat:cleared before room:userLeft, matching performRoomLeave's order.
-    // F-41: leaveSeat clears EVERY seat the user held; clear them all on clients.
-    if (seatResult.success) {
-      const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
-      for (const seatIndex of cleared) {
-        emitToRoom(
-          socket,
-          roomId,
-          "seat:cleared",
-          { seatIndex, userId: client.userId },
-          cascadeRelay,
-        );
-      }
-    }
-
-    emitToRoom(socket, roomId, "room:userLeft", { userId: client.userId }, cascadeRelay);
+    // Disconnect-only: also drop the cross-instance socket registration.
+    await userSocketRepository
+      .unregisterSocket(client.userId, socket.id)
+      .catch((err) =>
+        log.error({ err, socketId: socket.id }, "unregisterSocket on disconnect failed"),
+      );
   } else if (client?.userId) {
     // No room but has userId — just clean up socket registration
     await Promise.allSettled([
@@ -258,7 +235,8 @@ async function handleDisconnect(
     const disconnectCtx: DisconnectContext = {
       socket,
       userId: client.userId,
-      roomId: client.roomId ?? null,
+      // finalizeLeave clears client.roomId — use the value captured up-front.
+      roomId: disconnectRoomId,
       reason,
     };
 

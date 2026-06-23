@@ -27,6 +27,21 @@ export class RoomStateRepository {
         return state.participantCount
       `,
     });
+    // realtime-01: reconcile participantCount to the authoritative socket-presence
+    // count AND refresh the TTL. Update-if-exists only (returns nil if the key is
+    // gone) so a heartbeat/leave reconcile that races closeRoom's delete() can
+    // NEVER resurrect a zombie room:state key (see delete()'s B-3 note).
+    this.redis.defineCommand("reconcileParticipants", {
+      numberOfKeys: 1,
+      lua: `
+        local data = redis.call('GET', KEYS[1])
+        if not data then return nil end
+        local state = cjson.decode(data)
+        state.participantCount = tonumber(ARGV[1])
+        redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), cjson.encode(state))
+        return state.participantCount
+      `,
+    });
     this.commandDefined = true;
   }
 
@@ -68,6 +83,29 @@ export class RoomStateRepository {
       key,
       delta.toString(),
       Date.now().toString(),
+      this.TTL.toString(),
+    );
+
+    return result as number | null;
+  }
+
+  /**
+   * realtime-01: set participantCount to an authoritative absolute value (the
+   * real socket-presence count) and refresh the 24h TTL — used by the presence
+   * reconcile path. Returns the new count, or null if the room:state key no
+   * longer exists (never re-creates it — see the Lua note in ensureCommand).
+   */
+  async reconcileParticipantCount(
+    roomId: string,
+    count: number,
+  ): Promise<number | null> {
+    const key = `${this.PREFIX}${roomId}`;
+    this.ensureCommand();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (this.redis as any).reconcileParticipants(
+      key,
+      count.toString(),
       this.TTL.toString(),
     );
 

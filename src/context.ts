@@ -11,6 +11,7 @@ import type {
   AutoCloseJob,
 } from "./domains/room/auto-close/index.js";
 import type { SeatRepository } from "./domains/seat/seat.repository.js";
+import type { PresenceTracker } from "./domains/room/presence-tracker.js";
 import type { UserSocketRepository } from "./integrations/laravel/user-socket.repository.js";
 import type { UserRoomRepository } from "./integrations/laravel/user-room.repository.js";
 
@@ -31,6 +32,7 @@ export interface AppContext {
   laravelClient: LaravelClient;
   autoCloseService: AutoCloseService;
   autoCloseJob: AutoCloseJob;
+  presenceTracker: PresenceTracker;
   seatRepository: SeatRepository;
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;

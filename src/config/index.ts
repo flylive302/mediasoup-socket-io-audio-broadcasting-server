@@ -71,6 +71,10 @@ const configSchema = z.object({
   // AUDIT-021 FIX: increased from 30s to 120s — 30s was too aggressive during network blips
   ROOM_INACTIVITY_TIMEOUT_MS: z.coerce.number().default(120_000), // 2 minutes
   ROOM_AUTO_CLOSE_POLL_INTERVAL_MS: z.coerce.number().default(30_000), // 30 seconds
+  // realtime-01: a confirmed-empty room (real socket presence == 0) must stay
+  // empty for at least this long before auto-close fires, so a transient zero
+  // between poll ticks (reconnect-in-progress) never ejects a returning user.
+  ROOM_PRESENCE_GRACE_MS: z.coerce.number().default(15_000), // 15 seconds
 
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),

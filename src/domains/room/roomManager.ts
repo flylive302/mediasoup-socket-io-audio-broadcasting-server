@@ -12,6 +12,7 @@ import { config } from "@src/config/index.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { RoomRegistry } from "./room-registry.js";
+import type { PresenceTracker } from "./presence-tracker.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 export class RoomManager {
@@ -25,6 +26,8 @@ export class RoomManager {
   private cascadeCoordinator: CascadeCoordinator | null = null;
   private cascadeRelay: CascadeRelay | null = null;
   private roomRegistry: RoomRegistry | null = null;
+  // realtime-01: reconciles each owned Room's advisory count + TTL on heartbeat.
+  private presenceTracker: PresenceTracker | null = null;
 
   // F-34: periodic CAS ownership heartbeat (short TTL is refreshed here so a
   // live-but-idle origin keeps its claim; a crashed origin's claim expires).
@@ -69,6 +72,19 @@ export class RoomManager {
   }
 
   /**
+   * realtime-01: late-bind the PresenceTracker so the periodic heartbeat can
+   * reconcile each owned Room's advisory participant integer to real socket
+   * presence AND refresh its room:state TTL. The reconcile is what fixes both
+   * the long-lived-low-churn TTL-expiry leak (Cause C) and the sticky
+   * under-count drift (Cause B: an owned Room that truly emptied gets its
+   * integer reset to 0, so the auto-close candidate filter can find it).
+   */
+  setPresenceTracker(tracker: PresenceTracker): void {
+    this.presenceTracker = tracker;
+    this.startOwnershipHeartbeat();
+  }
+
+  /**
    * F-34: every ~30s refresh the CAS ownership claim for every room hosted on
    * this instance. `refreshOwnership` is a no-op (Lua-guarded) for any room
    * this instance no longer owns, so iterating all local rooms is safe.
@@ -76,14 +92,23 @@ export class RoomManager {
   private startOwnershipHeartbeat(): void {
     if (this.ownershipHeartbeat) return;
     this.ownershipHeartbeat = setInterval(() => {
+      if (this.rooms.size === 0) return;
       const registry = this.roomRegistry;
-      if (!registry || this.rooms.size === 0) return;
+      const tracker = this.presenceTracker;
       const selfId = config.INSTANCE_ID;
       for (const roomId of this.rooms.keys()) {
         registry
-          .refreshOwnership(roomId, selfId)
+          ?.refreshOwnership(roomId, selfId)
           .catch((err) =>
             logger.warn({ err, roomId }, "Ownership heartbeat refresh failed"),
+          );
+        // realtime-01: heal advisory count + refresh room:state TTL for owned
+        // Rooms (Lua is update-if-exists, so a reconcile racing closeRoom's
+        // delete() can never resurrect the key).
+        tracker
+          ?.reconcile(roomId)
+          .catch((err) =>
+            logger.warn({ err, roomId }, "Presence reconcile on heartbeat failed"),
           );
       }
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
@@ -321,6 +346,8 @@ export class RoomManager {
 
     // SEAT-004 FIX: Clean up owner cache to prevent memory leak
     clearRoomOwner(roomId);
+    // realtime-01: drop presence grace bookkeeping so the map can't leak.
+    this.presenceTracker?.forget(roomId);
 
     this.rooms.delete(roomId);
     this.syncRoomGauge();
