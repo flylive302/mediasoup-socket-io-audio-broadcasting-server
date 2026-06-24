@@ -75,6 +75,10 @@ const configSchema = z.object({
   // empty for at least this long before auto-close fires, so a transient zero
   // between poll ticks (reconnect-in-progress) never ejects a returning user.
   ROOM_PRESENCE_GRACE_MS: z.coerce.number().default(15_000), // 15 seconds
+  // realtime-02: collapse MSAB→Laravel Room status churn to ≤1 update per Room
+  // per this window (trailing-edge). Bounds the internal status POST rate so a
+  // join/leave storm can no longer flood (and 429-drop against) the backend.
+  ROOM_STATUS_COALESCE_WINDOW_MS: z.coerce.number().default(3_000), // 3 seconds
 
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),

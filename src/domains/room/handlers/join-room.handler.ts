@@ -352,20 +352,17 @@ function afterJoin(
 ) {
   const { roomId } = payload;
 
-  // Laravel update is fire-and-forget
+  // realtime-02: coalesce the join churn — buffer the latest status; at most one
+  // update per Room per window reaches Laravel (was a direct fire-and-forget POST
+  // on every join, which flooded the shared internal rate limiter under load).
   if (result.newCount !== null) {
-    context.laravelClient
-      .updateRoomStatus(roomId, {
-        is_live: true,
-        participant_count: result.newCount,
-        hosting_region: config.AWS_REGION,
-        hosting_ip:
-          config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null,
-        hosting_port: config.PORT,
-      })
-      .catch((err) =>
-        logger.error({ err, roomId }, "Laravel status update failed"),
-      );
+    context.statusCoalescer.submit(roomId, {
+      is_live: true,
+      participant_count: result.newCount,
+      hosting_region: config.AWS_REGION,
+      hosting_ip: config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null,
+      hosting_port: config.PORT,
+    });
   }
 
   // Broadcast to room (cascade-aware)

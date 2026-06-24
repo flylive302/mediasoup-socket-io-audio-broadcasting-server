@@ -13,6 +13,7 @@ import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinato
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { RoomRegistry } from "./room-registry.js";
 import type { PresenceTracker } from "./presence-tracker.js";
+import type { StatusCoalescer } from "./status-coalescer.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 export class RoomManager {
@@ -39,6 +40,7 @@ export class RoomManager {
     redis: Redis,
     private readonly io: SocketServer,
     private readonly laravelClient: LaravelClient,
+    private readonly statusCoalescer: StatusCoalescer,
     private readonly seatRepository?: SeatRepository,
   ) {
     this.stateRepo = new RoomStateRepository(redis);
@@ -107,6 +109,27 @@ export class RoomManager {
         // delete() can never resurrect the key).
         tracker
           ?.reconcile(roomId)
+          .then((present) => {
+            // realtime-02: the reconcile awaited fetchSockets — closeRoom may have
+            // finished (rooms.delete + forget) while it was in flight. If the Room
+            // is gone, a submit here would re-buffer AFTER forget and flush a stale
+            // is_live:true on the next window → phantom-live. Bail if it closed.
+            if (!this.rooms.has(roomId)) return;
+            // realtime-02: also refresh the Laravel-side activity TTL with a
+            // COALESCED keep-alive, so a long-running (>24h) idle broadcast with
+            // no join/leave churn stays correctly tracked rather than going
+            // stale. Coalesced → at most one status POST per Room per window.
+            this.statusCoalescer.submit(roomId, {
+              is_live: present > 0,
+              participant_count: present,
+              hosting_region: present > 0 ? config.AWS_REGION : null,
+              hosting_ip:
+                present > 0
+                  ? config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null
+                  : null,
+              hosting_port: present > 0 ? config.PORT : null,
+            });
+          })
           .catch((err) =>
             logger.warn({ err, roomId }, "Presence reconcile on heartbeat failed"),
           );
@@ -304,9 +327,12 @@ export class RoomManager {
         .catch((err) => logger.error({ err, roomId }, "Failed to relay room close event"));
     }
 
-    // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel)
-    this.laravelClient
-      .updateRoomStatus(roomId, {
+    // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel).
+    // realtime-02: flushNow sends the close immediately AND drops any buffered
+    // participant update for this Room, so a coalesced/heartbeat is_live:true
+    // can't land after the close and resurrect a dead Room.
+    this.statusCoalescer
+      .flushNow(roomId, {
         is_live: false,
         participant_count: 0,
         ended_at: new Date().toISOString(),
@@ -350,6 +376,10 @@ export class RoomManager {
     this.presenceTracker?.forget(roomId);
 
     this.rooms.delete(roomId);
+    // realtime-02: the Room is now out of the map (no heartbeat can re-submit);
+    // drop any status entry a heartbeat buffered mid-cleanup so the next window
+    // tick can't flush a stale is_live:true for this closed Room.
+    this.statusCoalescer.forget(roomId);
     this.syncRoomGauge();
   }
 

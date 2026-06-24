@@ -30,7 +30,7 @@ function harness(members: Set<string>) {
 
   const presenceTracker = new PresenceTracker(io, state);
 
-  const updateRoomStatus = vi.fn(async () => {});
+  const submit = vi.fn();
   const recordActivity = vi.fn(async () => {});
   const clearUserRoom = vi.fn(async () => {});
   const clearClientRoom = vi.fn();
@@ -46,7 +46,7 @@ function harness(members: Set<string>) {
     autoCloseService: { recordActivity },
     userRoomRepository: { clearUserRoom },
     presenceTracker,
-    laravelClient: { updateRoomStatus },
+    statusCoalescer: { submit },
     cascadeRelay: null,
   } as unknown as AppContext;
 
@@ -60,13 +60,14 @@ function harness(members: Set<string>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  return { context, socket, updateRoomStatus, recordActivity, clearUserRoom, clearClientRoom, emit };
+  return { context, socket, submit, recordActivity, clearUserRoom, clearClientRoom, emit };
 }
 
 async function captureStatus(members: Set<string>, viaDisconnect: boolean) {
   const h = harness(members);
   const count = await finalizeLeave(h.socket, h.context, ROOM, { viaDisconnect });
-  return { count, status: h.updateRoomStatus.mock.calls[0]?.[1], h };
+  // realtime-02: the leave path now buffers the status via the coalescer.
+  return { count, status: h.submit.mock.calls[0]?.[1], h };
 }
 
 describe("finalizeLeave — symmetric leave/disconnect (Cause A / H3)", () => {

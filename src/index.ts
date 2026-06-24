@@ -21,7 +21,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller } =
+    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -93,6 +93,10 @@ const start = async () => {
         autoCloseJob.stop();
         roomManager.stopOwnershipHeartbeat();
         revocationPoller.stop();
+
+        // realtime-02: stop the status coalescer AFTER the heartbeat so no new
+        // entries can be buffered, then flush whatever is pending to Laravel.
+        await statusCoalescer.stop();
 
         if (giftHandler) {
           await giftHandler.stop();

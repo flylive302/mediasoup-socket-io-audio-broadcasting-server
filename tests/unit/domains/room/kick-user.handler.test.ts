@@ -80,6 +80,7 @@ function createMockContext() {
     laravelClient: {
       updateRoomStatus: vi.fn().mockResolvedValue(undefined),
     },
+    statusCoalescer: { submit: vi.fn() },
     cascadeRelay: {},
   } as any;
 }

@@ -23,6 +23,7 @@ import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 // Auto-close system
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 import { PresenceTracker } from "@src/domains/room/presence-tracker.js";
+import { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
 
 // Events module (Laravel pub/sub integration)
@@ -70,10 +71,14 @@ export async function initializeSocket(
   // or we can instantiate one singleton here.
   const laravelClient = new LaravelClient(logger);
 
+  // realtime-02: coalesce Room status churn → ≤1 update/Room/window to Laravel.
+  const statusCoalescer = new StatusCoalescer(laravelClient, logger);
+  statusCoalescer.start();
+
   // Initialize seat repository (Redis-backed for horizontal scaling)
   const seatRepository = new SeatRepository(redis);
 
-  const roomManager = new RoomManager(workerManager, redis, io, laravelClient, seatRepository);
+  const roomManager = new RoomManager(workerManager, redis, io, laravelClient, statusCoalescer, seatRepository);
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redis);
 
@@ -111,6 +116,7 @@ export async function initializeSocket(
     rateLimiter,
     giftHandler,
     laravelClient,
+    statusCoalescer,
     autoCloseService,
     autoCloseJob,
     presenceTracker,

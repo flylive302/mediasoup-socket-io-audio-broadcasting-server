@@ -18,6 +18,7 @@ import { createMetricsRoutes } from "./metrics.js";
 import fs from "fs";
 
 import type { RoomManager } from "@src/domains/room/roomManager.js";
+import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
@@ -38,6 +39,7 @@ export interface BootstrapResult {
   roomRegistry: RoomRegistry;
   pipeManager: PipeManager;
   revocationPoller: RevocationBackfillPoller;
+  statusCoalescer: StatusCoalescer;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -87,7 +89,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   });
 
   const appContext = await initializeSocket(io, pubClient);
-  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter } = appContext;
+  const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, statusCoalescer } = appContext;
 
   // SFU Cascade — conditionally wire coordinator and relay
   const roomRegistry = new RoomRegistry(pubClient, logger);
@@ -160,6 +162,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     roomRegistry,
     pipeManager,
     revocationPoller,
+    statusCoalescer,
   };
 }
 

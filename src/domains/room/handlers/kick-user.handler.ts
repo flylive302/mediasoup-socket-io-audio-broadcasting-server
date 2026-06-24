@@ -103,20 +103,16 @@ export const kickUserHandler = createHandler(
       context.userRoomRepository.clearUserRoom(targetUserId),
     ]);
 
-    // 7. Update Laravel (fire-and-forget)
+    // 7. Update Laravel (realtime-02: coalesced — ≤1 status update/Room/window)
     if (newCount !== null) {
       const isLive = newCount > 0;
-      context.laravelClient
-        .updateRoomStatus(roomId, {
-          is_live: isLive,
-          participant_count: newCount,
-          hosting_region: isLive ? config.AWS_REGION : null,
-          hosting_ip: isLive ? (config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null) : null,
-          hosting_port: isLive ? config.PORT : null,
-        })
-        .catch((err) =>
-          logger.error({ err, roomId }, "Laravel kick status update failed"),
-        );
+      context.statusCoalescer.submit(roomId, {
+        is_live: isLive,
+        participant_count: newCount,
+        hosting_region: isLive ? config.AWS_REGION : null,
+        hosting_ip: isLive ? (config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null) : null,
+        hosting_port: isLive ? config.PORT : null,
+      });
     }
 
     // 8. Broadcast to remaining room members (cascade-aware)

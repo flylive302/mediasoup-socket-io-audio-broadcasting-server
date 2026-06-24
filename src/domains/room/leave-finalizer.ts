@@ -41,7 +41,7 @@ export async function finalizeLeave(
     autoCloseService,
     userRoomRepository,
     presenceTracker,
-    laravelClient,
+    statusCoalescer,
     cascadeRelay,
   } = context;
 
@@ -90,24 +90,21 @@ export async function finalizeLeave(
 
   // Presence-authoritative count (leaver now excluded), and heal the advisory
   // integer to it. THIS is the symmetric backend update both paths share.
+  // realtime-02: coalesced — at most one status update per Room per window, so a
+  // leave storm (e.g. mass disconnect) can no longer 429-flood Laravel. A truly
+  // empty Room's is_live:false rides the same window; the actual Room teardown is
+  // driven by AutoCloseEvaluator/closeRoom (which flushes immediately), not here.
   const newCount = await presenceTracker.reconcile(roomId);
   const isLive = newCount > 0;
-  laravelClient
-    .updateRoomStatus(roomId, {
-      is_live: isLive,
-      participant_count: newCount,
-      hosting_region: isLive ? config.AWS_REGION : null,
-      hosting_ip: isLive
-        ? config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null
-        : null,
-      hosting_port: isLive ? config.PORT : null,
-    })
-    .catch((err) =>
-      logger.error(
-        { err, roomId, viaDisconnect: options.viaDisconnect },
-        "Laravel leave status update failed",
-      ),
-    );
+  statusCoalescer.submit(roomId, {
+    is_live: isLive,
+    participant_count: newCount,
+    hosting_region: isLive ? config.AWS_REGION : null,
+    hosting_ip: isLive
+      ? config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null
+      : null,
+    hosting_port: isLive ? config.PORT : null,
+  });
 
   logger.debug(
     {

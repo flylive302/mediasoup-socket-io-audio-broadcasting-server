@@ -112,6 +112,7 @@ function createMockContext(remoteSockets: unknown[] = []) {
     laravelClient: {
       updateRoomStatus: vi.fn().mockResolvedValue(undefined),
     },
+    statusCoalescer: { submit: vi.fn() },
     redis: {},
     cascadeRelay: null,
   } as any;
