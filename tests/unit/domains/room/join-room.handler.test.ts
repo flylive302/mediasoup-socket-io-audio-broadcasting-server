@@ -86,7 +86,9 @@ function createMockContext(remoteSockets: unknown[] = []) {
     },
     roomManager: {
       getRoom: vi.fn().mockReturnValue(null),
-      getOrCreateRoom: vi.fn().mockResolvedValue({ router: { rtpCapabilities: {} } }),
+      getOrCreateRoom: vi
+        .fn()
+        .mockResolvedValue({ router: { rtpCapabilities: {} } }),
       state: {
         get: vi.fn().mockResolvedValue(null),
         save: vi.fn().mockResolvedValue(undefined),
@@ -135,7 +137,12 @@ describe("joinRoomHandler", () => {
       await handler({ roomId: "room-1" }, vi.fn());
 
       expect(emitToRoomMock).toHaveBeenCalledOnce();
-      const [, , , payload] = emitToRoomMock.mock.calls[0] as [unknown, unknown, unknown, { user: Record<string, unknown> }];
+      const [, , , payload] = emitToRoomMock.mock.calls[0] as [
+        unknown,
+        unknown,
+        unknown,
+        { user: Record<string, unknown> },
+      ];
       expect(payload.user).not.toHaveProperty("phone");
       expect(payload.user).not.toHaveProperty("email");
     });
@@ -143,7 +150,12 @@ describe("joinRoomHandler", () => {
     it("includes date_of_birth", async () => {
       await handler({ roomId: "room-1" }, vi.fn());
 
-      const [, , , payload] = emitToRoomMock.mock.calls[0] as [unknown, unknown, unknown, { user: Record<string, unknown> }];
+      const [, , , payload] = emitToRoomMock.mock.calls[0] as [
+        unknown,
+        unknown,
+        unknown,
+        { user: Record<string, unknown> },
+      ];
       expect(payload.user.date_of_birth).toBe("1990-01-01");
     });
   });
@@ -151,15 +163,96 @@ describe("joinRoomHandler", () => {
   describe("join snapshot", () => {
     it("includes date_of_birth for each existing participant", async () => {
       const remoteUser = makeUser({ id: 99, date_of_birth: "1985-05-15" });
-      const ctx = createMockContext([{ id: "remote-1", data: { user: remoteUser } }]);
+      const ctx = createMockContext([
+        { id: "remote-1", data: { user: remoteUser } },
+      ]);
       const h = joinRoomHandler(socket, ctx);
       const cb = vi.fn();
 
       await h({ roomId: "room-1" }, cb);
 
-      const result = cb.mock.calls[0]?.[0] as { participants: Array<{ date_of_birth: string | null }> };
+      const result = cb.mock.calls[0]?.[0] as {
+        participants: Array<{ date_of_birth: string | null }>;
+      };
       expect(result.participants).toHaveLength(1);
       expect(result.participants[0]?.date_of_birth).toBe("1985-05-15");
+    });
+  });
+
+  // Ghost-cluster guard: a pre-existing local cluster must be backed by valid
+  // ownership (origin) or edge registration; otherwise it is a leftover that
+  // would short-circuit ownership resolution and cause same-region split-brain.
+  describe("ghost-cluster guard", () => {
+    function makeGuardContext(opts: {
+      owner: string | null;
+      isEdgeRoom: boolean;
+    }) {
+      const ctx = createMockContext();
+      // A leftover cluster is present locally.
+      ctx.roomManager.getRoom = vi
+        .fn()
+        .mockReturnValue({ router: { rtpCapabilities: {} } });
+      ctx.roomManager.evictLocalRoom = vi.fn().mockResolvedValue(undefined);
+      ctx.roomRegistry = {
+        getOwner: vi.fn().mockResolvedValue(opts.owner),
+        claimOwnership: vi.fn().mockResolvedValue({ won: true, owner: "self" }),
+        registerOrigin: vi.fn().mockResolvedValue(undefined),
+        refreshOwnership: vi.fn().mockResolvedValue(undefined),
+      };
+      ctx.cascadeCoordinator = {
+        isEdgeRoom: vi.fn().mockReturnValue(opts.isEdgeRoom),
+        handleCrossRegionJoin: vi.fn().mockResolvedValue({ isEdge: false }),
+      };
+      return ctx;
+    }
+
+    it("evicts a ghost cluster when another instance owns the room and we are not an edge", async () => {
+      const ctx = makeGuardContext({
+        owner: "other-instance",
+        isEdgeRoom: false,
+      });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(ctx.roomManager.evictLocalRoom).toHaveBeenCalledWith("room-1");
+      // After eviction it must fall through to ownership resolution (re-claim CAS).
+      expect(ctx.roomRegistry.claimOwnership).toHaveBeenCalledWith(
+        "room-1",
+        "self",
+      );
+    });
+
+    it("evicts a ghost cluster when the ownership key is expired/unset and we are not an edge", async () => {
+      const ctx = makeGuardContext({ owner: null, isEdgeRoom: false });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(ctx.roomManager.evictLocalRoom).toHaveBeenCalledWith("room-1");
+    });
+
+    it("keeps the cluster (no eviction) when this instance owns the room", async () => {
+      const ctx = makeGuardContext({ owner: "self", isEdgeRoom: false });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(ctx.roomManager.evictLocalRoom).not.toHaveBeenCalled();
+      // Owns it → no re-CAS churn.
+      expect(ctx.roomRegistry.claimOwnership).not.toHaveBeenCalled();
+    });
+
+    it("keeps the cluster (no eviction) when this instance is a registered edge", async () => {
+      const ctx = makeGuardContext({
+        owner: "other-instance",
+        isEdgeRoom: true,
+      });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(ctx.roomManager.evictLocalRoom).not.toHaveBeenCalled();
     });
   });
 });

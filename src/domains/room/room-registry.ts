@@ -63,18 +63,43 @@ export class RoomRegistry {
    * is fully initialized. Edges that lose the claim must poll getOrigin()
    * to wait for the winner's cluster to come up.
    */
-  async claimOwnership(roomId: string, instanceId: string): Promise<ClaimResult> {
+  async claimOwnership(
+    roomId: string,
+    instanceId: string,
+  ): Promise<ClaimResult> {
     const key = `${KEY_PREFIX}${roomId}:owner`;
-    const set = await this.redis.set(key, instanceId, "EX", OWNER_TTL_SECONDS, "NX");
+    const set = await this.redis.set(
+      key,
+      instanceId,
+      "EX",
+      OWNER_TTL_SECONDS,
+      "NX",
+    );
 
     if (set === "OK") {
-      this.logger.debug({ roomId, instanceId }, "RoomRegistry: ownership claimed");
+      this.logger.debug(
+        { roomId, instanceId },
+        "RoomRegistry: ownership claimed",
+      );
       return { won: true, owner: instanceId };
     }
 
     const currentOwner = (await this.redis.get(key)) ?? instanceId;
-    this.logger.debug({ roomId, instanceId, currentOwner }, "RoomRegistry: ownership claim lost");
+    this.logger.debug(
+      { roomId, instanceId, currentOwner },
+      "RoomRegistry: ownership claim lost",
+    );
     return { won: false, owner: currentOwner };
+  }
+
+  /**
+   * Read the current CAS owner of a room WITHOUT claiming it. Returns the owning
+   * instanceId, or null if the ownership key is unset/expired. Used by the join
+   * handler to validate that a pre-existing local cluster is backed by real
+   * ownership (origin) and is not a ghost left by an incomplete edge teardown.
+   */
+  async getOwner(roomId: string): Promise<string | null> {
+    return this.redis.get(`${KEY_PREFIX}${roomId}:owner`);
   }
 
   /**
@@ -124,8 +149,15 @@ export class RoomRegistry {
         // Corrupt prior value — fall through and overwrite with fresh info.
       }
     }
-    await this.redis.setex(key, TTL_SECONDS, JSON.stringify({ ...info, listenerCount }));
-    this.logger.debug({ roomId, instanceId: info.instanceId }, "RoomRegistry: origin registered");
+    await this.redis.setex(
+      key,
+      TTL_SECONDS,
+      JSON.stringify({ ...info, listenerCount }),
+    );
+    this.logger.debug(
+      { roomId, instanceId: info.instanceId },
+      "RoomRegistry: origin registered",
+    );
   }
 
   /** Get origin info for a room */

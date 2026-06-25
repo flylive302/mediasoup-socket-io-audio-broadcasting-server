@@ -58,7 +58,10 @@ export class RoomManager {
    * Late-bind cascade services after bootstrap.
    * Called from server.ts when CASCADE_ENABLED is true.
    */
-  setCascadeServices(coordinator: CascadeCoordinator, relay: CascadeRelay): void {
+  setCascadeServices(
+    coordinator: CascadeCoordinator,
+    relay: CascadeRelay,
+  ): void {
     this.cascadeCoordinator = coordinator;
     this.cascadeRelay = relay;
   }
@@ -131,7 +134,10 @@ export class RoomManager {
             });
           })
           .catch((err) =>
-            logger.warn({ err, roomId }, "Presence reconcile on heartbeat failed"),
+            logger.warn(
+              { err, roomId },
+              "Presence reconcile on heartbeat failed",
+            ),
           );
       }
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
@@ -246,14 +252,22 @@ export class RoomManager {
         { err, roomId },
         "Room init failed after cluster create — tearing down to avoid ghost room",
       );
-      await cluster.close().catch((closeErr) =>
-        logger.error({ err: closeErr, roomId }, "Cluster close during ghost-room cleanup failed"),
-      );
+      await cluster
+        .close()
+        .catch((closeErr) =>
+          logger.error(
+            { err: closeErr, roomId },
+            "Cluster close during ghost-room cleanup failed",
+          ),
+        );
       if (this.roomRegistry) {
         await this.roomRegistry
           .cleanup(roomId)
           .catch((rrErr) =>
-            logger.error({ err: rrErr, roomId }, "CAS release during ghost-room cleanup failed"),
+            logger.error(
+              { err: rrErr, roomId },
+              "CAS release during ghost-room cleanup failed",
+            ),
           );
       }
       throw err;
@@ -292,7 +306,10 @@ export class RoomManager {
     const results = await Promise.allSettled(
       orphanedRooms.map((roomId) =>
         this.closeRoom(roomId, "worker_died").catch((err) => {
-          logger.error({ err, roomId, workerPid }, "Error closing orphaned room");
+          logger.error(
+            { err, roomId, workerPid },
+            "Error closing orphaned room",
+          );
           // Even if closeRoom fails, ensure we remove from local map
           this.rooms.delete(roomId);
           this.syncRoomGauge();
@@ -324,7 +341,9 @@ export class RoomManager {
     if (this.cascadeRelay?.hasRemotes(roomId)) {
       this.cascadeRelay
         .relayToRemote(roomId, "room:closed", closePayload)
-        .catch((err) => logger.error({ err, roomId }, "Failed to relay room close event"));
+        .catch((err) =>
+          logger.error({ err, roomId }, "Failed to relay room close event"),
+        );
     }
 
     // 2. Notify Laravel (fire-and-forget — don't block mediasoup cleanup on Laravel).
@@ -354,18 +373,22 @@ export class RoomManager {
     }
     if (this.cascadeCoordinator) {
       cleanupOps.push(
-        this.cascadeCoordinator.cleanup(roomId).catch((err) =>
-          logger.error({ err, roomId }, "Cascade cleanup failed"),
-        ),
+        this.cascadeCoordinator
+          .cleanup(roomId)
+          .catch((err) =>
+            logger.error({ err, roomId }, "Cascade cleanup failed"),
+          ),
       );
     }
     // B-1: Release CAS ownership claim so another instance can re-claim if a
     // new room with this id appears later (e.g., user re-opens after closing).
     if (this.roomRegistry) {
       cleanupOps.push(
-        this.roomRegistry.cleanup(roomId).catch((err) =>
-          logger.error({ err, roomId }, "RoomRegistry cleanup failed"),
-        ),
+        this.roomRegistry
+          .cleanup(roomId)
+          .catch((err) =>
+            logger.error({ err, roomId }, "RoomRegistry cleanup failed"),
+          ),
       );
     }
     await Promise.all(cleanupOps);
@@ -386,5 +409,31 @@ export class RoomManager {
   // ROOM-PERF-002 FIX: Synchronous — Map.get() has no async work
   getRoom(roomId: string): RoomMediaCluster | undefined {
     return this.rooms.get(roomId);
+  }
+
+  /**
+   * Local-only eviction of a room's mediasoup cluster from this process.
+   *
+   * Unlike closeRoom(), this performs NO shared-state mutation: it does not emit
+   * room:closed, does not notify Laravel, does not delete the shared room:state,
+   * and — critically — does not release the CAS ownership key (which this
+   * instance does not own for a ghost/edge room; releasing it would orphan the
+   * real origin). Used to drop a stale/ghost cluster (e.g. an edge whose origin
+   * closed but whose cluster was never removed) so a subsequent join re-runs
+   * ownership resolution instead of being short-circuited by the leftover cluster.
+   */
+  async evictLocalRoom(roomId: string): Promise<void> {
+    const cluster = this.rooms.get(roomId);
+    if (!cluster) return;
+    // Remove from the map first so a concurrent getRoom() can't hand out a
+    // cluster that is mid-teardown.
+    this.rooms.delete(roomId);
+    this.presenceTracker?.forget(roomId);
+    await cluster.close();
+    this.syncRoomGauge();
+    logger.info(
+      { roomId },
+      "Evicted local room cluster (ghost/edge — no shared-state mutation)",
+    );
   }
 }

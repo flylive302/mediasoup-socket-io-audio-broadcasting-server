@@ -4,7 +4,10 @@
  * Migrated to createHandler() for consistent validation, error handling,
  * and metrics. Uses GATE → EXECUTE → REACT pipeline separation.
  */
-import { createHandler, type HandlerResult } from "@src/shared/handler.utils.js";
+import {
+  createHandler,
+  type HandlerResult,
+} from "@src/shared/handler.utils.js";
 import { joinRoomSchema } from "@src/socket/schemas.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
@@ -36,8 +39,36 @@ async function processJoin(
     roomRegistry,
   } = context;
 
+  // selfId is INSTANCE_ID (identity, used for CAS ownership comparisons).
+  const selfId = config.INSTANCE_ID;
+
   // Try to get/create the room locally first
   let cluster = roomManager.getRoom(roomId);
+
+  // Ghost-cluster guard (same-region split-brain prevention). A pre-existing
+  // local cluster is only legitimate if THIS instance owns the room via CAS
+  // (origin) or is a registered cascade edge. A leftover cluster — e.g. an edge
+  // whose origin closed but whose mediasoup cluster lingered in roomManager.rooms
+  // — must NOT short-circuit the ownership/edge resolution below. Otherwise a
+  // reconnect that the NLB routes to this instance is served on an orphaned
+  // island: its room:userJoined / seat:updated broadcasts use .local + cascade
+  // relay, and with no registered relay peer they reach NOBODY on the real
+  // origin (the reconnecting user becomes invisible to everyone else while still
+  // seeing them via the adapter-backed join snapshot). Drop the ghost and let the
+  // CAS/edge path re-resolve ownership cleanly.
+  if (cluster && roomRegistry) {
+    const owner = await roomRegistry.getOwner(roomId);
+    const ownedByMe = owner === selfId;
+    const isRegisteredEdge = cascadeCoordinator?.isEdgeRoom(roomId) ?? false;
+    if (!ownedByMe && !isRegisteredEdge) {
+      logger.warn(
+        { roomId, owner, selfId },
+        "Evicting ghost room cluster (no valid ownership) before join",
+      );
+      await roomManager.evictLocalRoom(roomId);
+      cluster = undefined;
+    }
+  }
 
   // Cross-Region Cascade Check (Laravel-discovered, between regions)
   if (!cluster && cascadeCoordinator) {
@@ -61,11 +92,10 @@ async function processJoin(
   // getOrCreateRoom() and end up running independent mediasoup routers for the
   // same room — producers on instance A unreachable to listeners on instance B.
   //
-  // selfId is INSTANCE_ID (identity, used for CAS comparisons); the registry's
-  // `ip` field is PUBLIC_IP (reachability, used by edges to construct the
-  // origin's base URL). These were the same value historically; they are
-  // intentionally distinct now.
-  const selfId = config.INSTANCE_ID;
+  // The registry's `ip` field is PUBLIC_IP (reachability, used by edges to
+  // construct the origin's base URL); selfId (INSTANCE_ID, defined above) is
+  // identity for CAS comparisons. These were the same value historically; they
+  // are intentionally distinct now.
   if (!cluster && roomRegistry) {
     const claim = await roomRegistry.claimOwnership(roomId, selfId);
 
@@ -114,9 +144,11 @@ async function processJoin(
   // Refresh ownership TTL on every join so long-running celebrity broadcasts
   // don't hit the 24h orphan window. No-op (via Lua check) if we're not the owner.
   if (roomRegistry) {
-    roomRegistry.refreshOwnership(roomId, selfId).catch((err) =>
-      logger.warn({ err, roomId }, "Failed to refresh room ownership TTL"),
-    );
+    roomRegistry
+      .refreshOwnership(roomId, selfId)
+      .catch((err) =>
+        logger.warn({ err, roomId }, "Failed to refresh room ownership TTL"),
+      );
   }
 
   const rtpCapabilities = cluster.router?.rtpCapabilities;
@@ -165,7 +197,11 @@ async function processJoin(
     vip_level: number;
     date_of_birth: string | null;
     isSpeaker: boolean;
-    equipped_badges?: { slot_position: number; badge_id: number; image_url: string | null }[];
+    equipped_badges?: {
+      slot_position: number;
+      badge_id: number;
+      image_url: string | null;
+    }[];
   }[] = [];
   const existingProducers: { producerId: string; userId: number }[] = [];
 
@@ -244,7 +280,9 @@ async function processJoin(
   // B-1 Stage 2k: snapshot of origin's seat + music state for the same
   // reason — Redis is per-region.
   let originSnapshot: Awaited<
-    ReturnType<NonNullable<typeof cascadeCoordinator>["fetchOriginRoomSnapshot"]>
+    ReturnType<
+      NonNullable<typeof cascadeCoordinator>["fetchOriginRoomSnapshot"]
+    >
   > | null = null;
   if (cascadeCoordinator?.isEdgeRoom(roomId)) {
     const [piped, originParticipants, snapshot] = await Promise.all([
@@ -321,7 +359,9 @@ async function processJoin(
   ]);
 
   // Origin's musicPlayer state wins for edges (per-region Redis again).
-  const musicPlayer = originSnapshot ? originSnapshot.musicPlayer : localMusicPlayer;
+  const musicPlayer = originSnapshot
+    ? originSnapshot.musicPlayer
+    : localMusicPlayer;
 
   // Late-joiner replay: any app-scope slide still inside its window plays for
   // this joiner too (app slides show in *every* live room). Failure is
