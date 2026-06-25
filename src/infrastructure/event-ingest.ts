@@ -107,6 +107,26 @@ export const createEventIngestRoutes = (
         }
       }
 
+      // SNS "Notification" envelope — delivered when the subscription does NOT
+      // have Raw Message Delivery enabled (the SNS default). The actual event
+      // JSON is a string in the `Message` field, not at the top level, so the
+      // schema below would 422 every event. Unwrap it. Raw-delivery
+      // subscriptions and direct Laravel POSTs have no envelope and skip this.
+      if (
+        raw !== null &&
+        typeof raw === "object" &&
+        (raw as Record<string, unknown>).Type === "Notification" &&
+        typeof (raw as Record<string, unknown>).Message === "string"
+      ) {
+        try {
+          raw = JSON.parse((raw as { Message: string }).Message);
+        } catch {
+          return reply
+            .code(400)
+            .send({ status: "error", message: "Invalid SNS Message JSON" });
+        }
+      }
+
       const result = EventPayloadSchema.safeParse(raw);
       if (!result.success) {
         fastify.log.warn(

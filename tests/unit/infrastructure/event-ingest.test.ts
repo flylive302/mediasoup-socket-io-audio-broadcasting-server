@@ -87,3 +87,77 @@ describe("event-ingest backpressure (F-40)", () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+describe("event-ingest SNS delivery formats", () => {
+  let app: FastifyInstance;
+  let routedEvents: unknown[];
+
+  beforeEach(async () => {
+    routedEvents = [];
+    const eventRouter = {
+      route: vi.fn(async (event: unknown) => {
+        routedEvents.push(event);
+        return { delivered: true, targetCount: 1 };
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    app = Fastify({ logger: false });
+    await app.register(createEventIngestRoutes(eventRouter));
+    await app.ready();
+  });
+
+  it("routes a direct/raw-delivery event (no SNS envelope)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: { "x-internal-key": "test-internal-key" },
+      payload: makeEvent(1),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(routedEvents).toHaveLength(1);
+    expect((routedEvents[0] as { event: string }).event).toBe("e-1");
+  });
+
+  it("unwraps an SNS Notification envelope (Raw Message Delivery OFF)", async () => {
+    // SNS cannot send custom headers, so the internal key arrives as ?key=.
+    const envelope = {
+      Type: "Notification",
+      MessageId: "m-1",
+      TopicArn: "arn:aws:sns:ap-south-1:000:flylive",
+      Message: JSON.stringify(makeEvent(2)),
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events?key=test-internal-key",
+      headers: {
+        "content-type": "text/plain",
+        "x-amz-sns-message-type": "Notification",
+      },
+      payload: JSON.stringify(envelope),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(routedEvents).toHaveLength(1);
+    expect((routedEvents[0] as { event: string }).event).toBe("e-2");
+  });
+
+  it("422s an SNS Notification whose Message is not a valid event", async () => {
+    const envelope = {
+      Type: "Notification",
+      Message: JSON.stringify({ not: "an-event" }),
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events?key=test-internal-key",
+      headers: { "content-type": "text/plain" },
+      payload: JSON.stringify(envelope),
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(routedEvents).toHaveLength(0);
+  });
+});
