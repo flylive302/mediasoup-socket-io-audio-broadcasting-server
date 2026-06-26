@@ -223,7 +223,8 @@ module "sns" {
 module "iam" {
   source = "./modules/iam"
 
-  project_name = var.project_name
+  project_name       = var.project_name
+  ecr_repository_arn = module.ecr.repository_arn
 }
 
 # =============================================================================

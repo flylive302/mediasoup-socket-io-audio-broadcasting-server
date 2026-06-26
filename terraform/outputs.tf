@@ -75,3 +75,19 @@ output "ecr_repository_url" {
   description = "ECR repository URL — used by GitHub Actions to push images"
   value       = module.ecr.repository_url
 }
+
+# --- GitHub Actions Deploy User (CI/CD) ---
+# After apply, paste these into GitHub → repo Settings → Environments →
+# aws-production → secrets (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+#   terraform output github_actions_access_key_id
+#   terraform output -raw github_actions_secret_access_key
+output "github_actions_access_key_id" {
+  description = "AWS_ACCESS_KEY_ID for the aws-production GitHub environment"
+  value       = module.iam.github_actions_access_key_id
+}
+
+output "github_actions_secret_access_key" {
+  description = "AWS_SECRET_ACCESS_KEY for the aws-production GitHub environment"
+  value       = module.iam.github_actions_secret_access_key
+  sensitive   = true
+}

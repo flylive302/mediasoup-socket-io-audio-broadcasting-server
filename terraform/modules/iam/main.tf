@@ -179,3 +179,87 @@ resource "aws_iam_instance_profile" "msab" {
     Project = var.project_name
   }
 }
+
+# =============================================================================
+# CI/CD Deploy User — GitHub Actions (deploy.yml)
+# =============================================================================
+# Long-lived access key used by .github/workflows/deploy.yml to:
+#   - build-and-push: authenticate + push the MSAB image to ECR (ap-south-1)
+#   - deploy: trigger an ASG instance refresh in both regions
+# Scoped to exactly those actions (NOT terraform-deployer, which is over-privileged).
+# The old account's manually-created CI user was lost in the greenfield restart;
+# this re-creates it as code. Access key is surfaced as a sensitive root output to
+# paste into GitHub → Settings → Environments → aws-production secrets.
+# =============================================================================
+
+resource "aws_iam_user" "github_actions" {
+  name = "${var.project_name}-github-actions"
+
+  tags = {
+    Project = var.project_name
+    Purpose = "ci-cd-deploy"
+  }
+}
+
+resource "aws_iam_access_key" "github_actions" {
+  user = aws_iam_user.github_actions.name
+}
+
+# --- ECR push: authenticate + push image (build-and-push job) ---
+resource "aws_iam_user_policy" "github_actions_ecr_push" {
+  name = "${var.project_name}-gha-ecr-push"
+  user = aws_iam_user.github_actions.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # GetAuthorizationToken is account-wide and does not support resource scoping.
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        # Push + cache-pull + verify, scoped to the MSAB repository only.
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:DescribeImages",
+        ]
+        Resource = var.ecr_repository_arn
+      }
+    ]
+  })
+}
+
+# --- ASG instance refresh: roll new image into both regions (deploy job) ---
+resource "aws_iam_user_policy" "github_actions_asg_refresh" {
+  name = "${var.project_name}-gha-asg-refresh"
+  user = aws_iam_user.github_actions.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Autoscaling Describe* / refresh APIs do not support resource-level scoping.
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeInstanceRefreshes",
+          "autoscaling:DescribeLifecycleHooks",
+          "autoscaling:DescribeScalingActivities",
+          "autoscaling:StartInstanceRefresh",
+          "autoscaling:CancelInstanceRefresh",
+          "autoscaling:CompleteLifecycleAction",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
