@@ -72,20 +72,41 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       credentials: true,
     },
     adapter: createAdapter(pubClient, subClient),
-    // Detect a dead/offline socket fast so the disconnect-driven full leave
-    // (seat clear + room:userLeft) fires promptly. socket.io defaults
-    // (25s interval / 20s timeout) left an offline user lingering ~45s.
-    // 5s/5s → a genuinely gone client is detected within ~10s. Policy is
-    // "connection lost = leave" (no seat retention), so we tune for prompt
-    // removal. Trade-off: a network stall >5s is treated as gone and the user
-    // re-joins on return — acceptable (and intended) under the no-retention rule.
-    pingInterval: 5_000,
-    pingTimeout: 5_000,
-    // connectionStateRecovery intentionally DISABLED. Under the no-retention
-    // policy a reconnect must be a CLEAN fresh join (re-emit room:join, rebuild
-    // transports, reconcile a fresh snapshot) — not a silent session resume that
-    // leaves the client half-restored after the server already cleared its seat
-    // (which stranded kicked/offline users in an "audio seat loading" state).
+    // realtime-04 (ADR 0002 §Decision item 2): relax the heartbeat so a brief
+    // background freeze SURVIVES instead of forcing a full rejoin.
+    //
+    // Background: a backgrounded mobile client (Chrome freeze / OS suspension)
+    // cannot service the WS read or emit a PONG. The previous 5s/5s tuning
+    // declared such a client dead in ~10s, so every short background blip ran
+    // the disconnect-driven full leave and the user had to rebuild + rejoin on
+    // return (audit `13-fe-background-audio-pwa.md` §3a). At socket.io's
+    // documented defaults (25s interval / 20s timeout) a frozen-then-resumed
+    // client within ~40s is never declared dead → its seat + presence are
+    // retained and there is no visible reconnect. This is the highest-leverage
+    // fix for the listener-drop / forced-rejoin symptom.
+    //
+    // Trade-off (accepted in ADR 0002 §Consequences): a genuinely-gone hard-kill
+    // (no `pagehide`) now lingers up to ~45s before the disconnect-driven leave,
+    // and the auto-close grace (ROOM_PRESENCE_GRACE_MS, 15s) starts only after
+    // presence reaches zero — so a fully-abandoned room can show live ~60s worst
+    // case. The common foreground-close case is unaffected: `pagehide` still
+    // emits `room:leave` immediately (useRoomLifecycle.ts), so only hard-kills
+    // pay the extra delay. ADR 0002 explicitly accepts this for launch.
+    pingInterval: 25_000,
+    pingTimeout: 20_000,
+    // connectionStateRecovery REMAINS DISABLED — deliberately deferred, not an
+    // oversight. CSR would let a dropped transport resume its session, but it
+    // still fires `disconnect` on the server, so `finalizeLeave` clears the
+    // seat in Redis BEFORE the client recovers; CSR then restores socket.io
+    // rooms/buffers but NOT our application seat state → the client is left
+    // "half-restored" (the F-41 hazard, and the "audio seat loading" strand).
+    // Safe CSR requires a per-user deferred-leave grace (defer finalizeLeave,
+    // cancel on re-join) — that per-user grace does not exist yet (realtime-01
+    // added ROOM-level auto-close grace only). The relaxed heartbeat above
+    // already delivers AC3's behaviour (a brief freeze survives without a
+    // visible reconnect) without reopening the seat-race surface that
+    // realtime-01/02 just closed. Enable CSR only alongside the deferred-leave
+    // grace + presence-count regression tests.
   });
 
   const appContext = await initializeSocket(io, pubClient);
