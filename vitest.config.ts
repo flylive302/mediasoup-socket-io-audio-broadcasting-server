@@ -13,5 +13,8 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     root: ".",
+    // Hermetic env: provide the few config vars required at import time so the
+    // suite doesn't depend on a developer `.env` (absent in CI). See tests/setup.ts.
+    setupFiles: ["./tests/setup.ts"],
   },
 });
