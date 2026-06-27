@@ -86,7 +86,12 @@ jobs:
             ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64
+          # Multi-arch: amd64 (c7i, current prod) + arm64 (c8g/Graviton, realtime-06).
+          # Pushes a manifest list so either instance arch pulls its native image.
+          # NOTE: the arm64 leg compiles the mediasoup C++ worker under QEMU on the
+          # amd64 runner — slow. If build time approaches the job limit, move the
+          # arm64 build to a native arm runner + `docker manifest` merge.
+          platforms: linux/amd64,linux/arm64
 
       - name: Verify image in ECR
         run: |

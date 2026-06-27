@@ -16,6 +16,22 @@ variable "instance_type" {
   default     = "c7i.xlarge"
 }
 
+variable "instance_architecture" {
+  description = <<-EOT
+    CPU architecture for the AMI + container image: "amd64" (x86_64, default) or "arm64" (Graviton).
+    Must match the instance_type family: c7i/c7g pairs vs c8g (arm64). The default keeps the exact
+    amd64 Ubuntu AMI used historically — do NOT flip to arm64 in prod until a multi-arch MSAB image
+    is published and validated on staging (realtime-06 HITL gate).
+  EOT
+  type        = string
+  default     = "amd64"
+
+  validation {
+    condition     = contains(["amd64", "arm64"], var.instance_architecture)
+    error_message = "instance_architecture must be \"amd64\" or \"arm64\"."
+  }
+}
+
 variable "ssh_public_key_path" {
   description = "Path to SSH public key for EC2 access"
   type        = string

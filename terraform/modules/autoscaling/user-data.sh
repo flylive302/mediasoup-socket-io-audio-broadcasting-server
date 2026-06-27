@@ -23,7 +23,9 @@ systemctl start docker
 
 # --- Install AWS CLI v2 (for ECR login + lifecycle hook completion) ---
 apt-get install -y unzip
-curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+# Arch-aware: uname -m yields x86_64 / aarch64, which match the AWS CLI zip names exactly.
+# Lets one user-data script serve both amd64 and arm64 (Graviton) AMIs.
+curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "/tmp/awscliv2.zip"
 cd /tmp && unzip -q awscliv2.zip && ./aws/install && cd /
 rm -rf /tmp/awscliv2.zip /tmp/aws
 

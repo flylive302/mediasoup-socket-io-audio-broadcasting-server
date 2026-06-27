@@ -17,13 +17,16 @@ terraform {
 }
 
 # --- Get latest Ubuntu 24.04 AMI ---
+# Arch token is substituted from var.instance_architecture. The default ("amd64")
+# resolves to the exact same AMI name pattern used historically, so the default
+# path produces no launch-template churn.
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-${var.instance_architecture}-server-*"]
   }
 
   filter {

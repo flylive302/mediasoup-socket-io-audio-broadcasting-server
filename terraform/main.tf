@@ -276,6 +276,7 @@ module "autoscaling_mumbai" {
   region                  = "ap-south-1"
   project_name            = var.project_name
   instance_type           = var.instance_type
+  instance_architecture   = var.instance_architecture
   ssh_public_key_path     = var.ssh_public_key_path
   instance_profile_name   = module.iam.instance_profile_name
   msab_security_group_id  = module.networking_mumbai.msab_security_group_id
@@ -322,6 +323,7 @@ module "autoscaling_frankfurt" {
   region                  = "eu-central-1"
   project_name            = var.project_name
   instance_type           = var.instance_type
+  instance_architecture   = var.instance_architecture
   ssh_public_key_path     = var.ssh_public_key_path
   instance_profile_name   = module.iam.instance_profile_name
   msab_security_group_id  = module.networking_frankfurt.msab_security_group_id
