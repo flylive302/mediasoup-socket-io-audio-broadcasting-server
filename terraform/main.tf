@@ -188,6 +188,11 @@ module "ecr" {
   source = "./modules/ecr"
 
   project_name = var.project_name
+
+  # realtime-06: replicate pushed images into every consuming region so each
+  # region's instances pull from a LOCAL registry (no cross-region pull from Mumbai).
+  # Frankfurt is the only other consuming region today; add Singapore here when it lands.
+  replication_destination_regions = ["eu-central-1"]
 }
 
 # =============================================================================

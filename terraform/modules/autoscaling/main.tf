@@ -208,7 +208,7 @@ resource "aws_autoscaling_lifecycle_hook" "launching" {
   name                   = "msab-launch-hook"
   autoscaling_group_name = aws_autoscaling_group.msab.name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  heartbeat_timeout      = 600 # 10 minutes — covers cold Frankfurt start (cross-region ECR pull)
+  heartbeat_timeout      = 600 # 10 minutes — covers cold start (Docker install + image pull + health)
   default_result         = "CONTINUE"
 }
 

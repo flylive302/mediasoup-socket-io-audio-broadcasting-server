@@ -95,17 +95,21 @@ APP_DIR="/opt/msab"
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 
-# Extract ECR registry from repo URL (everything before the first /)
-ECR_REGISTRY=$(echo "${ecr_repo_url}" | cut -d'/' -f1)
+# realtime-06: pull from THIS region's local ECR registry (images are replicated
+# to every consuming region by aws_ecr_replication_configuration). The repo name is
+# identical across regions, so rewrite only the region segment of the source URL.
+# PRECONDITION: the image must already be replicated into $ECR_REGION before this
+# runs, else the pull fails → ELB health-fail → ASG replace loop. (Sequence:
+# apply replication → push to Mumbai → confirm in eu-central-1 → then this change.)
+ECR_REGION="${region}"
+ECR_REPO_URL=$(echo "${ecr_repo_url}" | sed -E "s/dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/dkr.ecr.$ECR_REGION.amazonaws.com/")
+ECR_REGISTRY=$(echo "$ECR_REPO_URL" | cut -d'/' -f1)
 
-# Authenticate Docker with ECR (uses instance IAM role)
-# ECR repo lives in ap-south-1 only (single-region registry).
-# All regions authenticate and pull cross-region from this endpoint.
-ECR_REGION="ap-south-1"
+# Authenticate Docker with the local ECR registry (uses instance IAM role)
 aws ecr get-login-password --region "$ECR_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-# Pull the pinned image (cross-region pull from $ECR_REGION if instance is in a different region)
-docker pull ${ecr_repo_url}:${image_tag}
+# Pull the pinned image from the local (in-region) registry
+docker pull $ECR_REPO_URL:${image_tag}
 
 # --- Fetch Secrets from SSM Parameter Store ---
 # Secrets are KMS-encrypted in SSM and never written to disk.
@@ -235,7 +239,7 @@ docker run -d \
   -e "SESSION_SECRET=$SECRET_SESSION" \
   -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
   -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
-  ${ecr_repo_url}:${image_tag}
+  $ECR_REPO_URL:${image_tag}
 
 # --- Install CloudWatch Agent (ship Docker JSON logs to CloudWatch Logs) ---
 wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb \

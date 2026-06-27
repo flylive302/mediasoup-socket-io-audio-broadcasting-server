@@ -122,9 +122,9 @@ variable "min_instances" {
 }
 
 variable "max_instances" {
-  description = "Maximum number of instances in the ASG"
+  description = "Maximum number of instances in the ASG. Raised 15→50 for 50k-user headroom (realtime-06). NOTE: 50×instance_type vCPU/region must fit the account's On-Demand Standard vCPU quota — confirm before relying on the ceiling."
   type        = number
-  default     = 15
+  default     = 50
 }
 
 variable "desired_instances" {

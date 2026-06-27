@@ -826,6 +826,51 @@ A  audio  1.2.3.4   DNS only
 A  audio  5.6.7.8   DNS only
 ```
 
+### 5.2.1 Per-region NLB CNAMEs (realtime-06 — REQUIRED for SNS fan-out)
+
+These `{region}.audio.flyliveapp.com` hostnames are load-bearing for **two** paths:
+1. **SNS event fan-out** → `https://{region}.audio.flyliveapp.com/api/events` (not the GA anycast
+   name and not the raw `*.elb.amazonaws.com` NLB DNS — SNS verifies TLS; the ACM cert covers
+   `*.audio.flyliveapp.com` but **not** the raw NLB hostnames).
+2. **Client media connections** — realtime-05 made Laravel the source of truth for a Room's SFU
+   endpoint: `RegionSelector::hostingUrl()` returns `wss://{subdomain}.audio.flyliveapp.com`
+   (`backend/config/realtime.php` maps `ap-south-1→mumbai`, `eu-central-1→frankfurt`). Clients
+   connect to exactly these hostnames.
+
+These subdomains currently do **not resolve in public DNS** — until they do, SNS
+SubscriptionConfirmation fails permanently **and** clients cannot reach their pinned region.
+The CNAME names below must stay in lock-step with `config/realtime.php` `regions` (that file is
+the source of truth; only add a region there once its CNAME resolves).
+
+> ⚠️ **Deviation from the realtime-06 AC wording.** The issue asked for *Terraform-managed*
+> CNAME→NLB records. We do **not** manage these in Terraform: this account has no Route53
+> hosted zone and no Cloudflare provider is wired (matches the project convention — all DNS
+> is manual in Cloudflare, see §5.1–5.2). These records are therefore **added by hand in
+> Cloudflare (HITL)**. If you want them TF-managed, wire the `cloudflare/cloudflare` provider
+> + a `cloudflare_record` per region — out of scope here.
+
+After `terraform apply`, read each region's NLB DNS name and create a matching CNAME:
+
+```bash
+terraform output nlb_dns_mumbai      # e.g. flylive-audio-nlb-xxxx.elb.ap-south-1.amazonaws.com
+terraform output nlb_dns_frankfurt   # e.g. flylive-audio-nlb-yyyy.elb.eu-central-1.amazonaws.com
+```
+
+In Cloudflare DNS:
+
+| Type | Name | Content | Proxy |
+|------|------|---------|-------|
+| CNAME | `mumbai.audio` | `<nlb_dns_mumbai>` | **DNS only** (gray cloud) |
+| CNAME | `frankfurt.audio` | `<nlb_dns_frankfurt>` | **DNS only** (gray cloud) |
+
+**DNS only** (not proxied) is mandatory: SNS must reach the NLB's ACM-terminated TLS directly,
+and WebRTC UDP goes straight to the EC2 IPs. Verify after propagation:
+```bash
+curl -k https://mumbai.audio.flyliveapp.com/health
+curl -k https://frankfurt.audio.flyliveapp.com/health
+```
+(Add `singapore.audio` the same way when the 3rd region lands.)
+
 ### 5.3 SSL/TLS Mode
 
 In Cloudflare dashboard → SSL/TLS → Overview:
