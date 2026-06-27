@@ -1,7 +1,7 @@
 # FlyLive Audio Server — Infrastructure Reference
 
 > **Scope:** MSAB (MediaSoup Audio Broadcasting Server) Terraform stack.  
-> **Regions:** Mumbai (`ap-south-1`) + Frankfurt (`eu-central-1`)  
+> **Regions:** Mumbai (`ap-south-1`) + Frankfurt (`eu-central-1`) + Singapore (`ap-southeast-1`)  
 > **Terraform:** >= 1.10 required (see § State Backend)
 
 ---
@@ -683,6 +683,7 @@ terraform output
 terraform output global_accelerator_dns  # → point your domain here
 terraform output nlb_dns_mumbai
 terraform output nlb_dns_frankfurt
+terraform output nlb_dns_singapore
 terraform output sns_topic_arn           # → give this to Laravel backend
 terraform output ecr_repository_url
 ```
@@ -796,9 +797,13 @@ For each row in the output, add a **CNAME record in Cloudflare**:
 | Proxy status | **DNS only** (gray cloud — NOT proxied) |
 | TTL | Auto |
 
-Do the same for Frankfurt's certificate (run the command with `--region eu-central-1`).
+Do the same for Frankfurt's certificate (`--region eu-central-1`) and Singapore's
+(`--region ap-southeast-1`); the exact records are also in `terraform output acm_validation_singapore`.
 
-You typically get 4 CNAME records total (2 certs × 2 domain names). Some may be identical if ACM deduplicates across regions.
+You typically get up to 6 CNAME records total (3 certs × 2 domain names). Most are identical —
+all three certs cover the same `audio.flyliveapp.com` + `*.audio.flyliveapp.com` in the same
+account, so ACM deduplicates the validation records and Singapore's cert often validates
+instantly off the existing CNAMEs.
 
 ### 5.2 Main Domain DNS
 
@@ -854,6 +859,7 @@ After `terraform apply`, read each region's NLB DNS name and create a matching C
 ```bash
 terraform output nlb_dns_mumbai      # e.g. flylive-audio-nlb-xxxx.elb.ap-south-1.amazonaws.com
 terraform output nlb_dns_frankfurt   # e.g. flylive-audio-nlb-yyyy.elb.eu-central-1.amazonaws.com
+terraform output nlb_dns_singapore   # e.g. flylive-audio-nlb-zzzz.elb.ap-southeast-1.amazonaws.com
 ```
 
 In Cloudflare DNS:
@@ -862,14 +868,20 @@ In Cloudflare DNS:
 |------|------|---------|-------|
 | CNAME | `mumbai.audio` | `<nlb_dns_mumbai>` | **DNS only** (gray cloud) |
 | CNAME | `frankfurt.audio` | `<nlb_dns_frankfurt>` | **DNS only** (gray cloud) |
+| CNAME | `singapore.audio` | `<nlb_dns_singapore>` | **DNS only** (gray cloud) |
 
 **DNS only** (not proxied) is mandatory: SNS must reach the NLB's ACM-terminated TLS directly,
 and WebRTC UDP goes straight to the EC2 IPs. Verify after propagation:
 ```bash
 curl -k https://mumbai.audio.flyliveapp.com/health
 curl -k https://frankfurt.audio.flyliveapp.com/health
+curl -k https://singapore.audio.flyliveapp.com/health
 ```
-(Add `singapore.audio` the same way when the 3rd region lands.)
+
+> **realtime-07 ordering:** `singapore.audio` must resolve **before** the backend ships the
+> `config/realtime.php` activation (which adds `ap-southeast-1→singapore` and re-homes APAC).
+> Add this CNAME, confirm `/health`, confirm the Singapore SNS subscription reaches *Confirmed*,
+> then deploy the backend. See realtime-07 for the full apply-order runbook.
 
 ### 5.3 SSL/TLS Mode
 

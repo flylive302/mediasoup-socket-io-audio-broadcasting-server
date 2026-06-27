@@ -23,6 +23,10 @@ output "nlb_dns_frankfurt" {
   value = module.loadbalancer_frankfurt.nlb_dns_name
 }
 
+output "nlb_dns_singapore" {
+  value = module.loadbalancer_singapore.nlb_dns_name
+}
+
 # --- Redis (per region) ---
 output "redis_host_mumbai" {
   value = module.redis_mumbai.redis_host
@@ -31,6 +35,10 @@ output "redis_host_mumbai" {
 
 output "redis_host_frankfurt" {
   value = module.redis_frankfurt.redis_host
+}
+
+output "redis_host_singapore" {
+  value = module.redis_singapore.redis_host
 }
 
 # --- ASG Names (per region) ---
@@ -43,6 +51,11 @@ output "asg_name_mumbai" {
 output "asg_name_frankfurt" {
   description = "Frankfurt Auto Scaling Group name"
   value       = module.autoscaling_frankfurt.asg_name
+}
+
+output "asg_name_singapore" {
+  description = "Singapore Auto Scaling Group name"
+  value       = module.autoscaling_singapore.asg_name
 }
 
 # --- SNS ---
@@ -62,6 +75,13 @@ output "acm_validation_mumbai" {
 output "acm_validation_frankfurt" {
   description = "ACM DNS validation records for Frankfurt cert — add these CNAMEs in Cloudflare (DNS only, not proxied)"
   value       = module.ssl_frankfurt.domain_validation_options
+}
+
+# Singapore's cert covers the same apex + *.audio.flyliveapp.com in the same account,
+# so the validation CNAMEs likely already exist — diff and add any missing ones.
+output "acm_validation_singapore" {
+  description = "ACM DNS validation records for Singapore cert — add these CNAMEs in Cloudflare (DNS only, not proxied)"
+  value       = module.ssl_singapore.domain_validation_options
 }
 
 # --- CloudWatch Alerts ---

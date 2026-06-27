@@ -116,6 +116,8 @@ jobs:
             aws_region: ap-south-1
           - name: frankfurt
             aws_region: eu-central-1
+          - name: singapore
+            aws_region: ap-southeast-1
 
     steps:
       - name: Configure AWS Credentials
