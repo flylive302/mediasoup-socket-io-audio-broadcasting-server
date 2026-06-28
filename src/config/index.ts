@@ -80,6 +80,13 @@ const configSchema = z.object({
   // join/leave storm can no longer flood (and 429-drop against) the backend.
   ROOM_STATUS_COALESCE_WINDOW_MS: z.coerce.number().default(3_000), // 3 seconds
 
+  // realtime-08: interactive↔broadcast flip thresholds (Listener count) with
+  // hysteresis. A Room promotes to broadcast at/above UP and demotes back to
+  // interactive at/below DOWN; the band between (DOWN < n < UP) holds the
+  // current mode so a Room on the boundary can't flap. Validated UP > DOWN.
+  ROOM_BROADCAST_THRESHOLD_UP: z.coerce.number().int().positive().default(1500),
+  ROOM_BROADCAST_THRESHOLD_DOWN: z.coerce.number().int().positive().default(1000),
+
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),
   GIFT_MAX_RETRIES: z.coerce.number().default(5),
@@ -116,7 +123,14 @@ const configSchema = z.object({
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
   INTERNAL_API_KEY: z.string().default(""),                // Shared secret for instance-to-instance auth
   PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
-});
+}).refine(
+  (c) => c.ROOM_BROADCAST_THRESHOLD_UP > c.ROOM_BROADCAST_THRESHOLD_DOWN,
+  {
+    message:
+      "ROOM_BROADCAST_THRESHOLD_UP must be greater than ROOM_BROADCAST_THRESHOLD_DOWN (hysteresis band).",
+    path: ["ROOM_BROADCAST_THRESHOLD_UP"],
+  },
+);
 
 /**
  * INSTANCE_ID is intentionally NOT a Zod field — it must come from IMDSv2

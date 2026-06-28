@@ -14,8 +14,11 @@
  * `mode`/`speakerCount` are inputs for forward-compatibility with the broadcast
  * tier (realtime-08/09); today the poller passes `interactive`/`0`.
  */
+import type { RoomMode } from "../types.js";
 
-export type RoomMode = "interactive" | "broadcast";
+// Re-exported for back-compat: `RoomMode` now lives in room/types.ts alongside
+// RoomState.mode (realtime-08). Existing importers keep compiling.
+export type { RoomMode };
 
 export interface AutoCloseInput {
   /** Real Socket.IO presence in the owning region (`io.in(room).fetchSockets()`). */

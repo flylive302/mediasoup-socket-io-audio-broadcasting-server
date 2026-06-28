@@ -24,6 +24,7 @@ import { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/index.js";
 import { PresenceTracker } from "@src/domains/room/presence-tracker.js";
 import { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
+import { RoomModeService } from "@src/domains/room/mode/room-mode.service.js";
 import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
 
 // Events module (Laravel pub/sub integration)
@@ -87,6 +88,11 @@ export async function initializeSocket(
   const presenceTracker = new PresenceTracker(io, roomManager.state);
   roomManager.setPresenceTracker(presenceTracker);
 
+  // realtime-08: the interactive↔broadcast flip is evaluated on the same
+  // ownership heartbeat that reconciles presence (no second poll loop).
+  const roomModeService = new RoomModeService(roomManager.state, io, logger);
+  roomManager.setRoomModeService(roomModeService);
+
   // Initialize auto-close system (presence-gated, not integer-gated)
   const autoCloseService = new AutoCloseService(redis, presenceTracker);
   const autoCloseJob = new AutoCloseJob(
@@ -120,6 +126,7 @@ export async function initializeSocket(
     autoCloseService,
     autoCloseJob,
     presenceTracker,
+    roomModeService,
     seatRepository,
     userSocketRepository,
     userRoomRepository,

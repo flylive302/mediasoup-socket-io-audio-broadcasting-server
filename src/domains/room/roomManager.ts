@@ -14,6 +14,7 @@ import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { RoomRegistry } from "./room-registry.js";
 import type { PresenceTracker } from "./presence-tracker.js";
 import type { StatusCoalescer } from "./status-coalescer.js";
+import type { RoomModeService } from "./mode/room-mode.service.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 export class RoomManager {
@@ -29,6 +30,8 @@ export class RoomManager {
   private roomRegistry: RoomRegistry | null = null;
   // realtime-01: reconciles each owned Room's advisory count + TTL on heartbeat.
   private presenceTracker: PresenceTracker | null = null;
+  // realtime-08: evaluates each owned Room's interactive↔broadcast mode on heartbeat.
+  private roomModeService: RoomModeService | null = null;
 
   // F-34: periodic CAS ownership heartbeat (short TTL is refreshed here so a
   // live-but-idle origin keeps its claim; a crashed origin's claim expires).
@@ -90,6 +93,16 @@ export class RoomManager {
   }
 
   /**
+   * realtime-08: late-bind the RoomModeService so the heartbeat can flip each
+   * owned Room interactive↔broadcast at the Listener threshold (with hysteresis)
+   * using the real presence count it already computed for the reconcile.
+   */
+  setRoomModeService(service: RoomModeService): void {
+    this.roomModeService = service;
+    this.startOwnershipHeartbeat();
+  }
+
+  /**
    * F-34: every ~30s refresh the CAS ownership claim for every room hosted on
    * this instance. `refreshOwnership` is a no-op (Lua-guarded) for any room
    * this instance no longer owns, so iterating all local rooms is safe.
@@ -112,11 +125,23 @@ export class RoomManager {
         // delete() can never resurrect the key).
         tracker
           ?.reconcile(roomId)
-          .then((present) => {
+          .then(async (present) => {
             // realtime-02: the reconcile awaited fetchSockets — closeRoom may have
             // finished (rooms.delete + forget) while it was in flight. If the Room
             // is gone, a submit here would re-buffer AFTER forget and flush a stale
             // is_live:true on the next window → phantom-live. Bail if it closed.
+            if (!this.rooms.has(roomId)) return;
+            // realtime-08: flip interactive↔broadcast at the Listener threshold
+            // (with hysteresis) using the presence we just computed, and fold the
+            // resulting mode into the SAME coalesced status update so Laravel
+            // converges idempotently. Only meaningful while live; a 0-presence
+            // Room is about to auto-close. evaluate awaited Redis — re-check the
+            // Room still exists before submitting.
+            const mode =
+              present > 0
+                ? (await this.roomModeService?.evaluate(roomId, present)) ??
+                  undefined
+                : undefined;
             if (!this.rooms.has(roomId)) return;
             // realtime-02: also refresh the Laravel-side activity TTL with a
             // COALESCED keep-alive, so a long-running (>24h) idle broadcast with
@@ -125,6 +150,7 @@ export class RoomManager {
             this.statusCoalescer.submit(roomId, {
               is_live: present > 0,
               participant_count: present,
+              ...(mode ? { mode } : {}),
               hosting_region: present > 0 ? config.AWS_REGION : null,
               hosting_ip:
                 present > 0
@@ -235,6 +261,7 @@ export class RoomManager {
         status: "ACTIVE",
         participantCount: 0,
         seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
+        mode: "interactive", // realtime-08: every Room starts interactive; flips at the Listener threshold
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
       });
@@ -331,7 +358,17 @@ export class RoomManager {
    */
   async closeRoom(roomId: string, reason = "host_left"): Promise<void> {
     const cluster = this.rooms.get(roomId);
-    if (!cluster) return;
+    if (!cluster) {
+      // realtime-08 (AC4): no local cluster — either the Room was already closed
+      // here (state gone → reap is a no-op) or it's an ORPHAN whose owning
+      // instance/region died. The auto-close poller on a surviving same-region
+      // peer detects the orphan via shared Redis (presence 0 region-wide, after
+      // grace), but closeRoom used to no-op for it — leaving Laravel is_live:true
+      // and stale hosting info forever. Reap the shared state so the Room ends
+      // cleanly and any still-connected clients are told.
+      await this.reapOrphanedState(roomId, reason);
+      return;
+    }
 
     logger.info({ roomId, reason }, "Closing room");
 
@@ -404,6 +441,77 @@ export class RoomManager {
     // tick can't flush a stale is_live:true for this closed Room.
     this.statusCoalescer.forget(roomId);
     this.syncRoomGauge();
+  }
+
+  /**
+   * realtime-08 (AC4): reap the SHARED state of a Room this instance does not
+   * host locally. Used when closeRoom is asked to close an orphan whose owning
+   * instance/region died — there is no local cluster to tear down, only shared
+   * Redis + Laravel state to clean up so the Room ends cleanly.
+   *
+   * Safe against false-reaping a live Room: the only caller path is the
+   * auto-close poller, which already proved region-wide presence == 0 past the
+   * grace window (a Room live on a sibling instance reads presence > 0 via the
+   * region's Redis adapter, so it never becomes a candidate). Cross-region Rooms
+   * live in a different region's Redis and are never SCANned here.
+   *
+   * No-op when the state key is already gone (the Room was closed normally), so
+   * a redundant closeRoom on an already-closed Room costs one Redis GET.
+   */
+  private async reapOrphanedState(
+    roomId: string,
+    reason: string,
+  ): Promise<void> {
+    const state = await this.stateRepo.get(roomId);
+    if (!state) return; // already gone — nothing to reap
+
+    logger.warn(
+      { roomId, reason },
+      "Reaping orphaned room state (no local cluster — owning instance/region likely died)",
+    );
+
+    // Tell any clients still attached to this region (e.g. a reconnecter that
+    // landed here) that the Room is gone, mirroring closeRoom's notification.
+    this.io
+      .to(roomId)
+      .emit("room:closed", { roomId, reason, timestamp: Date.now() });
+
+    // Mark Laravel not-live immediately AND drop any buffered participant update
+    // so a coalesced is_live:true can't resurrect the dead Room (same contract
+    // as closeRoom).
+    await this.statusCoalescer
+      .flushNow(roomId, {
+        is_live: false,
+        participant_count: 0,
+        ended_at: new Date().toISOString(),
+        hosting_region: null,
+        hosting_ip: null,
+        hosting_port: null,
+      })
+      .catch((err) =>
+        logger.error(
+          { err, roomId },
+          "Laravel not-live update failed during orphan reap",
+        ),
+      );
+
+    // NOTE: deliberately does NOT call roomRegistry.cleanup() here.
+    // `cleanup` is an unconditional DEL of the CAS owner key (not delete-if-mine),
+    // and this reap fires for a room this instance does not own. A genuine
+    // orphan's owner key has already expired via its own short TTL
+    // (OWNER_TTL_SECONDS=90s ≪ the 2-min activity window + grace that gates this
+    // path), so there is nothing to release; deleting it would only risk wiping a
+    // live sibling's fresh claim (split-brain surface). `claimOwnership` already
+    // recovers a dead owner's key on the next re-open.
+    const cleanupOps: Promise<void>[] = [this.stateRepo.delete(roomId)];
+    if (this.seatRepository) {
+      cleanupOps.push(this.seatRepository.clearRoom(roomId));
+    }
+    await Promise.all(cleanupOps);
+
+    clearRoomOwner(roomId);
+    this.presenceTracker?.forget(roomId);
+    this.statusCoalescer.forget(roomId);
   }
 
   // ROOM-PERF-002 FIX: Synchronous — Map.get() has no async work

@@ -39,6 +39,7 @@ export interface RoomStatusUpdate {
   hosting_region?: string | null; // AWS region hosting this room (e.g., "ap-south-1")
   hosting_ip?: string | null; // Public IP of the MSAB instance hosting this room
   hosting_port?: number | null; // HTTPS port of the MSAB instance (for internal API)
+  mode?: "interactive" | "broadcast"; // realtime-08: interactive↔broadcast tier. Absent = "leave unchanged" on the Laravel side.
 }
 
 /**

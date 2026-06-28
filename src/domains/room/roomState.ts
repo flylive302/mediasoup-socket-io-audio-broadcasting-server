@@ -1,5 +1,5 @@
 import type { Redis } from "ioredis";
-import type { RoomState } from "./types.js";
+import type { RoomMode, RoomState } from "./types.js";
 
 export class RoomStateRepository {
   private readonly PREFIX = "room:state:";
@@ -42,6 +42,22 @@ export class RoomStateRepository {
         return state.participantCount
       `,
     });
+    // realtime-08: set the Room's interactive↔broadcast mode. Update-if-exists
+    // only (returns nil for a missing key) — same zombie-safety contract as
+    // reconcileParticipants: a mode write racing closeRoom can never recreate a
+    // closed Room's state key. Refreshes the 24h TTL so the write isn't a no-op
+    // on liveness bookkeeping. Returns the stored mode, or nil if the key is gone.
+    this.redis.defineCommand("setRoomMode", {
+      numberOfKeys: 1,
+      lua: `
+        local data = redis.call('GET', KEYS[1])
+        if not data then return nil end
+        local state = cjson.decode(data)
+        state.mode = ARGV[1]
+        redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), cjson.encode(state))
+        return state.mode
+      `,
+    });
     this.commandDefined = true;
   }
 
@@ -53,7 +69,14 @@ export class RoomStateRepository {
   async get(roomId: string): Promise<RoomState | null> {
     const key = `${this.PREFIX}${roomId}`;
     const data = await this.redis.get(key);
-    return data ? JSON.parse(data) : null;
+    if (!data) {
+      return null;
+    }
+    const state = JSON.parse(data) as RoomState;
+    // realtime-08: legacy state keys written before `mode` existed default to
+    // interactive so the controller has a defined starting point.
+    state.mode ??= "interactive";
+    return state;
   }
 
   /**
@@ -110,5 +133,24 @@ export class RoomStateRepository {
     );
 
     return result as number | null;
+  }
+
+  /**
+   * realtime-08: persist the Room's interactive↔broadcast mode. Update-if-exists
+   * only — returns the stored mode, or null if the room:state key no longer
+   * exists (never re-creates it).
+   */
+  async setMode(roomId: string, mode: RoomMode): Promise<RoomMode | null> {
+    const key = `${this.PREFIX}${roomId}`;
+    this.ensureCommand();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (this.redis as any).setRoomMode(
+      key,
+      mode,
+      this.TTL.toString(),
+    );
+
+    return result as RoomMode | null;
   }
 }
