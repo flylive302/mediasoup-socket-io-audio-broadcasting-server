@@ -172,7 +172,11 @@ resource "aws_cloudwatch_metric_alarm" "reverse_pipe_failure_rate" {
 # =============================================================================
 
 resource "aws_cloudwatch_dashboard" "msab" {
-  dashboard_name = "${var.project_name}-operations"
+  # Region-scoped name: CloudWatch dashboards are account-GLOBAL (unlike alarms,
+  # which are regional). A shared name makes every region's module fight over one
+  # dashboard — perpetual diffs and concurrent-PutDashboard ConflictExceptions on
+  # apply. One dashboard per region eliminates the collision (realtime-07).
+  dashboard_name = "${var.project_name}-operations-${var.aws_region}"
 
   dashboard_body = jsonencode({
     widgets = [

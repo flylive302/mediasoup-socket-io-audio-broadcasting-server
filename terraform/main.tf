@@ -389,6 +389,7 @@ module "autoscaling_mumbai" {
   # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
   min_instances     = var.min_instances
   desired_instances = var.desired_instances
+  max_instances     = var.max_instances
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer_mumbai.target_group_arn_suffix
@@ -436,6 +437,7 @@ module "autoscaling_frankfurt" {
   # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
   min_instances     = var.min_instances
   desired_instances = var.desired_instances
+  max_instances     = var.max_instances
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer_frankfurt.target_group_arn_suffix
@@ -482,6 +484,7 @@ module "autoscaling_singapore" {
   # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
   min_instances     = var.min_instances
   desired_instances = var.desired_instances
+  max_instances     = var.max_instances
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer_singapore.target_group_arn_suffix

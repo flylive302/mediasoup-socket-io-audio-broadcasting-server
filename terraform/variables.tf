@@ -43,6 +43,18 @@ variable "desired_instances" {
   default     = 2
 }
 
+variable "max_instances" {
+  description = <<-EOT
+    ASG maximum instances per region. Default 50 for the 50k-user headroom (realtime-06),
+    but this is only reachable if the account's On-Demand Standard vCPU quota (L-1216C47A)
+    allows it: max ≈ quota_vCPU / instance_vCPU. With the default 16-vCPU quota and
+    c7i.xlarge (4 vCPU), the real ceiling is 4 — keep max_instances truthful to the quota
+    until an increase lands (realtime-16).
+  EOT
+  type        = number
+  default     = 50
+}
+
 variable "aws_region" {
   description = "AWS region to deploy into"
   type        = string
