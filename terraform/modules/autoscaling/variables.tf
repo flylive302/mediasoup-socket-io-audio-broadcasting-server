@@ -199,6 +199,47 @@ variable "cloudflare_turn_key_id" {
   default     = ""
 }
 
+# realtime-08: interactive↔broadcast flip thresholds (Listener count, hysteresis).
+# Default 1500/1000; lower in tfvars to smoke-test the broadcast tier on a region.
+variable "room_broadcast_threshold_up" {
+  description = "Listener count at/above which a Room flips to broadcast mode"
+  type        = number
+  default     = 1500
+}
+
+variable "room_broadcast_threshold_down" {
+  description = "Listener count at/below which a Room flips back to interactive mode"
+  type        = number
+  default     = 1000
+}
+
+# realtime-09: broadcast HLS tier. R2 access keys are SSM secrets (see iam module);
+# these are the non-sensitive values templated into the container .env. Disabled by
+# default — when true the MSAB config refine requires all HLS_R2_* + base URL set.
+variable "broadcast_hls_enabled" {
+  description = "Enable the LL-HLS broadcast publish tier (realtime-09)"
+  type        = bool
+  default     = false
+}
+
+variable "hls_r2_endpoint" {
+  description = "R2 S3 API endpoint for HLS publishing, e.g. https://<acct>.r2.cloudflarestorage.com"
+  type        = string
+  default     = ""
+}
+
+variable "hls_r2_bucket" {
+  description = "R2 bucket for live HLS artifacts (e.g. flylive-live-hls)"
+  type        = string
+  default     = ""
+}
+
+variable "hls_public_base_url" {
+  description = "Public CDN base for HLS playback (no trailing slash), e.g. https://live.flyliveapp.com"
+  type        = string
+  default     = ""
+}
+
 variable "target_group_arn_suffix" {
   description = "ARN suffix of the NLB target group (for CloudWatch dimensions)"
   type        = string

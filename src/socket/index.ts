@@ -25,6 +25,7 @@ import { AutoCloseService, AutoCloseJob } from "@src/domains/room/auto-close/ind
 import { PresenceTracker } from "@src/domains/room/presence-tracker.js";
 import { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import { RoomModeService } from "@src/domains/room/mode/room-mode.service.js";
+import { createBroadcastController } from "@src/domains/broadcast/index.js";
 import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
 
 // Events module (Laravel pub/sub integration)
@@ -93,6 +94,17 @@ export async function initializeSocket(
   const roomModeService = new RoomModeService(roomManager.state, io, logger);
   roomManager.setRoomModeService(roomModeService);
 
+  // realtime-09: broadcast HLS publish tier. When a Room flips to broadcast mode
+  // the controller mixes seated speakers into one HLS stream → R2 → CDN. No-op
+  // unless BROADCAST_HLS_ENABLED. Wired as the mode-transition REACT hook.
+  const broadcastController = createBroadcastController(roomManager);
+  roomModeService.setTransitionHook((roomId, transition) =>
+    broadcastController.onModeTransition(roomId, transition),
+  );
+  roomManager.setBroadcastClosedHook((roomId) =>
+    broadcastController.onRoomClosed(roomId),
+  );
+
   // Initialize auto-close system (presence-gated, not integer-gated)
   const autoCloseService = new AutoCloseService(redis, presenceTracker);
   const autoCloseJob = new AutoCloseJob(
@@ -127,6 +139,7 @@ export async function initializeSocket(
     autoCloseJob,
     presenceTracker,
     roomModeService,
+    broadcastController,
     seatRepository,
     userSocketRepository,
     userRoomRepository,

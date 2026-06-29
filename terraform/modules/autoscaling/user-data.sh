@@ -133,6 +133,10 @@ SECRET_INTERNAL_KEY=$(fetch_ssm "laravel-internal-key")
 SECRET_SESSION=$(fetch_ssm "session-secret")
 SECRET_TURN_API_KEY=$(fetch_ssm "cloudflare-turn-api-key")
 SECRET_REDIS_AUTH=$(fetch_ssm "redis-auth-token")
+# realtime-09 broadcast HLS R2 keys — optional (only consumed when BROADCAST_HLS_ENABLED);
+# intentionally NOT in the critical-secrets gate so a host boots fine with HLS disabled.
+SECRET_HLS_R2_ACCESS_KEY_ID=$(fetch_ssm "hls-r2-access-key-id")
+SECRET_HLS_R2_SECRET_ACCESS_KEY=$(fetch_ssm "hls-r2-secret-access-key")
 
 # --- Validate critical secrets (fail fast instead of silent empty values) ---
 MISSING_SECRETS=0
@@ -212,6 +216,18 @@ PUBLIC_IP=$PUBLIC_IP
 
 # ICE Servers — Cloudflare Realtime TURN (dynamic credentials)
 CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
+
+# realtime-08 — interactive↔broadcast flip thresholds (Listener count, hysteresis).
+# Default 1500/1000; lower temporarily (e.g. 2/1) in prod.tfvars to smoke-test the
+# broadcast tier on a region without 1,500 real Listeners, then restore.
+ROOM_BROADCAST_THRESHOLD_UP=${room_broadcast_threshold_up}
+ROOM_BROADCAST_THRESHOLD_DOWN=${room_broadcast_threshold_down}
+
+# realtime-09 — broadcast HLS tier (non-sensitive; R2 keys passed via docker -e).
+BROADCAST_HLS_ENABLED=${broadcast_hls_enabled}
+HLS_R2_ENDPOINT=${hls_r2_endpoint}
+HLS_R2_BUCKET=${hls_r2_bucket}
+HLS_PUBLIC_BASE_URL=${hls_public_base_url}
 ENVEOF
 
 # --- Write secrets env file for lifecycle drain service (not in .env, not in Docker) ---
@@ -241,6 +257,8 @@ docker run -d \
   -e "SESSION_SECRET=$SECRET_SESSION" \
   -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
   -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
+  -e "HLS_R2_ACCESS_KEY_ID=$SECRET_HLS_R2_ACCESS_KEY_ID" \
+  -e "HLS_R2_SECRET_ACCESS_KEY=$SECRET_HLS_R2_SECRET_ACCESS_KEY" \
   $ECR_REPO_URL:${image_tag}
 
 # --- Install CloudWatch Agent (ship Docker JSON logs to CloudWatch Logs) ---

@@ -5,7 +5,13 @@ import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import type { RoomMode } from "@src/domains/room/types.js";
 
 vi.mock("@src/config/index.js", () => ({
-  config: { ROOM_BROADCAST_THRESHOLD_UP: 1500, ROOM_BROADCAST_THRESHOLD_DOWN: 1000 },
+  config: {
+    ROOM_BROADCAST_THRESHOLD_UP: 1500,
+    ROOM_BROADCAST_THRESHOLD_DOWN: 1000,
+    // realtime-09: enabled so the broadcast flip carries the HLS playback URL.
+    BROADCAST_HLS_ENABLED: true,
+    HLS_PUBLIC_BASE_URL: "https://live.flyliveapp.com",
+  },
 }));
 
 import { RoomModeService } from "@src/domains/room/mode/room-mode.service.js";
@@ -63,6 +69,9 @@ describe("RoomModeService.evaluate", () => {
         mode: "broadcast",
         transition: "promote",
         listenerCount: 2000,
+        // realtime-09: the deterministic HLS URL rides the flip so in-room
+        // Listeners switch transport immediately.
+        hlsPlaybackUrl: "https://live.flyliveapp.com/r/master.m3u8",
       }),
     );
   });
@@ -97,5 +106,23 @@ describe("RoomModeService.evaluate", () => {
 
     expect(result).toBeNull();
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("emits a null hlsPlaybackUrl on demote so Listeners drop HLS and resume WebRTC", async () => {
+    const { service, emit } = makeService({
+      currentMode: "broadcast",
+      setModeResult: "interactive",
+    });
+
+    await service.evaluate("r", 500); // below DOWN threshold → demote
+
+    expect(emit).toHaveBeenCalledWith(
+      "room:mode",
+      expect.objectContaining({
+        mode: "interactive",
+        transition: "demote",
+        hlsPlaybackUrl: null,
+      }),
+    );
   });
 });

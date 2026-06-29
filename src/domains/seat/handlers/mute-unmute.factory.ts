@@ -101,6 +101,11 @@ export function createMuteHandler(config: MuteConfig) {
         isMuted: config.muted,
       }, context.cascadeRelay);
 
+      // realtime-09: a moderator mute (pause) / unmute (resume) is server-enforced,
+      // so it changes the broadcast mix's resumed-producer set → restart FFmpeg on
+      // the new topology. No-op unless this Room is publishing HLS.
+      context.broadcastController.onSpeakerChange(roomId);
+
       return { success: true };
     },
   );

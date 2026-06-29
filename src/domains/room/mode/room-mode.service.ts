@@ -25,8 +25,15 @@ import type { RoomMode } from "../types.js";
 import type { RoomStateRepository } from "../roomState.js";
 import { RoomModeController } from "./room-mode-controller.js";
 
+/** REACT hook fired after a mode flip is persisted + broadcast (realtime-09). */
+export type ModeTransitionHook = (
+  roomId: string,
+  transition: "promote" | "demote",
+) => void;
+
 export class RoomModeService {
   private readonly controller: RoomModeController;
+  private onTransition: ModeTransitionHook | null = null;
 
   constructor(
     private readonly state: RoomStateRepository,
@@ -35,6 +42,16 @@ export class RoomModeService {
     controller: RoomModeController = new RoomModeController(),
   ) {
     this.controller = controller;
+  }
+
+  /**
+   * Late-bind the broadcast-tier hook (realtime-09): the BroadcastPublishController
+   * is constructed after this service, so it's wired in after the fact. Called on a
+   * persisted promote/demote so the HLS publisher starts/stops in lockstep with the
+   * flip. Fire-and-forget — REACT, never blocks the flip.
+   */
+  setTransitionHook(hook: ModeTransitionHook): void {
+    this.onTransition = hook;
   }
 
   /**
@@ -69,14 +86,24 @@ export class RoomModeService {
       return null;
     }
 
-    // REACT — fire-and-forget telemetry + client notification. The mode is
-    // plumbing-only at this slice (no transport change), so this is the visible
-    // effect: clients/telemetry learn the Room flipped.
+    // REACT — fire-and-forget client notification. The deterministic HLS playback
+    // URL rides this event (realtime-09) so Listeners ALREADY in the Room when it
+    // flips switch transport immediately — the HTTP Room resource only carries the
+    // URL to NEW joiners (it isn't refetched on a live flip). Same formula as the
+    // backend derivation; null unless actually publishing in broadcast mode.
+    const hlsPlaybackUrl =
+      decision.mode === "broadcast" &&
+      config.BROADCAST_HLS_ENABLED &&
+      config.HLS_PUBLIC_BASE_URL
+        ? `${config.HLS_PUBLIC_BASE_URL}/${roomId}/master.m3u8`
+        : null;
+
     this.io.to(roomId).emit("room:mode", {
       roomId,
       mode: decision.mode,
       transition: decision.transition,
       listenerCount,
+      hlsPlaybackUrl,
       timestamp: Date.now(),
     });
 
@@ -89,6 +116,12 @@ export class RoomModeService {
       },
       "Room mode flipped",
     );
+
+    // REACT — drive the broadcast HLS publisher in lockstep with the flip.
+    // decision.changed is true here, so transition is "promote" | "demote".
+    if (decision.transition) {
+      this.onTransition?.(roomId, decision.transition);
+    }
 
     return persisted;
   }

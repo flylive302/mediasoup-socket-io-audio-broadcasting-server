@@ -31,12 +31,16 @@ WORKDIR /app
 # Copy config
 COPY package*.json ./
 
-# Install system dependencies for mediasoup, install npm deps, then cleanup
+# Install system dependencies for mediasoup, install npm deps, then cleanup.
+# ffmpeg is a RUNTIME dependency (realtime-09 broadcast HLS mixer) — it stays
+# after cleanup, unlike the build-only python3-pip/build-essential. Stock ffmpeg
+# carries the `aac` encoder we need; no extra codecs required.
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     build-essential \
     wget \
+    ffmpeg \
     && npm ci --omit=dev \
     && apt-get remove -y python3-pip build-essential \
     && apt-get autoremove -y \

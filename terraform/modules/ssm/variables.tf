@@ -33,3 +33,24 @@ variable "redis_auth_token" {
   type        = string
   sensitive   = true
 }
+
+# realtime-09 broadcast HLS R2 keys — only stored when the tier is enabled.
+variable "broadcast_hls_enabled" {
+  description = "Whether to create the broadcast HLS R2 SSM secrets"
+  type        = bool
+  default     = false
+}
+
+variable "hls_r2_access_key_id" {
+  description = "R2 Object Read/Write access key id for HLS publishing"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "hls_r2_secret_access_key" {
+  description = "R2 Object Read/Write secret access key for HLS publishing"
+  type        = string
+  sensitive   = true
+  default     = ""
+}

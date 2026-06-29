@@ -99,6 +99,13 @@ resource "aws_launch_template" "msab" {
     jwt_max_age_seconds     = var.jwt_max_age_seconds
     laravel_api_timeout_ms  = var.laravel_api_timeout_ms
     ice_stun_urls           = var.ice_stun_urls
+
+    room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+    room_broadcast_threshold_down = var.room_broadcast_threshold_down
+    broadcast_hls_enabled         = var.broadcast_hls_enabled
+    hls_r2_endpoint               = var.hls_r2_endpoint
+    hls_r2_bucket                 = var.hls_r2_bucket
+    hls_public_base_url           = var.hls_public_base_url
   }))
 
   # Metadata options (IMDSv2 required)

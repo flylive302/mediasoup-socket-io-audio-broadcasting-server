@@ -158,6 +158,63 @@ variable "cloudflare_turn_key_id" {
   default     = ""
 }
 
+# --- realtime-08 broadcast flip thresholds ---
+# Default 1500/1000. Lower (e.g. 2/1) in prod.tfvars to force a flip for a smoke
+# test on a region without 1,500 real Listeners, then restore.
+variable "room_broadcast_threshold_up" {
+  description = "Listener count at/above which a Room flips to broadcast mode"
+  type        = number
+  default     = 1500
+}
+
+variable "room_broadcast_threshold_down" {
+  description = "Listener count at/below which a Room flips back to interactive mode"
+  type        = number
+  default     = 1000
+}
+
+# --- realtime-09 broadcast HLS tier ---
+# Disabled by default. When true, set all four HLS_R2_* + base URL (the MSAB config
+# refine fails boot otherwise). R2 keys are stored as SSM secrets; the rest go into
+# the container .env. See docs/issues/realtime/realtime-09-PROVISIONING.md.
+variable "broadcast_hls_enabled" {
+  description = "Enable the LL-HLS broadcast publish tier (realtime-09)"
+  type        = bool
+  default     = false
+}
+
+variable "hls_r2_endpoint" {
+  description = "R2 S3 API endpoint, e.g. https://<acct>.r2.cloudflarestorage.com"
+  type        = string
+  default     = ""
+}
+
+variable "hls_r2_bucket" {
+  description = "R2 bucket for live HLS artifacts (e.g. flylive-live-hls)"
+  type        = string
+  default     = ""
+}
+
+variable "hls_public_base_url" {
+  description = "Public CDN base for HLS playback (no trailing slash), e.g. https://live.flyliveapp.com"
+  type        = string
+  default     = ""
+}
+
+variable "hls_r2_access_key_id" {
+  description = "R2 Object Read/Write access key id for HLS publishing"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "hls_r2_secret_access_key" {
+  description = "R2 Object Read/Write secret access key for HLS publishing"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # --- MSAB Application Config ---
 # These are non-sensitive app config that gets written to the boot .env file
 

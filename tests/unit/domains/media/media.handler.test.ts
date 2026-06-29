@@ -66,7 +66,7 @@ describe("reactOnProducerClose", () => {
 
   it("emits audio:producerClosed to the room when transportclose fires", () => {
     const socket = createMockSocket(99);
-    const context = { cascadeCoordinator: null, cascadeRelay: null } as never;
+    const context = { cascadeCoordinator: null, cascadeRelay: null, broadcastController: { onSpeakerChange() {}, isBroadcasting: () => false } } as never;
 
     reactOnProducerClose(
       producer as unknown as import("mediasoup").types.Producer,
@@ -93,6 +93,7 @@ describe("reactOnProducerClose", () => {
     const context = {
       cascadeCoordinator: { closeReversePipe },
       cascadeRelay: null,
+      broadcastController: { onSpeakerChange() {}, isBroadcasting: () => false },
     } as never;
 
     reactOnProducerClose(
@@ -114,6 +115,7 @@ describe("reactOnProducerClose", () => {
     const context = {
       cascadeCoordinator: { closeReversePipe },
       cascadeRelay: null,
+      broadcastController: { onSpeakerChange() {}, isBroadcasting: () => false },
     } as never;
 
     reactOnProducerClose(
@@ -143,7 +145,7 @@ describe("reactOnProducerClose", () => {
       false,
       createMockSocket(),
       "room-1",
-      { cascadeCoordinator: null, cascadeRelay: null } as never,
+      { cascadeCoordinator: null, cascadeRelay: null, broadcastController: { onSpeakerChange() {}, isBroadcasting: () => false } } as never,
     );
     producer._fire("transportclose");
 
@@ -166,7 +168,7 @@ describe("reactOnProducerClose", () => {
       false,
       createMockSocket(),
       "room-1",
-      { cascadeCoordinator: null, cascadeRelay: null } as never,
+      { cascadeCoordinator: null, cascadeRelay: null, broadcastController: { onSpeakerChange() {}, isBroadcasting: () => false } } as never,
     );
     producer._fire("transportclose");
 

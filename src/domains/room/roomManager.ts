@@ -32,6 +32,9 @@ export class RoomManager {
   private presenceTracker: PresenceTracker | null = null;
   // realtime-08: evaluates each owned Room's interactive↔broadcast mode on heartbeat.
   private roomModeService: RoomModeService | null = null;
+  // realtime-09: tear down a Room's HLS broadcast session when its cluster closes
+  // locally. Late-bound callback (not the controller) to avoid an import cycle.
+  private broadcastOnRoomClosed: ((roomId: string) => void) | null = null;
 
   // F-34: periodic CAS ownership heartbeat (short TTL is refreshed here so a
   // live-but-idle origin keeps its claim; a crashed origin's claim expires).
@@ -100,6 +103,15 @@ export class RoomManager {
   setRoomModeService(service: RoomModeService): void {
     this.roomModeService = service;
     this.startOwnershipHeartbeat();
+  }
+
+  /**
+   * realtime-09: late-bind the broadcast cleanup hook. Called whenever a Room's
+   * local cluster is torn down (close / cross-region eviction) so its FFmpeg HLS
+   * publisher stops with it. Idempotent (no-op when the Room isn't publishing).
+   */
+  setBroadcastClosedHook(hook: (roomId: string) => void): void {
+    this.broadcastOnRoomClosed = hook;
   }
 
   /**
@@ -372,6 +384,10 @@ export class RoomManager {
 
     logger.info({ roomId, reason }, "Closing room");
 
+    // realtime-09: stop the HLS broadcast publisher before the cluster (and its
+    // plain transports) go away, so no orphaned FFmpeg keeps encoding.
+    this.broadcastOnRoomClosed?.(roomId);
+
     // 1. Notify Frontend (local + cross-region)
     const closePayload = { roomId, reason, timestamp: Date.now() };
     this.io.to(roomId).emit("room:closed", closePayload);
@@ -537,6 +553,8 @@ export class RoomManager {
     // cluster that is mid-teardown.
     this.rooms.delete(roomId);
     this.presenceTracker?.forget(roomId);
+    // realtime-09: stop any HLS publisher for this local cluster before it closes.
+    this.broadcastOnRoomClosed?.(roomId);
     await cluster.close();
     this.syncRoomGauge();
     logger.info(

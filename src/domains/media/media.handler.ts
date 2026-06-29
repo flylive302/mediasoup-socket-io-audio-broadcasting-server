@@ -123,6 +123,10 @@ const audioProduceHandler = createHandler(
       await cluster.registerProducer(producer);
     }
 
+    // realtime-09: a new speaker changes the broadcast mix topology. No-op unless
+    // this Room is publishing HLS; otherwise re-syncs the mixer + restarts FFmpeg.
+    context.broadcastController.onSpeakerChange(roomId);
+
     const userId = socket.data.user.id;
     const newProducerEvent = { producerId: producer.id, userId, kind: "audio" };
 
@@ -256,7 +260,13 @@ const selfMuteHandler = createHandler(
       return { success: false, error: Errors.NOT_PRODUCER_OWNER };
     }
 
-    await producer.pause();
+    // realtime-09: in broadcast mode the producer must stay LIVE so its HLS mix
+    // input never dies — a paused (RTP-less) producer freezes the sample-synchronous
+    // amix for ALL Listeners. The client mutes the mic locally; Opus DTX keeps the
+    // stream audible-silent. Interactive mode keeps the server-side pause as before.
+    if (!context.broadcastController.isBroadcasting(roomId)) {
+      await producer.pause();
+    }
     logger.debug(
       { producerId, userId: socket.data.user.id },
       "Producer paused (self-mute)",
@@ -268,6 +278,10 @@ const selfMuteHandler = createHandler(
       isMuted: true,
       selfMuted: true,
     }, context.cascadeRelay);
+
+    // realtime-09: reconcile the mix (no-op in broadcast since the producer stays
+    // resumed; matters if a pause happened just before a flip).
+    context.broadcastController.onSpeakerChange(roomId);
 
     return { success: true };
   },
@@ -291,6 +305,9 @@ const selfUnmuteHandler = createHandler(
       return { success: false, error: Errors.NOT_PRODUCER_OWNER };
     }
 
+    // Always resume: a no-op when already live (broadcast self-mute never paused),
+    // and it recovers a producer that was paused (self-muted) just before a flip
+    // so the speaker rejoins the broadcast mix on unmute.
     await producer.resume();
     logger.debug(
       { producerId, userId: socket.data.user.id },
@@ -303,6 +320,9 @@ const selfUnmuteHandler = createHandler(
       isMuted: false,
       selfMuted: true,
     }, context.cascadeRelay);
+
+    // realtime-09: a resumed producer (re)enters the broadcast mix.
+    context.broadcastController.onSpeakerChange(roomId);
 
     return { success: true };
   },
@@ -349,6 +369,10 @@ export function reactOnProducerClose(
       producerId: producer.id,
       userId: socket.data.user.id as number,
     }, context.cascadeRelay);
+
+    // realtime-09: speaker gone → drop it from the broadcast mix (restart FFmpeg
+    // on the reduced set; a dead RTP input would otherwise freeze amix).
+    context.broadcastController.onSpeakerChange(roomId);
   });
 }
 

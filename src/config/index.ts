@@ -123,14 +123,55 @@ const configSchema = z.object({
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
   INTERNAL_API_KEY: z.string().default(""),                // Shared secret for instance-to-instance auth
   PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
-}).refine(
-  (c) => c.ROOM_BROADCAST_THRESHOLD_UP > c.ROOM_BROADCAST_THRESHOLD_DOWN,
-  {
-    message:
-      "ROOM_BROADCAST_THRESHOLD_UP must be greater than ROOM_BROADCAST_THRESHOLD_DOWN (hysteresis band).",
-    path: ["ROOM_BROADCAST_THRESHOLD_UP"],
-  },
-);
+
+  // realtime-09: LL-HLS broadcast publish tier. When a Room flips to broadcast
+  // mode (realtime-08 threshold), the server mixes every seated speaker into one
+  // HLS stream (FFmpeg) and publishes it to R2 → Cloudflare CDN; passive
+  // Listeners play it instead of N WebRTC consumers. All gated behind
+  // BROADCAST_HLS_ENABLED (default off). The HLS_R2_* + HLS_PUBLIC_BASE_URL are
+  // optional in the schema but REQUIRED-when-enabled (refine below), so default
+  // dev/test boots untouched while a misconfigured prod fails fast.
+  BROADCAST_HLS_ENABLED: booleanEnvSchema,
+  HLS_R2_ENDPOINT: z.string().url().optional(),            // https://<acct>.r2.cloudflarestorage.com
+  HLS_R2_ACCESS_KEY_ID: z.string().optional(),
+  HLS_R2_SECRET_ACCESS_KEY: z.string().optional(),
+  HLS_R2_BUCKET: z.string().optional(),
+  HLS_PUBLIC_BASE_URL: z.string().url().optional(),        // https://live.flyliveapp.com (no trailing slash)
+  HLS_FFMPEG_PATH: z.string().default("ffmpeg"),
+  HLS_WORK_DIR: z.string().default("/tmp/flylive-hls"),
+  // Short-segment HLS (R2 is object storage, not an LL-HLS origin): ~1s segments
+  // → ~3–5s glass-to-glass, which is the realtime-09 "~2–5s" target.
+  HLS_SEGMENT_DURATION_SEC: z.coerce.number().positive().default(1),
+  HLS_PLAYLIST_SIZE: z.coerce.number().int().positive().default(6),
+  // Topology changes (seat join/leave, moderator force-mute) restart FFmpeg;
+  // debounce coalesces a burst into one restart so a flurry of seat changes
+  // rebuffers Listeners once, not N times.
+  HLS_RESTART_DEBOUNCE_MS: z.coerce.number().int().nonnegative().default(1500),
+})
+  .refine(
+    (c) => c.ROOM_BROADCAST_THRESHOLD_UP > c.ROOM_BROADCAST_THRESHOLD_DOWN,
+    {
+      message:
+        "ROOM_BROADCAST_THRESHOLD_UP must be greater than ROOM_BROADCAST_THRESHOLD_DOWN (hysteresis band).",
+      path: ["ROOM_BROADCAST_THRESHOLD_UP"],
+    },
+  )
+  .refine(
+    (c) =>
+      !c.BROADCAST_HLS_ENABLED ||
+      Boolean(
+        c.HLS_R2_ENDPOINT &&
+          c.HLS_R2_ACCESS_KEY_ID &&
+          c.HLS_R2_SECRET_ACCESS_KEY &&
+          c.HLS_R2_BUCKET &&
+          c.HLS_PUBLIC_BASE_URL,
+      ),
+    {
+      message:
+        "BROADCAST_HLS_ENABLED=true requires HLS_R2_ENDPOINT, HLS_R2_ACCESS_KEY_ID, HLS_R2_SECRET_ACCESS_KEY, HLS_R2_BUCKET, and HLS_PUBLIC_BASE_URL.",
+      path: ["BROADCAST_HLS_ENABLED"],
+    },
+  );
 
 /**
  * INSTANCE_ID is intentionally NOT a Zod field — it must come from IMDSv2

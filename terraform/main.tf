@@ -313,6 +313,11 @@ module "ssm" {
   session_secret          = var.session_secret
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   redis_auth_token        = var.redis_auth_token
+
+  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
+  broadcast_hls_enabled    = var.broadcast_hls_enabled
+  hls_r2_access_key_id     = var.hls_r2_access_key_id
+  hls_r2_secret_access_key = var.hls_r2_secret_access_key
 }
 
 # Frankfurt SSM — replicate secrets to eu-central-1
@@ -327,6 +332,11 @@ module "ssm_frankfurt" {
   session_secret          = var.session_secret
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   redis_auth_token        = var.redis_auth_token
+
+  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
+  broadcast_hls_enabled    = var.broadcast_hls_enabled
+  hls_r2_access_key_id     = var.hls_r2_access_key_id
+  hls_r2_secret_access_key = var.hls_r2_secret_access_key
 }
 
 # Singapore SSM — replicate secrets to ap-southeast-1 (realtime-07)
@@ -340,6 +350,11 @@ module "ssm_singapore" {
   session_secret          = var.session_secret
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   redis_auth_token        = var.redis_auth_token
+
+  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
+  broadcast_hls_enabled    = var.broadcast_hls_enabled
+  hls_r2_access_key_id     = var.hls_r2_access_key_id
+  hls_r2_secret_access_key = var.hls_r2_secret_access_key
 }
 
 # =============================================================================
@@ -383,6 +398,16 @@ module "autoscaling_mumbai" {
   jwt_max_age_seconds    = var.jwt_max_age_seconds
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
   ice_stun_urls          = var.ice_stun_urls
+
+  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+
+  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
+  broadcast_hls_enabled = var.broadcast_hls_enabled
+  hls_r2_endpoint       = var.hls_r2_endpoint
+  hls_r2_bucket         = var.hls_r2_bucket
+  hls_public_base_url   = var.hls_public_base_url
 
   # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
   # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
@@ -432,6 +457,16 @@ module "autoscaling_frankfurt" {
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
   ice_stun_urls          = var.ice_stun_urls
 
+  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+
+  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
+  broadcast_hls_enabled = var.broadcast_hls_enabled
+  hls_r2_endpoint       = var.hls_r2_endpoint
+  hls_r2_bucket         = var.hls_r2_bucket
+  hls_public_base_url   = var.hls_public_base_url
+
   # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
   # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
   # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
@@ -478,6 +513,16 @@ module "autoscaling_singapore" {
   jwt_max_age_seconds    = var.jwt_max_age_seconds
   laravel_api_timeout_ms = var.laravel_api_timeout_ms
   ice_stun_urls          = var.ice_stun_urls
+
+  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+
+  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
+  broadcast_hls_enabled = var.broadcast_hls_enabled
+  hls_r2_endpoint       = var.hls_r2_endpoint
+  hls_r2_bucket         = var.hls_r2_bucket
+  hls_public_base_url   = var.hls_public_base_url
 
   # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
   # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost

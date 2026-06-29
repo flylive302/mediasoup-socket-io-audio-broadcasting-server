@@ -57,6 +57,31 @@ resource "aws_ssm_parameter" "cloudflare_turn_api_key" {
   }
 }
 
+# --- realtime-09 broadcast HLS R2 keys ---
+# Only created when the broadcast tier is enabled — SSM rejects empty SecureString
+# values, and a disabled host's fetch_ssm gracefully returns "" for a missing param.
+resource "aws_ssm_parameter" "hls_r2_access_key_id" {
+  count = var.broadcast_hls_enabled ? 1 : 0
+  name  = "/${var.project_name}/hls-r2-access-key-id"
+  type  = "SecureString"
+  value = var.hls_r2_access_key_id
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+resource "aws_ssm_parameter" "hls_r2_secret_access_key" {
+  count = var.broadcast_hls_enabled ? 1 : 0
+  name  = "/${var.project_name}/hls-r2-secret-access-key"
+  type  = "SecureString"
+  value = var.hls_r2_secret_access_key
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 # --- Redis AUTH Token ---
 resource "aws_ssm_parameter" "redis_auth_token" {
   name  = "/${var.project_name}/redis-auth-token"
