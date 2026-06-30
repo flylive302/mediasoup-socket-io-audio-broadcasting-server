@@ -57,7 +57,7 @@ describe("RoomModeService.evaluate", () => {
       setModeResult: "broadcast",
     });
 
-    const result = await service.evaluate("r", 2000);
+    const result = await service.evaluate("r", 2000, 1);
 
     expect(result).toBe("broadcast");
     expect(state.setMode).toHaveBeenCalledWith("r", "broadcast");
@@ -79,7 +79,7 @@ describe("RoomModeService.evaluate", () => {
   it("holds inside the hysteresis band — no persist, no emit", async () => {
     const { service, state, emit } = makeService({ currentMode: "interactive" });
 
-    const result = await service.evaluate("r", 1200);
+    const result = await service.evaluate("r", 1200, 1);
 
     expect(result).toBe("interactive");
     expect(state.setMode).not.toHaveBeenCalled();
@@ -89,7 +89,7 @@ describe("RoomModeService.evaluate", () => {
   it("returns null and skips work when the Room state is gone (closed)", async () => {
     const { service, state, emit } = makeService({ currentMode: null });
 
-    const result = await service.evaluate("r", 5000);
+    const result = await service.evaluate("r", 5000, 1);
 
     expect(result).toBeNull();
     expect(state.setMode).not.toHaveBeenCalled();
@@ -102,7 +102,7 @@ describe("RoomModeService.evaluate", () => {
       setModeResult: null,
     });
 
-    const result = await service.evaluate("r", 2000);
+    const result = await service.evaluate("r", 2000, 1);
 
     expect(result).toBeNull();
     expect(emit).not.toHaveBeenCalled();
@@ -114,7 +114,7 @@ describe("RoomModeService.evaluate", () => {
       setModeResult: "interactive",
     });
 
-    await service.evaluate("r", 500); // below DOWN threshold → demote
+    await service.evaluate("r", 500, 1); // below DOWN threshold → demote
 
     expect(emit).toHaveBeenCalledWith(
       "room:mode",

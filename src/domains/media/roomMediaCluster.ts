@@ -215,6 +215,27 @@ export class RoomMediaCluster {
   }
 
   /**
+   * realtime-17b: count of live, RESUMED audio source producers — i.e. speakers
+   * actually emitting RTP right now (paused = manager-muted = no RTP). This is the
+   * exact set the broadcast SpeakerMixer feeds FFmpeg, so it's the authoritative
+   * "is anyone broadcastable?" signal used to gate the interactive→broadcast flip:
+   * flipping a Room to broadcast with zero speakers means clients fetch an HLS
+   * manifest that can never exist (no FFmpeg) → a permanent master.m3u8 404.
+   *
+   * On the origin this includes cascade reverse-piped edge speakers (registered
+   * locally via /internal/pipe/reverse-finalize), so it reflects the whole Room.
+   */
+  getResumedAudioProducerCount(): number {
+    if (!this.sourceRouter) return 0;
+    let count = 0;
+    for (const id of this.sourceProducerIds) {
+      const p = this.sourceRouter.getProducer(id);
+      if (p && !p.closed && p.kind === "audio" && !p.paused) count++;
+    }
+    return count;
+  }
+
+  /**
    * List all live source producers with their owning userId.
    * Used by /internal/room/:id/producers so an attaching edge can fetch the
    * speaker set on join and pipe each before serving listeners.

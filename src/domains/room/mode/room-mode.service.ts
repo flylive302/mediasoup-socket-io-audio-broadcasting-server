@@ -60,7 +60,11 @@ export class RoomModeService {
    * or null if the Room's state key is gone (closed) — the caller should then
    * skip mode-related bookkeeping for it.
    */
-  async evaluate(roomId: string, listenerCount: number): Promise<RoomMode | null> {
+  async evaluate(
+    roomId: string,
+    listenerCount: number,
+    speakerCount: number,
+  ): Promise<RoomMode | null> {
     // GATE — need a current mode to decide from; a missing key means closed.
     const current = await this.state.get(roomId);
     if (!current) {
@@ -70,6 +74,7 @@ export class RoomModeService {
     const decision = this.controller.decide({
       currentMode: current.mode,
       listenerCount,
+      speakerCount,
       upThreshold: config.ROOM_BROADCAST_THRESHOLD_UP,
       downThreshold: config.ROOM_BROADCAST_THRESHOLD_DOWN,
     });

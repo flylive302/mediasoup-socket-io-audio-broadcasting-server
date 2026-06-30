@@ -64,8 +64,11 @@ function makeManager(present: number, isOwner = true) {
     statusCoalescer as never,
   );
 
-  // Heartbeat iterates the private rooms map; seed one owned Room.
-  (manager as unknown as { rooms: Map<string, unknown> }).rooms.set("r1", {});
+  // Heartbeat iterates the private rooms map; seed one owned Room whose cluster
+  // reports 2 active speakers (realtime-17b feeds this into the mode gate).
+  (manager as unknown as { rooms: Map<string, unknown> }).rooms.set("r1", {
+    getResumedAudioProducerCount: () => 2,
+  });
   manager.setRoomRegistry(roomRegistry as never);
   manager.setRoomModeService(roomModeService as never);
   manager.setPresenceTracker(presenceTracker as never);
@@ -110,7 +113,7 @@ describe("RoomManager ownership heartbeat → coalesced Laravel keep-alive (real
 
     await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
 
-    expect(roomModeService.evaluate).toHaveBeenCalledWith("r1", 3);
+    expect(roomModeService.evaluate).toHaveBeenCalledWith("r1", 3, 2);
     manager.stopOwnershipHeartbeat();
   });
 

@@ -28,6 +28,14 @@ export interface ModeDecisionInput {
   currentMode: RoomMode;
   /** Passive Listeners in the Room (the threshold input). */
   listenerCount: number;
+  /**
+   * realtime-17b: count of speakers actually emitting audio RTP right now
+   * (resumed audio producers). Broadcast requires ≥1 to ENTER: promoting with no
+   * speaker produces no HLS stream, so clients would 404 on master.m3u8 forever.
+   * It does NOT force a demote once in broadcast (see demote logic) — that would
+   * herd a huge Room back onto WebRTC every time the last speaker briefly leaves.
+   */
+  speakerCount: number;
   /** Flip up to broadcast at/above this count. Must be > downThreshold. */
   upThreshold: number;
   /** Flip back down to interactive at/below this count. */
@@ -54,12 +62,26 @@ export interface ModeDecision {
 export class RoomModeController {
   /** Pure: decide the Room's mode from its current mode + Listener count. */
   decide(input: ModeDecisionInput): ModeDecision {
-    const { currentMode, listenerCount, upThreshold, downThreshold } = input;
+    const { currentMode, listenerCount, speakerCount, upThreshold, downThreshold } =
+      input;
 
-    if (currentMode === "interactive" && listenerCount >= upThreshold) {
+    // realtime-17b: never promote without a speaker — a broadcast with no audio
+    // source has no HLS stream, so listeners would 404 on master.m3u8 forever.
+    if (
+      currentMode === "interactive" &&
+      listenerCount >= upThreshold &&
+      speakerCount >= 1
+    ) {
       return { mode: "broadcast", changed: true, transition: "promote" };
     }
 
+    // Demote on the listener floor only (hysteresis). Deliberately NOT on
+    // speakerCount===0: a broadcast Room is by definition large (≥ upThreshold
+    // listeners), so demoting every time the last speaker briefly leaves would
+    // flap thousands of Listeners back onto per-listener WebRTC — the exact SFU
+    // herd the broadcast tier exists to avoid. While speakers are momentarily
+    // gone the publisher simply stops emitting; clients ride the gap via hls.js
+    // cold-start retry and pick up when a speaker returns.
     if (currentMode === "broadcast" && listenerCount <= downThreshold) {
       return { mode: "interactive", changed: true, transition: "demote" };
     }

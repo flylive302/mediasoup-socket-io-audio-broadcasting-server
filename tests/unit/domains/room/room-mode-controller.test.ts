@@ -12,6 +12,10 @@ function input(overrides: Partial<ModeDecisionInput> = {}): ModeDecisionInput {
   return {
     currentMode: "interactive",
     listenerCount: 0,
+    // realtime-17b: default to a broadcastable Room (≥1 speaker) so the existing
+    // threshold/hysteresis cases isolate the listener-count behaviour. The
+    // speaker-gate gets its own dedicated cases below.
+    speakerCount: 1,
     upThreshold: 1500,
     downThreshold: 1000,
     ...overrides,
@@ -95,6 +99,28 @@ describe("RoomModeController.decide", () => {
       in: { currentMode: "broadcast", listenerCount: 1001 },
       out: { mode: "broadcast", changed: false, transition: null },
     },
+
+    // ── realtime-17b: speaker-gate ──
+    {
+      name: "interactive over up-threshold but ZERO speakers → hold (no dead HLS)",
+      in: { currentMode: "interactive", listenerCount: 30_000, speakerCount: 0 },
+      out: { mode: "interactive", changed: false, transition: null },
+    },
+    {
+      name: "interactive over up-threshold WITH a speaker → promote",
+      in: { currentMode: "interactive", listenerCount: 1500, speakerCount: 1 },
+      out: { mode: "broadcast", changed: true, transition: "promote" },
+    },
+    {
+      name: "broadcast above down-threshold but last speaker left → HOLD (no WebRTC herd; client rides the gap)",
+      in: { currentMode: "broadcast", listenerCount: 5000, speakerCount: 0 },
+      out: { mode: "broadcast", changed: false, transition: null },
+    },
+    {
+      name: "broadcast above down-threshold with a speaker → hold",
+      in: { currentMode: "broadcast", listenerCount: 5000, speakerCount: 2 },
+      out: { mode: "broadcast", changed: false, transition: null },
+    },
   ];
 
   for (const c of cases) {
@@ -108,6 +134,7 @@ describe("RoomModeController.decide", () => {
       controller.decide({
         currentMode: "interactive",
         listenerCount: 50,
+        speakerCount: 1,
         upThreshold: 50,
         downThreshold: 25,
       }),

@@ -171,10 +171,20 @@ export class RoomManager {
             // aborts the unconditional presence/TTL submit below.
             const owns =
               present > 0 ? await this.isOwner(roomId).catch(() => false) : false;
+            // realtime-17b: gate the broadcast flip on an actual speaker. Without
+            // a resumed audio producer there is no HLS stream to serve, so a
+            // promote would only hand listeners a master.m3u8 that 404s forever.
+            const speakerCount =
+              present > 0 && owns
+                ? (this.rooms.get(roomId)?.getResumedAudioProducerCount() ?? 0)
+                : 0;
             const mode =
               present > 0 && owns
-                ? (await this.roomModeService?.evaluate(roomId, present)) ??
-                  undefined
+                ? (await this.roomModeService?.evaluate(
+                    roomId,
+                    present,
+                    speakerCount,
+                  )) ?? undefined
                 : undefined;
             if (!this.rooms.has(roomId)) return;
             // realtime-02: also refresh the Laravel-side activity TTL with a
