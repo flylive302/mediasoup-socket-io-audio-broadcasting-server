@@ -58,6 +58,13 @@ export interface BroadcastControllerDeps {
   enabled: boolean;
   /** ms to wait after spawning FFmpeg before resuming consumers (port-bind grace). */
   startupGraceMs: number;
+  /**
+   * realtime-17: is this instance the CAS origin for the room? The heartbeat
+   * already gates the mode flip on ownership; this is the belt-and-suspenders
+   * re-check so a stale `promote` enqueued just before an ownership change can
+   * never spawn FFmpeg on a non-origin instance (where the speakers' RTP isn't).
+   */
+  isOwner(roomId: string): Promise<boolean>;
   getCluster(roomId: string): ClusterView | undefined;
   createMixer(router: unknown): MixerLike;
   createPublisher(roomId: string): PublisherLike;
@@ -113,6 +120,17 @@ export class BroadcastPublishController {
 
   private async startBroadcast(roomId: string): Promise<void> {
     if (this.sessions.has(roomId)) return;
+    // realtime-17: never spawn a publisher on a non-origin instance — the SDP
+    // ports would receive no RTP (`Connection timed out`). The heartbeat gate
+    // makes this rare, but a promote enqueued just before an ownership change
+    // would otherwise slip through.
+    if (!(await this.deps.isOwner(roomId))) {
+      this.deps.logger.warn(
+        { roomId },
+        "Broadcast promote: not room origin — skipping publisher spawn",
+      );
+      return;
+    }
     const cluster = this.deps.getCluster(roomId);
     if (!cluster?.router) {
       this.deps.logger.warn({ roomId }, "Broadcast promote: no cluster/router");

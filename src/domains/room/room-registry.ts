@@ -36,6 +36,16 @@ const TTL_SECONDS = 86_400; // 24 hours — origin info key (matches RoomStateRe
  */
 const OWNER_TTL_SECONDS = 90;
 
+/**
+ * realtime-17: short in-memory cache for `isOwner` reads. One heartbeat tick
+ * can fan out into several ownership checks (the heartbeat gate itself, then the
+ * BroadcastPublishController belt-and-suspenders re-check at spawn). A few-second
+ * cache collapses those into one Redis GET while staying far shorter than the
+ * 90s CAS TTL, so a transferred claim is reflected well within a hysteresis
+ * window. Both owner and non-owner results are cached.
+ */
+const OWNER_CACHE_MS = 5_000;
+
 export interface ClaimResult {
   /** True if this instance won the claim and should become origin. */
   won: boolean;
@@ -44,6 +54,12 @@ export interface ClaimResult {
 }
 
 export class RoomRegistry {
+  /** realtime-17: roomId → cached owner read (see OWNER_CACHE_MS). */
+  private readonly ownerCache = new Map<
+    string,
+    { owner: string | null; expiresAt: number }
+  >();
+
   constructor(
     private readonly redis: Redis,
     private readonly logger: Logger,
@@ -100,6 +116,26 @@ export class RoomRegistry {
    */
   async getOwner(roomId: string): Promise<string | null> {
     return this.redis.get(`${KEY_PREFIX}${roomId}:owner`);
+  }
+
+  /**
+   * realtime-17: is `instanceId` the current CAS owner (origin) of this room?
+   *
+   * Backed by a short cache (OWNER_CACHE_MS) so the multiple ownership checks a
+   * single heartbeat tick triggers (the mode-eval gate + the broadcast spawn
+   * re-check) collapse to one Redis GET. The result is conservative-by-design:
+   * callers gate split-brain-prone work (mode flips, FFmpeg spawn) on a `true`,
+   * so a briefly-stale `false` only delays — never duplicates — that work.
+   */
+  async isOwner(roomId: string, instanceId: string): Promise<boolean> {
+    const now = Date.now();
+    const cached = this.ownerCache.get(roomId);
+    if (cached && cached.expiresAt > now) {
+      return cached.owner === instanceId;
+    }
+    const owner = await this.getOwner(roomId);
+    this.ownerCache.set(roomId, { owner, expiresAt: now + OWNER_CACHE_MS });
+    return owner === instanceId;
   }
 
   /**
@@ -194,6 +230,16 @@ export class RoomRegistry {
   // every join so the data was garbage anyway. Cascade multi-edge LB is a
   // deferred scale-gated project; rebuild from scratch if revived (CASCADE.md).
 
+  /**
+   * realtime-17: drop only the cached ownership read for a room — no CAS DEL.
+   * For the `evictLocalRoom` ghost/edge-drop path, which intentionally does NOT
+   * release the CAS owner key (that belongs to the real origin) but must still
+   * not leak a stale cache entry for a room this instance no longer holds.
+   */
+  forgetOwnerCache(roomId: string): void {
+    this.ownerCache.delete(roomId);
+  }
+
   // ─── Cleanup ────────────────────────────────────────────────────
 
   /** Remove all registry data for a room (origin info, edges, AND ownership claim). */
@@ -202,6 +248,9 @@ export class RoomRegistry {
     const originKey = `${KEY_PREFIX}${roomId}:origin`;
     const edgesKey = `${KEY_PREFIX}${roomId}:edges`;
     await this.redis.del(ownerKey, originKey, edgesKey);
+    // realtime-17: drop the cached ownership read so a re-opened room with the
+    // same id can't transiently read this instance as owner from a stale entry.
+    this.ownerCache.delete(roomId);
     this.logger.debug({ roomId }, "RoomRegistry: room cleaned up");
   }
 }

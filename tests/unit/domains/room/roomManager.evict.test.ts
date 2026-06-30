@@ -32,12 +32,18 @@ function makeRoomManager() {
 
 describe("RoomManager.evictLocalRoom", () => {
   let rm: RoomManager;
-  let registry: { cleanup: ReturnType<typeof vi.fn> };
+  let registry: {
+    cleanup: ReturnType<typeof vi.fn>;
+    forgetOwnerCache: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     rm = makeRoomManager();
-    registry = { cleanup: vi.fn().mockResolvedValue(undefined) };
+    registry = {
+      cleanup: vi.fn().mockResolvedValue(undefined),
+      forgetOwnerCache: vi.fn(),
+    };
     // The instance has a registry bound (as in prod) — eviction must still not
     // touch it, because an edge/ghost does not own the CAS key.
     rm.setRoomRegistry(registry as any);
@@ -67,6 +73,8 @@ describe("RoomManager.evictLocalRoom", () => {
     // Critical safety property: an edge/ghost eviction must never release the
     // real origin's ownership claim.
     expect(registry.cleanup).not.toHaveBeenCalled();
+    // realtime-17: it MUST, however, drop the cache-only entry so it can't leak.
+    expect(registry.forgetOwnerCache).toHaveBeenCalledWith("room-1");
   });
 
   it("is a no-op when the room is not present locally", async () => {

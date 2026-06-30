@@ -37,12 +37,19 @@ import { RoomManager } from "@src/domains/room/roomManager.js";
 
 // ─── Stubs ──────────────────────────────────────────────────────────
 
-function makeManager(present: number) {
+function makeManager(present: number, isOwner = true) {
   const statusCoalescer = { submit: vi.fn(), flushNow: vi.fn(), forget: vi.fn() };
   const presenceTracker = {
     reconcile: vi.fn(async () => present),
   };
-  const roomRegistry = { refreshOwnership: vi.fn(async () => {}) };
+  const roomRegistry = {
+    refreshOwnership: vi.fn(async () => {}),
+    isOwner: vi.fn(async () => isOwner),
+  };
+  // realtime-17: the heartbeat must only call evaluate when this instance owns
+  // the Room. Returns the unchanged "interactive" mode (no flip) so the submit
+  // shape is unaffected when it IS called.
+  const roomModeService = { evaluate: vi.fn(async () => "interactive") };
 
   const workerManager = { setOnWorkerDied: vi.fn() } as never;
   const redis = { defineCommand: vi.fn() } as never;
@@ -60,9 +67,10 @@ function makeManager(present: number) {
   // Heartbeat iterates the private rooms map; seed one owned Room.
   (manager as unknown as { rooms: Map<string, unknown> }).rooms.set("r1", {});
   manager.setRoomRegistry(roomRegistry as never);
+  manager.setRoomModeService(roomModeService as never);
   manager.setPresenceTracker(presenceTracker as never);
 
-  return { manager, statusCoalescer, presenceTracker };
+  return { manager, statusCoalescer, presenceTracker, roomRegistry, roomModeService };
 }
 
 const HEARTBEAT_MS = 30_000;
@@ -88,11 +96,41 @@ describe("RoomManager ownership heartbeat → coalesced Laravel keep-alive (real
     expect(statusCoalescer.submit).toHaveBeenCalledWith("r1", {
       is_live: true,
       participant_count: 3,
+      mode: "interactive",
       hosting_region: "ap-south-1",
       hosting_ip: "1.2.3.4",
       hosting_port: 3030,
     });
 
+    manager.stopOwnershipHeartbeat();
+  });
+
+  it("realtime-17: the owner evaluates mode for a populated Room", async () => {
+    const { manager, roomModeService } = makeManager(3, /* isOwner */ true);
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    expect(roomModeService.evaluate).toHaveBeenCalledWith("r1", 3);
+    manager.stopOwnershipHeartbeat();
+  });
+
+  it("realtime-17: a NON-owner never evaluates mode, but still reconciles presence/TTL", async () => {
+    const { manager, statusCoalescer, presenceTracker, roomModeService } =
+      makeManager(3, /* isOwner */ false);
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    // No mode flip from an edge instance — that is the split-brain this fixes.
+    expect(roomModeService.evaluate).not.toHaveBeenCalled();
+    // Presence/TTL healing is unconditional: the submit still fires, sans mode.
+    expect(presenceTracker.reconcile).toHaveBeenCalledWith("r1");
+    expect(statusCoalescer.submit).toHaveBeenCalledWith("r1", {
+      is_live: true,
+      participant_count: 3,
+      hosting_region: "ap-south-1",
+      hosting_ip: "1.2.3.4",
+      hosting_port: 3030,
+    });
     manager.stopOwnershipHeartbeat();
   });
 
@@ -126,6 +164,25 @@ describe("RoomManager ownership heartbeat → coalesced Laravel keep-alive (real
     await vi.advanceTimersByTimeAsync(0);
 
     expect(statusCoalescer.submit).not.toHaveBeenCalled();
+    manager.stopOwnershipHeartbeat();
+  });
+
+  it("realtime-17: an ownership-check error is contained — no flip, presence submit still fires", async () => {
+    const { manager, statusCoalescer, roomModeService, roomRegistry } =
+      makeManager(3, /* isOwner */ true);
+    // Redis blip on the ownership read: must NOT abort the presence/TTL submit.
+    roomRegistry.isOwner.mockRejectedValueOnce(new Error("redis down"));
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    expect(roomModeService.evaluate).not.toHaveBeenCalled();
+    expect(statusCoalescer.submit).toHaveBeenCalledWith("r1", {
+      is_live: true,
+      participant_count: 3,
+      hosting_region: "ap-south-1",
+      hosting_ip: "1.2.3.4",
+      hosting_port: 3030,
+    });
     manager.stopOwnershipHeartbeat();
   });
 

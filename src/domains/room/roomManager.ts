@@ -83,6 +83,20 @@ export class RoomManager {
   }
 
   /**
+   * realtime-17: is THIS instance the CAS origin for `roomId`?
+   *
+   * Single source of truth for the "only the origin flips mode / runs FFmpeg"
+   * rule: the ownership heartbeat gates `roomModeService.evaluate` on this, and
+   * the BroadcastPublishController re-checks it before spawning a publisher. When
+   * no RoomRegistry is wired (single-instance / pre-bootstrap), every instance is
+   * trivially the origin → returns true so behaviour is unchanged.
+   */
+  async isOwner(roomId: string): Promise<boolean> {
+    if (!this.roomRegistry) return true;
+    return this.roomRegistry.isOwner(roomId, config.INSTANCE_ID);
+  }
+
+  /**
    * realtime-01: late-bind the PresenceTracker so the periodic heartbeat can
    * reconcile each owned Room's advisory participant integer to real socket
    * presence AND refresh its room:state TTL. The reconcile is what fixes both
@@ -149,8 +163,16 @@ export class RoomManager {
             // converges idempotently. Only meaningful while live; a 0-presence
             // Room is about to auto-close. evaluate awaited Redis — re-check the
             // Room still exists before submitting.
+            // realtime-17: only the CAS origin evaluates/flips mode and drives
+            // the broadcast publisher. Edge instances (which hold the Room via
+            // the cascade edge cluster) reach here too, but must NOT flip — that
+            // is the split-brain mode-flap. The ownership check is contained:
+            // false-on-error keeps the gate on the safe (no-flip) side AND never
+            // aborts the unconditional presence/TTL submit below.
+            const owns =
+              present > 0 ? await this.isOwner(roomId).catch(() => false) : false;
             const mode =
-              present > 0
+              present > 0 && owns
                 ? (await this.roomModeService?.evaluate(roomId, present)) ??
                   undefined
                 : undefined;
@@ -553,6 +575,10 @@ export class RoomManager {
     // cluster that is mid-teardown.
     this.rooms.delete(roomId);
     this.presenceTracker?.forget(roomId);
+    // realtime-17: this path deliberately does NOT release the CAS owner key
+    // (it belongs to the real origin), but the cache-only entry for this room
+    // must still be dropped so it can't leak across edge churn.
+    this.roomRegistry?.forgetOwnerCache(roomId);
     // realtime-09: stop any HLS publisher for this local cluster before it closes.
     this.broadcastOnRoomClosed?.(roomId);
     await cluster.close();

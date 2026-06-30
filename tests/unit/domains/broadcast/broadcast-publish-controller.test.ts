@@ -62,12 +62,13 @@ function makeCluster(producers: FakeProducer[]): ClusterView & { producers: Fake
 }
 
 /** Build a controller + its injected fakes, awaiting the per-room op chain. */
-function setup(cluster: ClusterView, enabled = true) {
+function setup(cluster: ClusterView, enabled = true, isOwner = true) {
   const mixer = makeMixer();
   const publisher = makePublisher();
   const deps: BroadcastControllerDeps = {
     enabled,
     startupGraceMs: 0,
+    isOwner: async () => isOwner,
     getCluster: () => cluster,
     createMixer: () => mixer,
     createPublisher: () => publisher,
@@ -99,6 +100,21 @@ describe("BroadcastPublishController promote/demote", () => {
     const startOrder = (publisher.start as any).mock.invocationCallOrder[0];
     const resumeOrder = (mixer.resumeAll as any).mock.invocationCallOrder[0];
     expect(startOrder).toBeLessThan(resumeOrder);
+  });
+
+  it("realtime-17: a non-origin instance never spawns a publisher on promote", async () => {
+    const { controller, mixer, publisher, flush } = setup(
+      makeCluster([{ producerId: "a" }]),
+      true,
+      /* isOwner */ false,
+    );
+
+    controller.onModeTransition("room1", "promote");
+    await flush();
+
+    expect(mixer.sync).not.toHaveBeenCalled();
+    expect(publisher.start).not.toHaveBeenCalled();
+    expect(controller.isBroadcasting("room1")).toBe(false);
   });
 
   it("excludes PAUSED producers from the mix (would freeze amix)", async () => {

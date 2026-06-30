@@ -32,6 +32,7 @@ export function createBroadcastController(
     return new BroadcastPublishController({
       enabled: false,
       startupGraceMs: 0,
+      isOwner: async () => true,
       getCluster: () => undefined,
       createMixer: () => {
         throw new Error("broadcast disabled");
@@ -57,6 +58,9 @@ export function createBroadcastController(
   return new BroadcastPublishController({
     enabled: true,
     startupGraceMs: STARTUP_GRACE_MS,
+    // realtime-17: route the origin check through RoomManager, which holds the
+    // late-bound RoomRegistry (wired in server.ts after this controller is built).
+    isOwner: (roomId) => roomManager.isOwner(roomId),
     getCluster: (roomId): ClusterView | undefined => {
       const cluster = roomManager.getRoom(roomId);
       if (!cluster) return undefined;

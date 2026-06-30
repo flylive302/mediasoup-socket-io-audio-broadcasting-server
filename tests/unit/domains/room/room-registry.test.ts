@@ -136,6 +136,57 @@ describe("RoomRegistry", () => {
     });
   });
 
+  describe("isOwner (realtime-17)", () => {
+    const ownerKey = "cascade:room:room-1:owner";
+
+    it("true when the CAS owner key matches this instance", async () => {
+      redis._store.set(ownerKey, "i-self");
+      expect(await registry.isOwner("room-1", "i-self")).toBe(true);
+    });
+
+    it("false when another instance holds the claim", async () => {
+      redis._store.set(ownerKey, "i-other");
+      expect(await registry.isOwner("room-1", "i-self")).toBe(false);
+    });
+
+    it("false when there is no owner (claim expired/unset)", async () => {
+      expect(await registry.isOwner("room-1", "i-self")).toBe(false);
+    });
+
+    it("caches the read — repeated checks within the window hit Redis once", async () => {
+      redis._store.set(ownerKey, "i-self");
+      await registry.isOwner("room-1", "i-self");
+      await registry.isOwner("room-1", "i-self");
+      expect(redis.get).toHaveBeenCalledTimes(1);
+    });
+
+    it("forgetOwnerCache drops the cache-only entry without a CAS DEL", async () => {
+      redis._store.set(ownerKey, "i-self");
+      expect(await registry.isOwner("room-1", "i-self")).toBe(true);
+
+      registry.forgetOwnerCache("room-1");
+      // No DEL of the owner key (that belongs to the real origin on evict paths).
+      expect(redis.del).not.toHaveBeenCalled();
+      // The owner key is still present, so the re-read still reports ownership.
+      redis.get.mockClear();
+      expect(await registry.isOwner("room-1", "i-self")).toBe(true);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+    });
+
+    it("cleanup invalidates the cache so a re-opened room re-reads ownership", async () => {
+      redis._store.set(ownerKey, "i-self");
+      expect(await registry.isOwner("room-1", "i-self")).toBe(true);
+
+      // Room closes (owner key gone) and is cleaned up — the stale cached "owner"
+      // must not survive into a fresh check.
+      await registry.cleanup("room-1");
+      redis.get.mockClear();
+
+      expect(await registry.isOwner("room-1", "i-self")).toBe(false);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("cleanup", () => {
     it("removes origin + owner keys for a room", async () => {
       await registry.registerOrigin("room-1", originInfo);
