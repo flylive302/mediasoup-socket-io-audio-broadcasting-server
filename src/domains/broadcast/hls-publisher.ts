@@ -67,6 +67,14 @@ export class HlsPublisher {
   /** Start publishing for the given SDP / speaker count (first start). */
   async start(sdp: string, inputCount: number): Promise<void> {
     this.stopped = false;
+    // A prior stop() ran removeRoom(), wiping this room's R2 objects. Reset the
+    // upload-dedup state so this (re)start re-publishes master.m3u8 + a fresh
+    // init/segment set. Without this, an all-speakers-left → returned cycle (or a
+    // transient mixer.size===0 reconcile) leaves master.m3u8 permanently 404 on
+    // the CDN because masterUploaded stayed true while R2 no longer has it.
+    // (restart() — topology change without a stop — intentionally keeps these.)
+    this.masterUploaded = false;
+    this.uploadedSegments.clear();
     await mkdir(this.opts.workDir, { recursive: true });
     await this.spawnFfmpeg(sdp, inputCount);
     this.startWatching();

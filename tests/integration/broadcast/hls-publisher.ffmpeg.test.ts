@@ -153,6 +153,37 @@ describe.skipIf(!hasFfmpegWithOpus())("HlsPublisher × ffmpeg", () => {
     expect(names.indexOf("init.mp4")).toBeLessThan(names.lastIndexOf("live.m3u8"));
   }, 30_000);
 
+  it("re-uploads master.m3u8 after a stop()→start() cycle (no permanent 404)", async () => {
+    const uploader = await startPublisher([{ port: PORT }]);
+    await new Promise((r) => setTimeout(r, 600));
+    senders.push(spawnSender(PORT, 440));
+    expect(
+      await waitFor(() => uploader.names().includes("master.m3u8"), 20_000),
+    ).toBe(true);
+
+    // All speakers leave → stop() wipes R2 (removeRoom). A returning speaker then
+    // re-starts the SAME publisher instance (the reconcile size-0 → ensurePublishing
+    // path). master.m3u8 MUST be re-uploaded — else it stays 404 on the CDN forever
+    // (the prod "works ~5s then 404 forever" bug).
+    await publisher!.stop();
+    expect(uploader.removed).toBe(true);
+    const mastersBeforeRestart = uploader
+      .names()
+      .filter((n) => n === "master.m3u8").length;
+
+    const sdp = buildMixSdp([
+      { port: PORT, payloadType: PAYLOAD_TYPE, clockRate: 48000, channels: 2 },
+    ]);
+    await publisher!.start(sdp, 1);
+    const reuploaded = await waitFor(
+      () =>
+        uploader.names().filter((n) => n === "master.m3u8").length >
+        mastersBeforeRestart,
+      20_000,
+    );
+    expect(reuploaded).toBe(true);
+  }, 50_000);
+
   it("mixes TWO live speakers via amix=normalize=0 (all audible, no cap)", async () => {
     const uploader = await startPublisher([{ port: PORT }, { port: PORT_B }]);
 
