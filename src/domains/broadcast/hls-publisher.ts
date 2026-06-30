@@ -130,8 +130,11 @@ export class HlsPublisher {
     this.ffmpeg = proc;
 
     proc.stderr?.on("data", (chunk: Buffer) => {
-      // FFmpeg logs warnings/errors here at -loglevel warning.
-      this.logger.debug(
+      // FFmpeg runs at -loglevel warning, so anything on stderr is already a
+      // warning/error worth surfacing (jitter, PTS discontinuity, buffer
+      // underrun) — log at warn so it's visible at prod's info level, not
+      // swallowed at debug.
+      this.logger.warn(
         { roomId: this.opts.roomId, ffmpeg: chunk.toString().trim() },
         "ffmpeg",
       );

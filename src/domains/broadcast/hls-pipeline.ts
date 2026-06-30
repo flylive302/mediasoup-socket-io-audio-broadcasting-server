@@ -105,12 +105,33 @@ export function buildFfmpegArgs(
   ];
 
   if (inputCount === 1) {
-    args.push("-map", "0:a:0");
-  } else {
-    const labels = Array.from({ length: inputCount }, (_, i) => `[0:a:${i}]`).join("");
+    // A single live Opus RTP source uses DTX, so its RTP goes sparse during
+    // silence. Mapped directly the HLS muxer gets no steady sample clock, FFmpeg
+    // stalls and never writes a segment/manifest (prod symptom: single speaker →
+    // master.m3u8 404, no audio). Route it through aresample=async to resample
+    // onto a continuous timeline, filling silence gaps so segments are always
+    // produced. (The N>=2 amix path gets this continuity for free — which is why
+    // two speakers worked while one did not.)
     args.push(
       "-filter_complex",
-      `${labels}amix=inputs=${inputCount}:normalize=0:dropout_transition=0[a]`,
+      "[0:a:0]aresample=async=1:first_pts=0[a]",
+      "-map",
+      "[a]",
+    );
+  } else {
+    // Resample each input onto a continuous timeline BEFORE mixing. Real Opus RTP
+    // carries timing jitter + DTX silence gaps; fed straight into the
+    // sample-synchronous amix these surface as a steady hiss/static. aresample=async
+    // resyncs each input's clock and fills gaps with clean silence, so amix mixes
+    // time-aligned samples. normalize=0 keeps unity gain (default divides by N).
+    const resampled = Array.from(
+      { length: inputCount },
+      (_, i) => `[0:a:${i}]aresample=async=1:first_pts=0[a${i}]`,
+    ).join(";");
+    const labels = Array.from({ length: inputCount }, (_, i) => `[a${i}]`).join("");
+    args.push(
+      "-filter_complex",
+      `${resampled};${labels}amix=inputs=${inputCount}:normalize=0:dropout_transition=0[a]`,
       "-map",
       "[a]",
     );

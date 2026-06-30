@@ -45,18 +45,21 @@ describe("buildMixSdp", () => {
 });
 
 describe("buildFfmpegArgs", () => {
-  it("maps the single stream directly when there is one speaker (no amix)", () => {
+  it("routes the single stream through aresample (continuous clock, no amix)", () => {
     const args = buildFfmpegArgs(1, cfg());
-    expect(args).toContain("-map");
-    expect(args).toContain("0:a:0");
-    expect(args.join(" ")).not.toContain("amix");
+    const joined = args.join(" ");
+    expect(joined).toContain("-map [a]");
+    // Single DTX source must be resampled to a steady timeline or the muxer stalls.
+    expect(joined).toContain("[0:a:0]aresample=async=1:first_pts=0[a]");
+    expect(joined).not.toContain("amix");
   });
 
-  it("mixes N>=2 speakers with normalize=0 at unity gain", () => {
+  it("mixes N>=2 speakers with normalize=0 at unity gain, each input resampled", () => {
     const args = buildFfmpegArgs(3, cfg());
     const joined = args.join(" ");
+    // Per-input aresample (continuous clock, jitter/DTX-gap smoothing) then amix.
     expect(joined).toContain(
-      "[0:a:0][0:a:1][0:a:2]amix=inputs=3:normalize=0:dropout_transition=0[a]",
+      "[0:a:0]aresample=async=1:first_pts=0[a0];[0:a:1]aresample=async=1:first_pts=0[a1];[0:a:2]aresample=async=1:first_pts=0[a2];[a0][a1][a2]amix=inputs=3:normalize=0:dropout_transition=0[a]",
     );
     expect(joined).toContain("-map [a]");
   });
