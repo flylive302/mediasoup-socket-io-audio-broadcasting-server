@@ -2,7 +2,13 @@ import { config } from "@src/config/index.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { OriginParticipant, OriginRoomSnapshot } from "./types.js";
 
-const FETCH_TIMEOUT_MS = 10_000;
+// realtime-20: an unreachable origin (dead/relocated host) blackholes the
+// connect, so each fetch hangs until this abort. A 10s abort pushed the edge
+// join past the client's 10s `room:join` ack timeout before the snapshot-miss
+// recovery (detach + re-resolve) could even start. 4s leaves ample budget for
+// re-resolution within the ack window while still tolerating a slow-but-alive
+// origin.
+const FETCH_TIMEOUT_MS = 4_000;
 
 export class OriginSnapshot {
   constructor(private readonly logger: Logger) {}

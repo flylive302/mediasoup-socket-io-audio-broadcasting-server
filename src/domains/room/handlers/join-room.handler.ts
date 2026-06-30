@@ -16,29 +16,25 @@ import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { performRoomLeave } from "@src/domains/room/room-leave.js";
+import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
+import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { z } from "zod";
 
 type JoinPayload = z.input<typeof joinRoomSchema>;
 
-// ── EXECUTE ─────────────────────────────────────────────────
-async function processJoin(
-  payload: JoinPayload,
-  socket: Socket,
+/**
+ * Resolve the local mediasoup cluster that will serve this join — origin (CAS
+ * winner), cascade edge, or single-instance fallback. Extracted so the
+ * snapshot-miss recovery (realtime-20) can re-run the FULL resolution after
+ * detaching a stale edge. Throws if no cluster can be served.
+ */
+async function resolveClusterForJoin(
+  roomId: string,
   context: AppContext,
-) {
-  const { roomId, ownerId } = payload;
-  const seatCount = payload.seatCount ?? 15;
-  const {
-    io,
-    roomManager,
-    clientManager,
-    seatRepository,
-    cascadeCoordinator,
-    roomRegistry,
-  } = context;
-
+): Promise<RoomMediaCluster> {
+  const { roomManager, cascadeCoordinator, roomRegistry } = context;
   // selfId is INSTANCE_ID (identity, used for CAS ownership comparisons).
   const selfId = config.INSTANCE_ID;
 
@@ -130,7 +126,7 @@ async function processJoin(
   // Fallback for single-instance / cascade-disabled deployments.
   // Also catches the path where roomRegistry was injected but cascade is off
   // and we lost CAS — there's no edge path available, so we surface the error
-  // by leaving cluster null → the caller throws below.
+  // by leaving cluster null → we throw below.
   if (!cluster && !roomRegistry) {
     cluster = await roomManager.getOrCreateRoom(roomId);
   }
@@ -140,6 +136,52 @@ async function processJoin(
       `Cannot serve room ${roomId}: another instance owns it but cascade edge setup failed`,
     );
   }
+
+  return cluster;
+}
+
+/**
+ * Edge-only: fetch the origin's producers (piped), participants, and seat/music
+ * snapshot in one round. `originUnreachable` flags a dead/relocated origin —
+ * BOTH the participants and snapshot endpoints failing (AbortError on a dead
+ * host, or 404 after the room moved). A single transient miss won't trip it.
+ */
+async function fetchEdgeOriginData(
+  cascadeCoordinator: NonNullable<AppContext["cascadeCoordinator"]>,
+  roomId: string,
+  cluster: RoomMediaCluster,
+  seatCount: number,
+) {
+  const [piped, originParticipants, snapshot] = await Promise.all([
+    cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster),
+    cascadeCoordinator.fetchOriginParticipants(roomId),
+    cascadeCoordinator.fetchOriginRoomSnapshot(roomId, seatCount),
+  ]);
+  const originUnreachable = snapshot === null && originParticipants === null;
+  return { piped, originParticipants, snapshot, originUnreachable };
+}
+
+// ── EXECUTE ─────────────────────────────────────────────────
+async function processJoin(
+  payload: JoinPayload,
+  socket: Socket,
+  context: AppContext,
+) {
+  const { roomId, ownerId } = payload;
+  const seatCount = payload.seatCount ?? 15;
+  const {
+    io,
+    roomManager,
+    clientManager,
+    seatRepository,
+    cascadeCoordinator,
+    roomRegistry,
+  } = context;
+
+  // selfId is INSTANCE_ID (identity, used for CAS ownership comparisons).
+  const selfId = config.INSTANCE_ID;
+
+  let cluster = await resolveClusterForJoin(roomId, context);
 
   // Refresh ownership TTL on every join so long-running celebrity broadcasts
   // don't hit the 24h orphan window. No-op (via Lua check) if we're not the owner.
@@ -151,7 +193,9 @@ async function processJoin(
       );
   }
 
-  const rtpCapabilities = cluster.router?.rtpCapabilities;
+  // NOTE: rtpCapabilities is captured AFTER the edge snapshot block — the
+  // realtime-20 recovery may swap `cluster` (detach stale edge → re-resolve as
+  // origin), and the response must carry the FINAL cluster's router caps.
 
   // Cache room owner if provided
   if (ownerId) {
@@ -178,7 +222,9 @@ async function processJoin(
   // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
   // sharing the same Redis adapter, not just the local process.
   // This replaces the old clientManager.getClientsInRoom() which was in-memory only.
-  const remoteSockets = await io.in(roomId).fetchSockets();
+  // realtime-20: via fetchSocketsSafe so a ghost adapter subscriber degrades the
+  // snapshot to local-only instead of throwing and failing the entire join.
+  const remoteSockets = await fetchSocketsSafe(io, roomId, logger);
   const participants: {
     id: number;
     name: string;
@@ -285,35 +331,73 @@ async function processJoin(
     >
   > | null = null;
   if (cascadeCoordinator?.isEdgeRoom(roomId)) {
-    const [piped, originParticipants, snapshot] = await Promise.all([
-      cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster),
-      cascadeCoordinator.fetchOriginParticipants(roomId),
-      cascadeCoordinator.fetchOriginRoomSnapshot(roomId, seatCount),
-    ]);
-    originSnapshot = snapshot;
+    let edge: Awaited<ReturnType<typeof fetchEdgeOriginData>> | null =
+      await fetchEdgeOriginData(cascadeCoordinator, roomId, cluster, seatCount);
 
-    existingProducers.length = 0;
-    existingProducers.push(...piped);
+    // realtime-20: a cached edge whose origin is unreachable (host hard-killed
+    // before drain → never relayed room:closed, so this edge was never torn
+    // down; or origin relocated) must NOT serve a broken degraded join. The
+    // ghost-guard above can't catch it (isEdgeRoom is true) and the snapshot
+    // fetches just blackhole on the dead IP. Detach the stale edge and re-run
+    // the FULL resolution once: the dead origin's CAS key has expired (≤90s) so
+    // this instance claims origin locally and heals, or re-attaches to the
+    // origin's live new host. Bounded to a single retry — never loops.
+    if (edge.originUnreachable) {
+      logger.warn(
+        { roomId, selfId },
+        "Edge origin unreachable on join — detaching stale edge and re-resolving",
+      );
+      await cascadeCoordinator.handleOriginClosed(roomId);
+      cluster = await resolveClusterForJoin(roomId, context);
 
-    // Merge origin's participants in, deduping by userId. Origin is the
-    // authoritative source for cross-region users — local participants[]
-    // here only carries same-region sockets that fetchSockets() saw.
-    if (originParticipants) {
-      for (const op of originParticipants) {
-        if (op.id === userId) continue; // never add the joining user
-        if (participantMap.has(op.id)) continue;
-        participants.push(op);
-        participantMap.set(op.id, op);
+      if (cascadeCoordinator.isEdgeRoom(roomId)) {
+        // Re-resolved to a (live) origin elsewhere — fetch once more. If it
+        // still fails we degrade to empty/local below rather than retry again.
+        edge = await fetchEdgeOriginData(
+          cascadeCoordinator,
+          roomId,
+          cluster,
+          seatCount,
+        );
+      } else {
+        // Became origin locally (CAS claim) — no edge snapshot to apply; local
+        // participants/seats (built above + below) are now authoritative.
+        edge = null;
       }
     }
 
-    // Mark participants whose producers we just piped as speakers so the UI
-    // shows the right state for pre-existing speakers on edge join.
-    for (const p of piped) {
-      const participant = participantMap.get(p.userId);
-      if (participant) participant.isSpeaker = true;
+    if (edge) {
+      originSnapshot = edge.snapshot;
+
+      // B-1 Stage 2d: edges have no local speakers — replace existingProducers
+      // with the producers we just piped from the origin.
+      existingProducers.length = 0;
+      existingProducers.push(...edge.piped);
+
+      // Merge origin's participants in, deduping by userId. Origin is the
+      // authoritative source for cross-region users — local participants[]
+      // here only carries same-region sockets that fetchSockets() saw.
+      if (edge.originParticipants) {
+        for (const op of edge.originParticipants) {
+          if (op.id === userId) continue; // never add the joining user
+          if (participantMap.has(op.id)) continue;
+          participants.push(op);
+          participantMap.set(op.id, op);
+        }
+      }
+
+      // Mark participants whose producers we just piped as speakers so the UI
+      // shows the right state for pre-existing speakers on edge join.
+      for (const p of edge.piped) {
+        const participant = participantMap.get(p.userId);
+        if (participant) participant.isSpeaker = true;
+      }
     }
   }
+
+  // Captured here (not earlier): the realtime-20 recovery may have swapped
+  // `cluster`, so the response must reflect the FINAL cluster's router caps.
+  const rtpCapabilities = cluster.router?.rtpCapabilities;
 
   // Get seat data — origin's snapshot wins for edges (origin's Redis is
   // authoritative; local Redis only holds same-region writes).

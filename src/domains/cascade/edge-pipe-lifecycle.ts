@@ -192,6 +192,13 @@ export class EdgePipeLifecycle {
         },
         sourceInstanceId: selfId,
       }),
+      // realtime-20: bound this internal POST. On the snapshot-miss recovery's
+      // re-attach (Case B: ≤90s after origin death, owner CAS not yet expired so
+      // `handleSameRegionEdge` re-reads the still-stale `:origin` info and points
+      // back at the dead host), an UNTIMED fetch to that dead IP would hang far
+      // past the client's 10s `room:join` ack. 3s caps it so the degrade stays
+      // bounded; the caller (`attachToOrigin`) already try/catches this.
+      signal: AbortSignal.timeout(3_000),
     });
   }
 

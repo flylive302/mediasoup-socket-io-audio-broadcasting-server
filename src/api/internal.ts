@@ -20,6 +20,7 @@ import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
+import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 
@@ -189,7 +190,10 @@ export const createInternalRoutes = (
       // speaker iff they have a producer on the source router).
       const speakerUserIds = new Set(cluster.getSourceProducers().map((p) => p.userId));
 
-      const sockets = await io.in(roomId).fetchSockets();
+      // realtime-20: degrade to local sockets instead of throwing a 500 if a
+      // ghost adapter subscriber stalls the cross-node fetch — the edge caller
+      // would otherwise see a delayed 5xx and surface a broken join.
+      const sockets = await fetchSocketsSafe(io, roomId, logger);
       const seen = new Set<number>();
       const participants: Array<{
         id: number;

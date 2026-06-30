@@ -71,7 +71,13 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       methods: ["GET", "POST"],
       credentials: true,
     },
-    adapter: createAdapter(pubClient, subClient),
+    // realtime-20: bound the Redis-adapter request fan-out. `fetchSockets()` &
+    // co. wait for one reply per subscribed node and REJECT after this timeout
+    // (no partial resolve). A node SIGKILLed before `io.close()`/Redis `quit()`
+    // lingers as a subscriber, so the default 5s made every cross-node fetch on
+    // the join path stall 5s then throw. 2s caps that blast radius; the
+    // join-critical callers additionally degrade to local via `fetchSocketsSafe`.
+    adapter: createAdapter(pubClient, subClient, { requestsTimeout: 2_000 }),
     // realtime-04 (ADR 0002 §Decision item 2): relax the heartbeat so a brief
     // background freeze SURVIVES instead of forcing a full rejoin.
     //

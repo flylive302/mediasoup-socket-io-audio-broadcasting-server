@@ -255,4 +255,104 @@ describe("joinRoomHandler", () => {
       expect(ctx.roomManager.evictLocalRoom).not.toHaveBeenCalled();
     });
   });
+
+  // realtime-20: a cached edge cluster pointing at a dead/relocated origin
+  // (host hard-killed before drain → never relayed room:closed) passes the
+  // ghost-guard (isEdgeRoom is still true) but its origin snapshot fetches
+  // blackhole. The join must detach the stale edge and re-resolve ownership
+  // once — claiming origin locally — instead of serving a broken degraded join.
+  describe("stale edge origin recovery", () => {
+    const edgeCaps = { edge: true };
+    const originCaps = { origin: true };
+
+    function makeStaleEdgeContext(opts: {
+      originParticipants: unknown;
+      originSnapshot: unknown;
+    }) {
+      const ctx = createMockContext();
+      let detached = false;
+      const edgeCluster = { router: { rtpCapabilities: edgeCaps } };
+      const originCluster = { router: { rtpCapabilities: originCaps } };
+
+      // Edge cluster present until handleOriginClosed detaches it.
+      ctx.roomManager.getRoom = vi.fn(() => (detached ? null : edgeCluster));
+      ctx.roomManager.getOrCreateRoom = vi
+        .fn()
+        .mockResolvedValue(originCluster);
+      ctx.roomManager.evictLocalRoom = vi.fn().mockResolvedValue(undefined);
+
+      ctx.roomRegistry = {
+        getOwner: vi.fn().mockResolvedValue("dead-origin"),
+        // The dead origin's CAS key has expired → this instance wins the claim.
+        claimOwnership: vi.fn().mockResolvedValue({ won: true, owner: "self" }),
+        registerOrigin: vi.fn().mockResolvedValue(undefined),
+        refreshOwnership: vi.fn().mockResolvedValue(undefined),
+      };
+
+      ctx.cascadeCoordinator = {
+        isEdgeRoom: vi.fn(() => !detached),
+        handleCrossRegionJoin: vi.fn().mockResolvedValue({ isEdge: false }),
+        handleSameRegionEdge: vi.fn().mockResolvedValue({ isEdge: false }),
+        fetchAndPipeExistingProducers: vi.fn().mockResolvedValue([]),
+        fetchOriginParticipants: vi
+          .fn()
+          .mockResolvedValue(opts.originParticipants),
+        fetchOriginRoomSnapshot: vi.fn().mockResolvedValue(opts.originSnapshot),
+        handleOriginClosed: vi.fn(async () => {
+          detached = true;
+        }),
+      };
+
+      return { ctx, edgeCluster, originCluster };
+    }
+
+    it("detaches the stale edge and re-resolves to origin when the origin is unreachable", async () => {
+      // Both participants AND snapshot null → origin unreachable.
+      const { ctx } = makeStaleEdgeContext({
+        originParticipants: null,
+        originSnapshot: null,
+      });
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-12" }, cb);
+
+      expect(ctx.cascadeCoordinator.handleOriginClosed).toHaveBeenCalledWith(
+        "room-12",
+      );
+      // Re-resolution claims origin locally (heals).
+      expect(ctx.roomRegistry.claimOwnership).toHaveBeenCalledWith(
+        "room-12",
+        "self",
+      );
+      // Response carries the FINAL (origin) cluster's caps, not the dead edge's.
+      const result = cb.mock.calls[0]?.[0] as {
+        success: boolean;
+        rtpCapabilities: unknown;
+      };
+      expect(result.success).toBe(true);
+      expect(result.rtpCapabilities).toEqual(originCaps);
+    });
+
+    it("does NOT detach when the origin snapshot is reachable (happy edge path)", async () => {
+      const { ctx } = makeStaleEdgeContext({
+        originParticipants: [],
+        originSnapshot: {
+          seats: [],
+          lockedSeats: [],
+          seatCount: 15,
+          musicPlayer: null,
+        },
+      });
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-12" }, cb);
+
+      expect(ctx.cascadeCoordinator.handleOriginClosed).not.toHaveBeenCalled();
+      expect(ctx.roomRegistry.claimOwnership).not.toHaveBeenCalled();
+      const result = cb.mock.calls[0]?.[0] as { rtpCapabilities: unknown };
+      expect(result.rtpCapabilities).toEqual(edgeCaps);
+    });
+  });
 });
