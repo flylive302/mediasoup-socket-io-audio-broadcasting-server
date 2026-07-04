@@ -43,9 +43,14 @@ function spawnSender(port: number, freq: number): ChildProcess {
   ], { stdio: ["ignore", "ignore", "ignore"] });
 }
 
+/** Matches a media segment — bare `seg-NNNNN.m4s` or realtime-19 nonce'd `seg-<nonce>-NNNNN.m4s`. */
+const SEG_RE = /^seg-(?:[0-9a-z]+-)?\d+\.m4s$/;
+/** Matches the fMP4 init segment — bare `init.mp4` or realtime-19 nonce'd `init-<nonce>.mp4`. */
+const INIT_RE = /^init(?:-[0-9a-z]+)?\.mp4$/;
+
 /** Count distinct media segments uploaded so far. */
 function segCount(names: string[]): number {
-  return new Set(names.filter((n) => /^seg-\d+\.m4s$/.test(n))).size;
+  return new Set(names.filter((n) => SEG_RE.test(n))).size;
 }
 
 const silentLogger = {
@@ -133,24 +138,26 @@ describe.skipIf(!hasFfmpegWithOpus())("HlsPublisher × ffmpeg", () => {
 
     const ok = await waitFor(() => {
       const n = uploader.names();
-      return n.includes("init.mp4") && segCount(n) > 0 && n.includes("live.m3u8");
+      return n.some((x) => INIT_RE.test(x)) && segCount(n) > 0 && n.includes("live.m3u8");
     }, 20_000);
     expect(ok).toBe(true);
 
     const names = uploader.names();
-    expect(names).toContain("init.mp4");
+    expect(names.some((n) => INIT_RE.test(n))).toBe(true);
     expect(names).toContain("master.m3u8");
 
     // Publish-safe ordering: the first manifest upload that follows the first
     // segment comes after that segment (CDN never sees a manifest before its
     // referenced object). init precedes the last manifest too.
-    const firstSeg = names.findIndex((n) => /^seg-\d+\.m4s$/.test(n));
+    const firstSeg = names.findIndex((n) => SEG_RE.test(n));
     const firstManifestAfterSeg = names.findIndex(
       (n, i) => n === "live.m3u8" && i > firstSeg,
     );
     expect(firstSeg).toBeGreaterThanOrEqual(0);
     expect(firstManifestAfterSeg).toBeGreaterThan(firstSeg);
-    expect(names.indexOf("init.mp4")).toBeLessThan(names.lastIndexOf("live.m3u8"));
+    expect(names.findIndex((n) => INIT_RE.test(n))).toBeLessThan(
+      names.lastIndexOf("live.m3u8"),
+    );
   }, 30_000);
 
   it("re-uploads master.m3u8 after a stop()→start() cycle (no permanent 404)", async () => {

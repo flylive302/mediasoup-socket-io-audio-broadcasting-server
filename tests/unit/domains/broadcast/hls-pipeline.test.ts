@@ -5,6 +5,9 @@ import {
   parsePlaylistRefs,
   maxSegmentIndex,
   hlsObjectHeaders,
+  hlsInitName,
+  hlsSegmentTemplate,
+  isHlsInitFile,
   HLS_FILES,
   type MixInput,
   type HlsOutputConfig,
@@ -17,13 +20,14 @@ const input = (port: number, pt: number): MixInput => ({
   channels: 2,
 });
 
-const cfg = (startNumber = 0): HlsOutputConfig => ({
+const cfg = (startNumber = 0, sessionNonce = ""): HlsOutputConfig => ({
   ffmpegPath: "ffmpeg",
   workDir: "/work",
   sdpPath: "/work/room.sdp",
   segmentDurationSec: 1,
   playlistSize: 6,
   startNumber,
+  sessionNonce,
 });
 
 describe("buildMixSdp", () => {
@@ -80,6 +84,40 @@ describe("buildFfmpegArgs", () => {
   it("rejects an empty mix", () => {
     expect(() => buildFfmpegArgs(0, cfg())).toThrow();
   });
+
+  it("bakes the session nonce into the init + segment file names (realtime-19)", () => {
+    const args = buildFfmpegArgs(2, cfg(0, "a1b2c3d4"));
+    const joined = args.join(" ");
+    // Immutable children carry the nonce so a new session can't collide with a
+    // previous session's CDN-cached objects.
+    expect(joined).toContain("-hls_fmp4_init_filename init-a1b2c3d4.mp4");
+    expect(joined).toContain("-hls_segment_filename /work/seg-a1b2c3d4-%05d.m4s");
+    // Manifests keep their stable names → playback URL unchanged.
+    expect(joined).toContain(`-master_pl_name ${HLS_FILES.master}`);
+    expect(args[args.length - 1]).toBe(`/work/${HLS_FILES.media}`);
+  });
+
+  it("falls back to legacy bare names for an empty nonce", () => {
+    const joined = buildFfmpegArgs(2, cfg(0, "")).join(" ");
+    expect(joined).toContain(`-hls_fmp4_init_filename ${HLS_FILES.init}`);
+    expect(joined).toContain(`-hls_segment_filename /work/${HLS_FILES.segmentTemplate}`);
+  });
+});
+
+describe("nonce naming helpers (realtime-19)", () => {
+  it("derives nonce'd names, legacy on empty", () => {
+    expect(hlsInitName("a1b2c3d4")).toBe("init-a1b2c3d4.mp4");
+    expect(hlsInitName("")).toBe(HLS_FILES.init);
+    expect(hlsSegmentTemplate("a1b2c3d4")).toBe("seg-a1b2c3d4-%05d.m4s");
+    expect(hlsSegmentTemplate("")).toBe(HLS_FILES.segmentTemplate);
+  });
+
+  it("identifies init files (bare or nonce'd), never a segment/manifest", () => {
+    expect(isHlsInitFile("init.mp4")).toBe(true);
+    expect(isHlsInitFile("init-a1b2c3d4.mp4")).toBe(true);
+    expect(isHlsInitFile("seg-a1b2c3d4-00001.m4s")).toBe(false);
+    expect(isHlsInitFile("live.m3u8")).toBe(false);
+  });
 });
 
 describe("parsePlaylistRefs", () => {
@@ -113,6 +151,15 @@ describe("maxSegmentIndex", () => {
   it("finds the highest seg index, -1 when none", () => {
     expect(maxSegmentIndex(["seg-00003.m4s", "seg-00010.m4s", "init.mp4"])).toBe(10);
     expect(maxSegmentIndex(["init.mp4", "live.m3u8"])).toBe(-1);
+  });
+
+  it("matches nonce'd segment names so startNumber continuity survives (realtime-19)", () => {
+    // A bare-only regex would return -1 here → reset numbering to 0 each restart.
+    expect(
+      maxSegmentIndex(["seg-a1b2c3d4-00003.m4s", "seg-a1b2c3d4-00010.m4s", "init-a1b2c3d4.mp4"]),
+    ).toBe(10);
+    // Mixed (defensive) still resolves the max.
+    expect(maxSegmentIndex(["seg-00005.m4s", "seg-a1b2c3d4-00012.m4s"])).toBe(12);
   });
 });
 

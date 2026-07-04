@@ -26,7 +26,19 @@ import type { RoomMode } from "../types.js";
 export interface ModeDecisionInput {
   /** The Room's current mode (source of truth: room:state.mode). */
   currentMode: RoomMode;
-  /** Passive Listeners in the Room (the threshold input). */
+  /**
+   * The Room's threshold input: total region-wide occupants (`present`), used as
+   * the proxy for the passive-listener audience.
+   *
+   * realtime-19 (semantics, made deliberate): this is intentionally TOTAL present,
+   * NOT `present - speakers`. Speakers are capped at the seat count (default-max 20)
+   * and the flip band is 1000–1500, so the speaker term is ≤~1.3% — inside the
+   * hysteresis band and numerically immaterial. Subtracting them would (a) shift the
+   * flip point right on the eve of launch and (b) couple the flip to
+   * `getResumedAudioProducerCount()`, so a *muted* speaker (not a resumed producer)
+   * would miscount. `speakerCount` below is used ONLY as the ≥1 promote gate, never
+   * subtracted from this figure. Keep the two inputs distinct.
+   */
   listenerCount: number;
   /**
    * realtime-17b: count of speakers actually emitting audio RTP right now

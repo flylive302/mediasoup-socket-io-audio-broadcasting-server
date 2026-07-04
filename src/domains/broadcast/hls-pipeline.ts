@@ -41,6 +41,16 @@ export interface HlsOutputConfig {
   playlistSize: number;
   /** First media-segment index for this (re)start — preserves numbering across restarts. */
   startNumber: number;
+  /**
+   * realtime-19: per-session nonce baked into the init + segment file names so a NEW
+   * broadcast session's objects never collide with the PREVIOUS session's immutable
+   * (60s CDN-cached) objects at the same deterministic R2 key — the "stale recorded
+   * clip" a late joiner would otherwise replay after a demote→promote. Minted ONCE
+   * per session (on `HlsPublisher.start()`) and held stable across intra-session
+   * ffmpeg restarts, so `append_list`/`startNumber` continuity is preserved. An empty
+   * string yields the legacy bare names (single-session / test back-compat).
+   */
+  sessionNonce: string;
 }
 
 /** Output file names (relative to workDir) the pipeline produces. */
@@ -51,6 +61,26 @@ export const HLS_FILES = {
   /** FFmpeg segment template; `%05d` is the segment index. */
   segmentTemplate: "seg-%05d.m4s",
 } as const;
+
+/**
+ * Per-session init-segment name (realtime-19). The manifests keep their stable
+ * `media`/`master` names — only the immutable children carry the nonce — so the
+ * playback URL is unchanged while a stale cached child can never be referenced by
+ * the fresh manifest. Empty nonce → legacy `init.mp4`.
+ */
+export function hlsInitName(nonce: string): string {
+  return nonce ? `init-${nonce}.mp4` : HLS_FILES.init;
+}
+
+/** Per-session ffmpeg segment template (realtime-19). Empty nonce → legacy template. */
+export function hlsSegmentTemplate(nonce: string): string {
+  return nonce ? `seg-${nonce}-%05d.m4s` : HLS_FILES.segmentTemplate;
+}
+
+/** True iff `fileName` is an fMP4 init segment (bare `init.mp4` or nonce'd). */
+export function isHlsInitFile(fileName: string): boolean {
+  return fileName.endsWith(".mp4");
+}
 
 /**
  * Build the SDP describing N inbound Opus RTP streams (one m-line per speaker).
@@ -161,9 +191,9 @@ export function buildFfmpegArgs(
     "-hls_segment_type",
     "fmp4",
     "-hls_fmp4_init_filename",
-    HLS_FILES.init,
+    hlsInitName(cfg.sessionNonce),
     "-hls_segment_filename",
-    `${cfg.workDir}/${HLS_FILES.segmentTemplate}`,
+    `${cfg.workDir}/${hlsSegmentTemplate(cfg.sessionNonce)}`,
     "-start_number",
     String(cfg.startNumber),
     "-master_pl_name",
@@ -198,11 +228,17 @@ export function parsePlaylistRefs(m3u8: string): string[] {
   return refs;
 }
 
-/** Highest `seg-NNNNN.m4s` index among file names, or -1 if none. */
+/**
+ * Highest segment index among file names, or -1 if none. Matches both the legacy
+ * bare `seg-NNNNN.m4s` and the realtime-19 nonce'd `seg-<nonce>-NNNNN.m4s` — the
+ * nonce group is optional so this keeps computing `startNumber` continuity across a
+ * restart once names are nonce'd (a hard-coded bare regex would silently return -1 →
+ * reset numbering to 0 each restart → break the EXT-X-DISCONTINUITY catch-up).
+ */
 export function maxSegmentIndex(fileNames: string[]): number {
   let max = -1;
   for (const name of fileNames) {
-    const m = name.match(/^seg-(\d+)\.m4s$/);
+    const m = name.match(/^seg-(?:[0-9a-z]+-)?(\d+)\.m4s$/);
     if (m) max = Math.max(max, Number(m[1]));
   }
   return max;

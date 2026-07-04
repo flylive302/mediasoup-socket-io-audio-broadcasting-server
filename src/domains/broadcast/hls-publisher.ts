@@ -20,11 +20,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFile, writeFile, readdir, mkdir, rm } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { Logger } from "pino";
 import {
   buildFfmpegArgs,
   parsePlaylistRefs,
   maxSegmentIndex,
+  isHlsInitFile,
   HLS_FILES,
   type HlsOutputConfig,
 } from "./hls-pipeline.js";
@@ -44,6 +46,13 @@ export class HlsPublisher {
   private watcher: FSWatcher | null = null;
   /** Next media-segment index — continues across restarts so numbering is monotonic. */
   private startNumber = 0;
+  /**
+   * realtime-19: per-session nonce baked into init/segment file names so a new
+   * session's immutable objects never collide with a previous session's CDN-cached
+   * ones (stale-clip replay). Minted in `start()` (session boundary); held stable
+   * across intra-session `restart()` so numbering/continuity survives.
+   */
+  private sessionNonce = "";
   /** Segments already on R2 (immutable, never re-uploaded). */
   private readonly uploadedSegments = new Set<string>();
   private masterUploaded = false;
@@ -75,6 +84,10 @@ export class HlsPublisher {
     // (restart() — topology change without a stop — intentionally keeps these.)
     this.masterUploaded = false;
     this.uploadedSegments.clear();
+    // realtime-19: mint a fresh per-session nonce so this session's init/segment
+    // objects land at new R2 keys — a late joiner can't be served a previous
+    // session's immutable (CDN-cached) segment. restart() keeps this nonce.
+    this.sessionNonce = randomBytes(4).toString("hex");
     await mkdir(this.opts.workDir, { recursive: true });
     await this.spawnFfmpeg(sdp, inputCount);
     this.startWatching();
@@ -131,6 +144,7 @@ export class HlsPublisher {
       segmentDurationSec: this.opts.segmentDurationSec,
       playlistSize: this.opts.playlistSize,
       startNumber: this.startNumber,
+      sessionNonce: this.sessionNonce,
     };
     const args = buildFfmpegArgs(inputCount, cfg);
 
@@ -231,8 +245,9 @@ export class HlsPublisher {
       const body = await readFile(join(this.opts.workDir, ref)).catch(() => null);
       if (!body) continue; // not fully written yet — next pass picks it up
       await this.uploader.upload(this.opts.roomId, ref, body);
-      // init.mp4 can be rewritten on restart, so don't pin it as immutable.
-      if (ref !== HLS_FILES.init) this.uploadedSegments.add(ref);
+      // The fMP4 init segment can be rewritten on restart, so don't pin it as
+      // immutable (realtime-19: matches the bare or nonce'd init name).
+      if (!isHlsInitFile(ref)) this.uploadedSegments.add(ref);
     }
 
     // 2. Master playlist (written once at start).

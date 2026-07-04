@@ -86,6 +86,13 @@ const configSchema = z.object({
   // current mode so a Room on the boundary can't flap. Validated UP > DOWN.
   ROOM_BROADCAST_THRESHOLD_UP: z.coerce.number().int().positive().default(1500),
   ROOM_BROADCAST_THRESHOLD_DOWN: z.coerce.number().int().positive().default(1000),
+  // realtime-19: temporal demote damping. A demote is eligible when listeners fall
+  // to/below DOWN, but tearing the broadcast session down (stop → removeRoom wipes
+  // R2 → listeners rebuffer) on a single noisy heartbeat is too destructive. Require
+  // the demote condition to HOLD continuously for at least this long before acting;
+  // promote stays immediate (relieve SFU load fast). Count hysteresis (UP/DOWN) plus
+  // this time damping together resist flap. Default 30s; lower in tests.
+  ROOM_BROADCAST_DEMOTE_GRACE_MS: z.coerce.number().int().nonnegative().default(30_000),
 
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),

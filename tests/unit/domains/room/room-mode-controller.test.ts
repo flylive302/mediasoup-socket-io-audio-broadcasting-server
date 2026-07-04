@@ -140,4 +140,17 @@ describe("RoomModeController.decide", () => {
       }),
     ).toEqual({ mode: "broadcast", changed: true, transition: "promote" });
   });
+
+  // realtime-19 (listenerCount semantics, made deliberate): the threshold input is
+  // TOTAL present, NOT `present - speakers`. speakerCount is the ≥1 promote gate
+  // only and must never be subtracted from the flip count. Pin it: 1500 occupants
+  // that happen to include 20 speakers still promotes exactly at the 1500 up-band
+  // (subtracting would give 1480 < 1500 → no promote).
+  it("does NOT subtract speakers from the threshold count (total-present semantics)", () => {
+    expect(
+      controller.decide(
+        input({ currentMode: "interactive", listenerCount: 1500, speakerCount: 20 }),
+      ),
+    ).toEqual({ mode: "broadcast", changed: true, transition: "promote" });
+  });
 });

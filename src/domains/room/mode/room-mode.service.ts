@@ -34,6 +34,15 @@ export type ModeTransitionHook = (
 export class RoomModeService {
   private readonly controller: RoomModeController;
   private onTransition: ModeTransitionHook | null = null;
+  /**
+   * realtime-19: temporal demote damping. Maps roomId → the timestamp at which the
+   * room FIRST became demote-eligible in the current streak. A demote only takes
+   * effect once the condition has held continuously for
+   * `ROOM_BROADCAST_DEMOTE_GRACE_MS`; any non-demote outcome resets the streak.
+   * Cleared on evict/close via `forget()` so it can't leak across room churn (the
+   * same discipline as RoomRegistry.forgetOwnerCache in realtime-17).
+   */
+  private readonly demoteEligibleSince = new Map<string, number>();
 
   constructor(
     private readonly state: RoomStateRepository,
@@ -52,6 +61,16 @@ export class RoomModeService {
    */
   setTransitionHook(hook: ModeTransitionHook): void {
     this.onTransition = hook;
+  }
+
+  /**
+   * realtime-19: drop any demote-damping streak for a room being torn down locally
+   * (evict/close). The heartbeat stops calling `evaluate` for a closed room, so
+   * without this the `demoteEligibleSince` entry would leak for the process
+   * lifetime — the same leak `forgetOwnerCache` closed for the owner cache.
+   */
+  forget(roomId: string): void {
+    this.demoteEligibleSince.delete(roomId);
   }
 
   /**
@@ -78,6 +97,27 @@ export class RoomModeService {
       upThreshold: config.ROOM_BROADCAST_THRESHOLD_UP,
       downThreshold: config.ROOM_BROADCAST_THRESHOLD_DOWN,
     });
+
+    // realtime-19: temporal demote damping. A "demote" is only acted on after the
+    // condition has held continuously for ROOM_BROADCAST_DEMOTE_GRACE_MS; promote
+    // stays immediate (relieve SFU load fast). This turns the count-only hysteresis
+    // into count + time, so a single noisy heartbeat can't tear the session down
+    // (stop → removeRoom wipes R2 → listeners rebuffer). Any non-demote outcome
+    // (promote, or a hold back inside/above the band) resets the streak.
+    if (decision.transition === "demote") {
+      const now = Date.now();
+      const since = this.demoteEligibleSince.get(roomId) ?? now;
+      this.demoteEligibleSince.set(roomId, since);
+      if (now - since < config.ROOM_BROADCAST_DEMOTE_GRACE_MS) {
+        // Not held long enough — keep broadcasting; the streak persists for the
+        // next tick to accumulate against the grace window.
+        return current.mode;
+      }
+      // Grace satisfied — fall through and actually demote.
+      this.demoteEligibleSince.delete(roomId);
+    } else {
+      this.demoteEligibleSince.delete(roomId);
+    }
 
     if (!decision.changed) {
       return current.mode;

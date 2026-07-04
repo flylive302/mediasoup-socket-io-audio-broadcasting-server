@@ -419,6 +419,8 @@ export class RoomManager {
     // realtime-09: stop the HLS broadcast publisher before the cluster (and its
     // plain transports) go away, so no orphaned FFmpeg keeps encoding.
     this.broadcastOnRoomClosed?.(roomId);
+    // realtime-19: drop the demote-damping streak for the closed room (leak guard).
+    this.roomModeService?.forget(roomId);
 
     // 1. Notify Frontend (local + cross-region)
     const closePayload = { roomId, reason, timestamp: Date.now() };
@@ -589,6 +591,8 @@ export class RoomManager {
     // (it belongs to the real origin), but the cache-only entry for this room
     // must still be dropped so it can't leak across edge churn.
     this.roomRegistry?.forgetOwnerCache(roomId);
+    // realtime-19: drop the demote-damping streak so it can't leak across edge churn.
+    this.roomModeService?.forget(roomId);
     // realtime-09: stop any HLS publisher for this local cluster before it closes.
     this.broadcastOnRoomClosed?.(roomId);
     await cluster.close();
