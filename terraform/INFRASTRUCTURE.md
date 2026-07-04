@@ -354,7 +354,7 @@ account:
 AWS_PROFILE=flylive-staging ./scripts/aws/bootstrap-state.sh   # or flylive-prod
 cd terraform && terraform init -reconfigure -backend-config=backend.hcl
 ```
-See the cross-cutting runbook `docs/deployment-migration-runbook.md` (root) §5.1, §7.5.
+See the cross-cutting runbook `docs/runbooks/deployment-migration-runbook.md` (root) §5.1, §7.5.
 
 ---
 
