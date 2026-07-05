@@ -12,6 +12,12 @@ export interface SeatData {
 export interface SeatAssignment {
   userId: string;
   muted: boolean;
+  // realtime-22: epoch ms when the occupant's socket was declared dead. Present
+  // ONLY while the seat is being held through a reconnect grace window (set by
+  // seatReserve, cleared by seatReclaim, swept when older than the grace window).
+  // A seat with this field is still OCCUPIED for all other purposes (take/assign
+  // by others returns SEAT_TAKEN) — occupancy readers ignore the field.
+  disconnectedAt?: number;
 }
 
 export interface PendingInvite {

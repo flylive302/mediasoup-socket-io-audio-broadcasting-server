@@ -80,6 +80,17 @@ const configSchema = z.object({
   // empty for at least this long before auto-close fires, so a transient zero
   // between poll ticks (reconnect-in-progress) never ejects a returning user.
   ROOM_PRESENCE_GRACE_MS: z.coerce.number().default(15_000), // 15 seconds
+  // realtime-22: hold a disconnected SPEAKER's seat this long before releasing
+  // it, so a genuine socket death (PWA background-kill, reconnect-failed rebuild,
+  // network drop past pingTimeout) that recovers within the window keeps the same
+  // slot instead of silently demoting the user to the audience. Deliberately
+  // SEPARATE from (and longer than) ROOM_PRESENCE_GRACE_MS: presence-grace is a
+  // "is the room empty" debounce between poll ticks; this is a per-user seat hold
+  // measured from the moment the socket is declared dead (server-side disconnect
+  // fires only AFTER pingTimeout), and must span a client's reconnect/rebuild. It
+  // is Redis-backed (a disconnectedAt marker on the seat), not an in-memory timer,
+  // so the hold survives the reconnect landing on a different same-region instance.
+  SEAT_RETENTION_GRACE_MS: z.coerce.number().default(45_000), // 45 seconds
   // realtime-02: collapse MSAB→Laravel Room status churn to ≤1 update per Room
   // per this window (trailing-edge). Bounds the internal status POST rate so a
   // join/leave storm can no longer flood (and 429-drop against) the backend.

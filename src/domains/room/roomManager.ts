@@ -8,6 +8,7 @@ import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
+import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { config } from "@src/config/index.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
@@ -171,6 +172,16 @@ export class RoomManager {
             // aborts the unconditional presence/TTL submit below.
             const owns =
               present > 0 ? await this.isOwner(roomId).catch(() => false) : false;
+            // realtime-22: on the CAS origin only, release any seat whose reconnect
+            // grace has expired (a disconnected speaker who never came back).
+            // Owned-room gated so exactly one instance sweeps → no duplicate
+            // seat:cleared. Fire-and-forget; a swept-empty room that closeRoom
+            // deletes can't be resurrected (the Lua only HDELs existing fields).
+            if (owns) {
+              void this.sweepExpiredSeatReservations(roomId).catch((err) =>
+                logger.warn({ err, roomId }, "Seat reservation sweep failed"),
+              );
+            }
             // realtime-17b: gate the broadcast flip on an actual speaker. Without
             // a resumed audio producer there is no HLS stream to serve, so a
             // promote would only hand listeners a master.m3u8 that 404s forever.
@@ -213,6 +224,37 @@ export class RoomManager {
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
     // Don't keep the event loop (or tests) alive solely for the heartbeat.
     this.ownershipHeartbeat.unref?.();
+  }
+
+  /**
+   * realtime-22: release seats whose reconnect grace window has expired. The
+   * disconnected occupant never re-claimed within SEAT_RETENTION_GRACE_MS, so we
+   * drop the held slot AND the ghost participant that was kept for seat rendering:
+   * seat:cleared frees the slot, room:userLeft removes the avatar. Cascade-aware
+   * (broadcastToRoom relays cross-region). Called from the ownership heartbeat on
+   * the CAS origin only, so the emits fire exactly once.
+   */
+  private async sweepExpiredSeatReservations(roomId: string): Promise<void> {
+    if (!this.seatRepository) return;
+    const cleared = await this.seatRepository.sweepExpiredReservations(
+      roomId,
+      Date.now(),
+      config.SEAT_RETENTION_GRACE_MS,
+    );
+    for (const { seatIndex, userId } of cleared) {
+      broadcastToRoom(
+        this.io,
+        roomId,
+        "seat:cleared",
+        { seatIndex, userId },
+        this.cascadeRelay,
+      );
+      broadcastToRoom(this.io, roomId, "room:userLeft", { userId }, this.cascadeRelay);
+      logger.info(
+        { roomId, seatIndex, userId },
+        "Seat reservation expired — released via heartbeat sweep",
+      );
+    }
   }
 
   /** Stop the ownership heartbeat — called during graceful shutdown. */

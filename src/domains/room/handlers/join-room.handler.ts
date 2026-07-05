@@ -219,6 +219,36 @@ async function processJoin(
   // Update client room index
   clientManager.setClientRoom(socket.id, roomId);
 
+  // realtime-22: re-claim a seat held through the reconnect grace window. If this
+  // user's slot still carries a live disconnectedAt marker (set by finalizeLeave on
+  // a genuine disconnect), clear it now so the ownership-heartbeat sweep won't
+  // expire it — the seat is already carried in the snapshot below (it was never
+  // released), so the reclaimer lands back in their exact slot with no flicker. A
+  // slot reassigned during the outage no longer matches this user, so reclaim
+  // yields and they join as a listener (no double-occupancy). Runs BEFORE the edge
+  // snapshot fetch so the origin's HTTP snapshot (same-region shared Redis) already
+  // reflects the cleared marker; a no-op for cross-region edges whose seats live in
+  // the origin's Redis (those users were never retained — see finalizeLeave).
+  const reclaim = await seatRepository.reclaimSeat(
+    roomId,
+    String(userId),
+    Date.now(),
+    config.SEAT_RETENTION_GRACE_MS,
+  );
+  if (reclaim.reclaimed) {
+    logger.info(
+      { roomId, userId, seatIndex: reclaim.seatIndex },
+      "Seat re-claimed on rejoin within grace window",
+    );
+  }
+  // NOTE: room:userJoined is broadcast normally on reclaim (below), NOT suppressed.
+  // It serves two populations at once: clients that retained the user (userLeft was
+  // suppressed) already have them — they de-dupe the upsert and skip the entry
+  // animation via the FE "already-present" guard; clients that joined DURING the
+  // grace window never saw the user (built from live sockets) yet see their held
+  // seat, so they NEED this event to resolve that seat's placeholder. Suppressing
+  // it would strand those late joiners with a permanent nameless seat.
+
   // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
   // sharing the same Redis adapter, not just the local process.
   // This replaces the old clientManager.getClientsInRoom() which was in-memory only.

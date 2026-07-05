@@ -221,6 +221,102 @@ export const UNLOCK_SEAT_SCRIPT = `
 `;
 
 // ─────────────────────────────────────────────────────────────────
+// realtime-22: seat retention across reconnect
+// ─────────────────────────────────────────────────────────────────
+
+// Stamp a `disconnectedAt` marker on EVERY seat the user holds instead of
+// releasing it (the disconnect path's alternative to LEAVE_SEAT). The seat stays
+// OCCUPIED — others still get SEAT_TAKEN — so observers see no flicker. A bounded
+// HGETALL scan mirrors LEAVE_SEAT_SCRIPT so a reverse-index desync can't leave a
+// ghost seat un-marked. Returns every reserved index (empty → user held no seat,
+// so the caller falls back to today's plain-leave behaviour).
+export const RESERVE_SEAT_SCRIPT = `
+  local seatsKey = KEYS[1]
+  local userId = ARGV[1]
+  local now = tonumber(ARGV[2])
+
+  local reserved = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and tostring(data.userId) == tostring(userId) then
+      data.disconnectedAt = now
+      redis.call('HSET', seatsKey, idx, cjson.encode(data))
+      table.insert(reserved, tonumber(idx))
+    end
+  end
+
+  if #reserved > 0 then
+    redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
+    return cjson.encode({success = true, reservedSeatIndices = reserved})
+  end
+  return cjson.encode({success = false, error = "NOT_SEATED"})
+`;
+
+// Re-claim a held seat on rejoin. Only succeeds if the user STILL occupies a seat
+// that carries a live (non-expired) `disconnectedAt` marker — reconciliation is
+// implicit in the occupancy check: if the slot was reassigned (owner assign, or
+// swept-then-retaken) the userId no longer matches, so reclaim yields and the
+// user rejoins as a listener (never steals an occupied slot → no double-occupancy).
+// On success it clears the marker (reactivates), restores the reverse index, and
+// returns the slot so the join can mark the user a speaker again.
+export const RECLAIM_SEAT_SCRIPT = `
+  local seatsKey = KEYS[1]
+  local userSeatKey = KEYS[2]
+  local userId = ARGV[1]
+  local now = tonumber(ARGV[2])
+  local graceMs = tonumber(ARGV[3])
+
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and tostring(data.userId) == tostring(userId) and data.disconnectedAt ~= nil then
+      if (now - data.disconnectedAt) <= graceMs then
+        data.disconnectedAt = nil
+        redis.call('HSET', seatsKey, idx, cjson.encode(data))
+        redis.call('SET', userSeatKey, idx)
+        redis.call('EXPIRE', seatsKey, ${SEAT_KEY_TTL_SECONDS})
+        redis.call('EXPIRE', userSeatKey, ${SEAT_KEY_TTL_SECONDS})
+        return cjson.encode({
+          reclaimed = true,
+          seatIndex = tonumber(idx),
+          isMuted = data.muted and true or false,
+        })
+      end
+    end
+  end
+  return cjson.encode({ reclaimed = false })
+`;
+
+// Sweep seats whose reconnect grace has expired: HDEL the seat, drop the user's
+// reverse index, and return {index,userId} pairs so the caller can broadcast one
+// seat:cleared + room:userLeft per slot. Runs ONLY on the CAS origin (see the
+// ownership heartbeat), so exactly one instance sweeps → no duplicate clears.
+// Update-in-place on an existing key: a swept-empty seats hash that closeRoom
+// later deletes can never be resurrected here (this only ever HDELs fields).
+export const SWEEP_EXPIRED_SEATS_SCRIPT = `
+  local seatsKey = KEYS[1]
+  local userSeatPrefix = ARGV[1]
+  local now = tonumber(ARGV[2])
+  local graceMs = tonumber(ARGV[3])
+
+  local cleared = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local ok, data = pcall(cjson.decode, all[i + 1])
+    if ok and data.disconnectedAt ~= nil and (now - data.disconnectedAt) > graceMs then
+      redis.call('HDEL', seatsKey, idx)
+      redis.call('DEL', userSeatPrefix .. tostring(data.userId))
+      table.insert(cleared, { tonumber(idx), tonumber(data.userId) })
+    end
+  end
+  return cjson.encode(cleared)
+`;
+
+// ─────────────────────────────────────────────────────────────────
 // Registration
 // ─────────────────────────────────────────────────────────────────
 
@@ -254,6 +350,19 @@ export function registerSeatCommands(redis: Redis): void {
     numberOfKeys: 1,
     lua: UNLOCK_SEAT_SCRIPT,
   });
+  // realtime-22: seat retention across reconnect
+  redis.defineCommand("seatReserve", {
+    numberOfKeys: 1,
+    lua: RESERVE_SEAT_SCRIPT,
+  });
+  redis.defineCommand("seatReclaim", {
+    numberOfKeys: 2,
+    lua: RECLAIM_SEAT_SCRIPT,
+  });
+  redis.defineCommand("seatSweepExpired", {
+    numberOfKeys: 1,
+    lua: SWEEP_EXPIRED_SEATS_SCRIPT,
+  });
 }
 
 /**
@@ -267,4 +376,8 @@ export interface RedisWithSeatCommands {
   seatSetMute(...args: string[]): Promise<number>;
   seatLock(...args: string[]): Promise<string>;
   seatUnlock(...args: string[]): Promise<string>;
+  // realtime-22: seat retention across reconnect
+  seatReserve(...args: string[]): Promise<string>;
+  seatReclaim(...args: string[]): Promise<string>;
+  seatSweepExpired(...args: string[]): Promise<string>;
 }

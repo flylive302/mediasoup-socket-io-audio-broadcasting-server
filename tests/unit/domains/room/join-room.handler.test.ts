@@ -22,6 +22,7 @@ vi.mock("@src/config/index.js", () => ({
     PORT: 3030,
     AWS_REGION: "us-east-1",
     MEDIASOUP_ANNOUNCED_IP: null,
+    SEAT_RETENTION_GRACE_MS: 45_000,
   },
 }));
 
@@ -102,6 +103,8 @@ function createMockContext(remoteSockets: unknown[] = []) {
     },
     seatRepository: {
       getSeats: vi.fn().mockResolvedValue([]),
+      // realtime-22: default to no held seat (fresh join). Overridden per-test.
+      reclaimSeat: vi.fn().mockResolvedValue({ reclaimed: false }),
     },
     cascadeCoordinator: null,
     roomRegistry: null,
@@ -157,6 +160,41 @@ describe("joinRoomHandler", () => {
         { user: Record<string, unknown> },
       ];
       expect(payload.user.date_of_birth).toBe("1990-01-01");
+    });
+  });
+
+  describe("seat re-claim on rejoin (realtime-22)", () => {
+    it("clears the held-seat marker via reclaimSeat on join", async () => {
+      context.seatRepository.reclaimSeat = vi
+        .fn()
+        .mockResolvedValue({ reclaimed: true, seatIndex: 3, isMuted: false });
+      const h = joinRoomHandler(socket, context);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(context.seatRepository.reclaimSeat).toHaveBeenCalledWith(
+        "room-1",
+        expect.any(String),
+        expect.any(Number),
+        expect.any(Number),
+      );
+    });
+
+    it("STILL broadcasts room:userJoined on reclaim (late joiners need it; existing clients skip FX via the FE already-present guard)", async () => {
+      context.seatRepository.reclaimSeat = vi
+        .fn()
+        .mockResolvedValue({ reclaimed: true, seatIndex: 3, isMuted: false });
+      const h = joinRoomHandler(socket, context);
+
+      await h({ roomId: "room-1" }, vi.fn());
+
+      expect(emitToRoomMock).toHaveBeenCalledOnce();
+    });
+
+    it("a fresh join (no held seat) broadcasts room:userJoined", async () => {
+      // Base mock returns { reclaimed: false }.
+      await handler({ roomId: "room-1" }, vi.fn());
+      expect(emitToRoomMock).toHaveBeenCalledOnce();
     });
   });
 

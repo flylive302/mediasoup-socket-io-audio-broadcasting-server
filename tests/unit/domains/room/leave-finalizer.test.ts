@@ -17,7 +17,17 @@ const LEAVER_ID = 100;
  * path removes it via `socket.leave()`. Both must end at the same membership →
  * the same presence count → identical backend updates.
  */
-function harness(members: Set<string>) {
+interface HarnessOpts {
+  // realtime-22: seat indices the user holds (reserveSeat's return). Empty (the
+  // default) models a non-seated leaver → today's plain-leave path.
+  reservedIndices?: number[];
+  // realtime-22: when set, the room is (or isn't) a cascade edge for the gate.
+  isEdgeRoom?: boolean;
+  // realtime-22: the leaveSeat result for the immediate-release path.
+  leaveResult?: { success: boolean; seatIndex?: number; clearedSeatIndices?: number[] };
+}
+
+function harness(members: Set<string>, opts: HarnessOpts = {}) {
   const io = {
     in: () => ({
       fetchSockets: async () => [...members].map((id) => ({ id })),
@@ -35,6 +45,8 @@ function harness(members: Set<string>) {
   const clearUserRoom = vi.fn(async () => {});
   const clearClientRoom = vi.fn();
   const emit = vi.fn();
+  const leaveSeat = vi.fn(async () => opts.leaveResult ?? { success: false });
+  const reserveSeat = vi.fn(async () => opts.reservedIndices ?? []);
 
   const context = {
     roomManager: { getRoom: () => undefined },
@@ -42,12 +54,18 @@ function harness(members: Set<string>) {
       getClient: () => ({ transports: new Map() }),
       clearClientRoom,
     },
-    seatRepository: { leaveSeat: vi.fn(async () => ({ success: false })) },
+    seatRepository: { leaveSeat, reserveSeat },
     autoCloseService: { recordActivity },
     userRoomRepository: { clearUserRoom },
     presenceTracker,
     statusCoalescer: { submit },
     cascadeRelay: null,
+    // realtime-22: absent by default (origin / single-instance → retention on);
+    // set isEdgeRoom to model a cross-region edge falling back to immediate leave.
+    cascadeCoordinator:
+      opts.isEdgeRoom === undefined
+        ? undefined
+        : { isEdgeRoom: () => opts.isEdgeRoom },
   } as unknown as AppContext;
 
   const socket = {
@@ -60,14 +78,33 @@ function harness(members: Set<string>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
-  return { context, socket, submit, recordActivity, clearUserRoom, clearClientRoom, emit };
+  return {
+    context,
+    socket,
+    submit,
+    recordActivity,
+    clearUserRoom,
+    clearClientRoom,
+    emit,
+    leaveSeat,
+    reserveSeat,
+  };
 }
 
-async function captureStatus(members: Set<string>, viaDisconnect: boolean) {
-  const h = harness(members);
+async function captureStatus(
+  members: Set<string>,
+  viaDisconnect: boolean,
+  opts: HarnessOpts = {},
+) {
+  const h = harness(members, opts);
   const count = await finalizeLeave(h.socket, h.context, ROOM, { viaDisconnect });
   // realtime-02: the leave path now buffers the status via the coalescer.
   return { count, status: h.submit.mock.calls[0]?.[1], h };
+}
+
+/** Event names emitted to the room during the leave (seat:cleared / room:userLeft). */
+function emittedEvents(emit: ReturnType<typeof vi.fn>): string[] {
+  return emit.mock.calls.map((c) => c[0] as string);
 }
 
 describe("finalizeLeave — symmetric leave/disconnect (Cause A / H3)", () => {
@@ -116,5 +153,62 @@ describe("finalizeLeave — symmetric leave/disconnect (Cause A / H3)", () => {
       expect(h.clearUserRoom).toHaveBeenCalledWith(LEAVER_ID);
       expect(h.clearClientRoom).toHaveBeenCalledWith(LEAVER);
     }
+  });
+});
+
+describe("finalizeLeave — seat retention across reconnect (realtime-22)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("holds a SEATED user's slot on disconnect: reserves, emits nothing, skips leaveSeat", async () => {
+    // Others remain so the room stays live; the leaver held seat 3.
+    const { h } = await captureStatus(new Set(["sock-other"]), true, {
+      reservedIndices: [3],
+    });
+    expect(h.reserveSeat).toHaveBeenCalledWith(ROOM, String(LEAVER_ID), expect.any(Number));
+    expect(h.leaveSeat).not.toHaveBeenCalled();
+    // No seat:cleared and no room:userLeft — the room sees no flicker.
+    expect(emittedEvents(h.emit)).not.toContain("seat:cleared");
+    expect(emittedEvents(h.emit)).not.toContain("room:userLeft");
+  });
+
+  it("still reconciles presence/count while a seat is retained (socket IS gone)", async () => {
+    const { count, status } = await captureStatus(new Set(["sock-other"]), true, {
+      reservedIndices: [3],
+    });
+    expect(count).toBe(1);
+    expect(status).toMatchObject({ is_live: true, participant_count: 1 });
+  });
+
+  it("a NON-seated disconnect falls through to the normal leave (emits room:userLeft)", async () => {
+    // reserveSeat returns [] (default) → not retained.
+    const { h } = await captureStatus(new Set(["sock-other"]), true);
+    expect(h.reserveSeat).toHaveBeenCalled();
+    expect(h.leaveSeat).toHaveBeenCalled();
+    expect(emittedEvents(h.emit)).toContain("room:userLeft");
+  });
+
+  it("an EXPLICIT leave never retains, even when seated (they meant to leave)", async () => {
+    const { h } = await captureStatus(new Set([LEAVER, "sock-other"]), false, {
+      reservedIndices: [3],
+      leaveResult: { success: true, seatIndex: 3, clearedSeatIndices: [3] },
+    });
+    expect(h.reserveSeat).not.toHaveBeenCalled();
+    expect(h.leaveSeat).toHaveBeenCalled();
+    expect(emittedEvents(h.emit)).toEqual(
+      expect.arrayContaining(["seat:cleared", "room:userLeft"]),
+    );
+  });
+
+  it("a cross-region EDGE disconnect falls back to immediate release (no cross-region kick)", async () => {
+    const { h } = await captureStatus(new Set(["sock-other"]), true, {
+      isEdgeRoom: true,
+      reservedIndices: [3], // would-be held, but the edge gate skips reserve entirely
+      leaveResult: { success: true, seatIndex: 3, clearedSeatIndices: [3] },
+    });
+    expect(h.reserveSeat).not.toHaveBeenCalled();
+    expect(h.leaveSeat).toHaveBeenCalled();
+    expect(emittedEvents(h.emit)).toEqual(
+      expect.arrayContaining(["seat:cleared", "room:userLeft"]),
+    );
   });
 });

@@ -66,7 +66,11 @@ describe("SeatRepository", () => {
       expect(redis.defineCommand).toHaveBeenCalledWith("seatSetMute", expect.objectContaining({ numberOfKeys: 1 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatLock", expect.objectContaining({ numberOfKeys: 2 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatUnlock", expect.objectContaining({ numberOfKeys: 1 }));
-      expect(redis.defineCommand).toHaveBeenCalledTimes(6);
+      // realtime-22: seat retention across reconnect
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatReserve", expect.objectContaining({ numberOfKeys: 1 }));
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatReclaim", expect.objectContaining({ numberOfKeys: 2 }));
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatSweepExpired", expect.objectContaining({ numberOfKeys: 1 }));
+      expect(redis.defineCommand).toHaveBeenCalledTimes(9);
     });
   });
 

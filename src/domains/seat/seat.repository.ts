@@ -220,6 +220,94 @@ export class SeatRepository {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // realtime-22: Seat retention across reconnect
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Hold (rather than release) every seat the user occupies by stamping a
+   * `disconnectedAt` marker, so a brief socket death is invisible to the room.
+   * Returns the reserved seat indices; empty means the user held no seat (caller
+   * then falls back to the normal leave path).
+   */
+  async reserveSeat(roomId: string, userId: string, now: number): Promise<number[]> {
+    try {
+      const result = (await (this.redis as never as RedisWithSeatCommands).seatReserve(
+        SEATS_KEY(roomId),
+        userId,
+        now.toString(),
+      )) as string;
+      const parsed = JSON.parse(result) as {
+        success: boolean;
+        reservedSeatIndices?: number[];
+      };
+      return parsed.success ? (parsed.reservedSeatIndices ?? []) : [];
+    } catch (err) {
+      logger.error({ err, roomId, userId }, "Failed to reserve seat");
+      return [];
+    }
+  }
+
+  /**
+   * Re-claim a held seat on rejoin. Succeeds only if the user still occupies a
+   * seat whose `disconnectedAt` marker is within `graceMs`; on success the marker
+   * is cleared (reactivated) and the slot returned. A slot reassigned during the
+   * outage no longer matches the user → returns not-reclaimed (no double-occupancy).
+   */
+  async reclaimSeat(
+    roomId: string,
+    userId: string,
+    now: number,
+    graceMs: number,
+  ): Promise<{ reclaimed: boolean; seatIndex?: number; isMuted?: boolean }> {
+    try {
+      const result = (await (this.redis as never as RedisWithSeatCommands).seatReclaim(
+        SEATS_KEY(roomId),
+        USER_SEAT_KEY(roomId, userId),
+        userId,
+        now.toString(),
+        graceMs.toString(),
+      )) as string;
+      return JSON.parse(result) as {
+        reclaimed: boolean;
+        seatIndex?: number;
+        isMuted?: boolean;
+      };
+    } catch (err) {
+      logger.error({ err, roomId, userId }, "Failed to reclaim seat");
+      return { reclaimed: false };
+    }
+  }
+
+  /**
+   * Clear every seat whose reconnect grace has expired. Returns {seatIndex,userId}
+   * pairs so the caller can broadcast seat:cleared + room:userLeft per slot. Call
+   * from the CAS origin only (ownership heartbeat) so exactly one instance sweeps.
+   */
+  async sweepExpiredReservations(
+    roomId: string,
+    now: number,
+    graceMs: number,
+  ): Promise<{ seatIndex: number; userId: number }[]> {
+    try {
+      const result = (await (this.redis as never as RedisWithSeatCommands).seatSweepExpired(
+        SEATS_KEY(roomId),
+        `room:${roomId}:seat:user:`,
+        now.toString(),
+        graceMs.toString(),
+      )) as string;
+      const parsed = JSON.parse(result) as unknown;
+      if (!Array.isArray(parsed)) return []; // cjson encodes an empty table as {}
+      return (parsed as [number, number][]).map(([seatIndex, userId]) => ({
+        seatIndex,
+        userId,
+      }));
+    } catch (err) {
+      logger.error({ err, roomId }, "Failed to sweep expired seat reservations");
+      return [];
+    }
+  }
+
   /**
    * Get all seats for a room
    */

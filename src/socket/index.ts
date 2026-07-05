@@ -250,9 +250,11 @@ async function handleDisconnect(
     // presence-authoritative count → Laravel is_live/participant_count). This is
     // the path that previously skipped the Laravel update entirely (Cause A / H3:
     // disconnect is the dominant mobile leave, so Rooms showed phantom-live).
-    // There is no seat-retention grace: a dead socket means the user is gone;
-    // transient blips are absorbed by the socket pingTimeout (disconnect does not
-    // fire until the socket is genuinely dead).
+    // realtime-22: a SEATED user is the one exception — finalizeLeave holds their
+    // slot (marks disconnectedAt, suppresses seat:cleared + room:userLeft) through
+    // SEAT_RETENTION_GRACE_MS so a genuine death that recovers within the window
+    // re-claims the same seat on rejoin. Presence/count still reconcile (the socket
+    // IS gone). The ownership heartbeat sweeps the seat if the window expires.
     await finalizeLeave(socket, appContext, roomId, { viaDisconnect: true });
 
     // Disconnect-only: also drop the cross-instance socket registration.
