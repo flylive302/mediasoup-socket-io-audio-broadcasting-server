@@ -84,6 +84,11 @@ export const RELAY_EVENTS = {
     ROOM_INVITATION_CANCELLED: "room.invitation_cancelled",
     ROOM_JOIN_REQUEST_CANCELLED: "room.join_request_cancelled",
     ROOM_USER_UNBLOCKED: "room.user_unblocked",
+    // realtime-13 (L2): admin "End Live". NOT pure pass-through — EventRouter
+    // intercepts and, if this instance hosts the room's cluster, force-closes
+    // it (real teardown + is_live:false/ended_at flush). Laravel reconciles the
+    // DB independently, so a non-hosting instance safely no-ops.
+    ROOM_FORCE_CLOSE: "room.force_close",
   },
 
   /** Income Targets: achievement tracking */

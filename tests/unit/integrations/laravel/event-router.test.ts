@@ -139,6 +139,27 @@ describe("EventRouter", () => {
     });
   });
 
+  // ─── realtime-13 (L2): admin force-close intercept ─────────────
+
+  describe("room.force_close intercept (realtime-13 / L2)", () => {
+    it("invokes the force-closer with the room id when this instance hosts the room", async () => {
+      const forceCloser = vi.fn().mockResolvedValue(undefined);
+      const r = new EventRouter(io, repo, clientManager, logger, undefined as any, undefined, forceCloser);
+
+      const event = createEvent({ event: "room.force_close", room_id: 789, user_id: null });
+      const result = await r.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(forceCloser).toHaveBeenCalledWith("789", "admin_force_close");
+    });
+
+    it("does not throw when no force-closer is wired (non-hosting path)", async () => {
+      const event = createEvent({ event: "room.force_close", room_id: 789, user_id: null });
+
+      await expect(router.route(event)).resolves.toMatchObject({ delivered: true });
+    });
+  });
+
   describe("emitToUserInRoom / user_in_room target (NR-002)", () => {
     it("routes user_in_room via emitToUser (roomId is informational)", async () => {
       repo.getSocketIds.mockResolvedValue(["socket-a", "socket-b"]);

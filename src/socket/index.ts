@@ -118,7 +118,21 @@ export async function initializeSocket(
   // Initialize events system (Laravel pub/sub)
   const userSocketRepository = new UserSocketRepository(redis, logger);
   const userRoomRepository = new UserRoomRepository(redis, logger);
-  const eventRouter = new EventRouter(io, userSocketRepository, clientManager, logger, redis, roomManager.state);
+  const eventRouter = new EventRouter(
+    io,
+    userSocketRepository,
+    clientManager,
+    logger,
+    redis,
+    roomManager.state,
+    // realtime-13 (L2): only tear down when THIS instance hosts the room's
+    // cluster — a non-hosting instance no-ops so closeRoom's unsafe orphan-reap
+    // branch is never reached from an admin force-close.
+    (roomId, reason) =>
+      roomManager.getRoom(roomId)
+        ? roomManager.closeRoom(roomId, reason)
+        : Promise.resolve(),
+  );
 
 
 

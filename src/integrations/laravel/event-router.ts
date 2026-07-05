@@ -41,6 +41,16 @@ export class EventRouter {
     private readonly logger: Logger,
     private readonly redis: Redis,
     private readonly roomStateRepo?: RoomStateRepository,
+    /**
+     * realtime-13 (L2): force-close a room's cluster IF it is hosted on this
+     * instance. Gated by the caller on local ownership so the unsafe
+     * orphan-reap path is never taken from an admin force-close — a non-hosting
+     * instance simply does nothing (Laravel reconciles the DB independently).
+     */
+    private readonly forceCloseLocalRoom?: (
+      roomId: string,
+      reason: string,
+    ) => Promise<void>,
   ) {
     this.activeAppSlides = new ActiveAppSlidesRepository(this.redis);
   }
@@ -199,6 +209,23 @@ export class EventRouter {
         event.room_id !== null
       ) {
         this.syncRoomSettings(String(event.room_id), event.payload);
+      }
+
+      // REACT: admin force-close. Fire-and-forget so routing never blocks on the
+      // cluster teardown; the caller-supplied closer already no-ops unless this
+      // instance hosts the room, so the unsafe orphan-reap path is never hit.
+      if (
+        event.event === RELAY_EVENTS.room.ROOM_FORCE_CLOSE &&
+        event.room_id !== null &&
+        this.forceCloseLocalRoom
+      ) {
+        this.forceCloseLocalRoom(String(event.room_id), "admin_force_close").catch(
+          (err) =>
+            this.logger.error(
+              { err, roomId: event.room_id },
+              "Admin force-close failed",
+            ),
+        );
       }
 
       // REACT: record app-scope slides (room_id null = broadcast to every room)
