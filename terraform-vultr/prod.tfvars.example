@@ -1,0 +1,39 @@
+# =============================================================================
+# FlyLive Audio (Vultr) — PRODUCTION var file (template)
+# =============================================================================
+# Usage (production Vultr account — SEPARATE account from staging):
+#   cp prod.tfvars.example prod.tfvars            # then fill in the secrets
+#   export VULTR_API_KEY=<production account PAT>
+#   terraform plan  -var-file=prod.tfvars -out=tfplan
+#   terraform apply tfplan
+#
+# prod.tfvars is gitignored (contains secrets). This .example is committed.
+# Secrets must EQUAL the PRODUCTION Laravel Cloud env vars, and must be FRESHLY
+# ROTATED at cutover (slice J) — never the old AWS plaintext values:
+#   laravel_internal_key == Laravel MSAB_INTERNAL_KEY (production)
+#   jwt_secret           == Laravel MSAB_JWT_SECRET   (production)
+# =============================================================================
+
+# --- Environment-specific (non-secret) ---
+environment     = "production"
+audio_domain    = "audio.flyliveapp.com"
+cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com"
+laravel_api_url = "https://app.flyliveapp.com"
+
+# --- Region fleet (conservative-high fixed HA fleet; >= 2 per region) ---
+fleet_regions = {
+  bom = 2
+  fra = 2
+  sgp = 2
+}
+# instance_plan = "vhf-2c-4gb"   # set once slice D picks the plan
+
+# --- Secrets (generate with: openssl rand -hex 32; ROTATE at cutover) ---
+jwt_secret           = "CHANGE_ME_64_hex"
+laravel_internal_key = "CHANGE_ME_64_hex"
+session_secret       = "CHANGE_ME_64_hex"
+redis_auth_token     = "CHANGE_ME_16_to_128_chars"
+
+# --- Cloudflare Realtime TURN (prod key from Cloudflare dashboard) ---
+cloudflare_turn_api_key = "CHANGE_ME"
+cloudflare_turn_key_id  = "CHANGE_ME"

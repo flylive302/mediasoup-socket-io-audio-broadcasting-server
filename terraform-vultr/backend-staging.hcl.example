@@ -1,0 +1,18 @@
+# =============================================================================
+# Terraform state backend — STAGING (Vultr Object Storage, S3-compatible)
+# =============================================================================
+# 1. In the STAGING Vultr account, create an Object Storage subscription
+#    (dashboard walkthrough Step 5). Note its bucket, S3 hostname, and keys.
+# 2. Copy this file:  cp backend-staging.hcl.example backend.hcl
+# 3. Fill in bucket + endpoints.s3 below (hostname is region-specific,
+#    e.g. sgp1.vultrobjects.com / ewr1.vultrobjects.com).
+# 4. Export the Object Storage S3 keys, then init:
+#      export AWS_ACCESS_KEY_ID=<object storage access key>
+#      export AWS_SECRET_ACCESS_KEY=<object storage secret key>
+#      terraform init -reconfigure -backend-config=backend.hcl
+#
+# backend.hcl is gitignored — never commit it.
+# =============================================================================
+
+bucket    = "flylive-audio-tfstate-staging"
+endpoints = { s3 = "https://REGION.vultrobjects.com" }

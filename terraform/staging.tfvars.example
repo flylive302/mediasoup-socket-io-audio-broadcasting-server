@@ -7,7 +7,7 @@
 #   AWS_PROFILE=flylive-staging terraform apply tfplan
 #
 # staging.tfvars is gitignored (contains secrets). This .example is committed.
-# Secrets must EQUAL the staging Laravel Cloud env vars (see docs/deployment-migration-runbook.md §3):
+# Secrets must EQUAL the staging Laravel Cloud env vars (see docs/ops/deployment-migration-runbook.md §3):
 #   laravel_internal_key  == Laravel MSAB_INTERNAL_KEY (staging)
 #   jwt_secret            == Laravel MSAB_JWT_SECRET   (staging)
 # =============================================================================

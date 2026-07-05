@@ -1,0 +1,25 @@
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+# Saved plan files (binary, may embed sensitive values)
+tfplan
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Per-environment var files contain secrets — never commit. Templates (*.tfvars.example) are safe.
+*.tfvars
+!*.tfvars.example
+
+# Account-specific backend config (bucket + endpoint per account) — never commit.
+# Templates (*.hcl.example) are safe.
+backend.hcl
+*.hcl
+!*.hcl.example

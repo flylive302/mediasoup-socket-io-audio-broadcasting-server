@@ -1,0 +1,38 @@
+# =============================================================================
+# FlyLive Audio (Vultr) — STAGING var file (template)
+# =============================================================================
+# Usage (staging Vultr account):
+#   cp staging.tfvars.example staging.tfvars      # then fill in the secrets
+#   export VULTR_API_KEY=<staging account PAT>
+#   terraform plan  -var-file=staging.tfvars -out=tfplan
+#   terraform apply tfplan
+#
+# staging.tfvars is gitignored (contains secrets). This .example is committed.
+# Secrets must EQUAL the STAGING Laravel Cloud env vars:
+#   laravel_internal_key == Laravel MSAB_INTERNAL_KEY (staging)
+#   jwt_secret           == Laravel MSAB_JWT_SECRET   (staging)
+# =============================================================================
+
+# --- Environment-specific (non-secret) ---
+environment     = "staging"
+audio_domain    = "audio.staging.flyliveapp.com"
+cors_origins    = "https://staging.flyliveapp.com,https://app.staging.flyliveapp.com"
+laravel_api_url = "https://app.staging.flyliveapp.com"
+
+# --- Region fleet (faithful 3-region replica; drop counts to 1 between test cycles) ---
+fleet_regions = {
+  bom = 2
+  fra = 2
+  sgp = 2
+}
+# instance_plan = "vhf-2c-4gb"   # set once slice D picks the plan
+
+# --- Secrets (generate with: openssl rand -hex 32) ---
+jwt_secret           = "CHANGE_ME_64_hex"
+laravel_internal_key = "CHANGE_ME_64_hex"
+session_secret       = "CHANGE_ME_64_hex"
+redis_auth_token     = "CHANGE_ME_16_to_128_chars"
+
+# --- Cloudflare Realtime TURN (staging key from Cloudflare dashboard) ---
+cloudflare_turn_api_key = "CHANGE_ME"
+cloudflare_turn_key_id  = "CHANGE_ME"
