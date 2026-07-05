@@ -85,7 +85,7 @@ export class ActiveSpeakerDetector {
    * Evicts stale entries older than 10 seconds.
    */
   private computeTopN(): SpeakerEntry[] {
-    const maxN = config.MAX_ACTIVE_SPEAKERS_FORWARDED;
+    const maxN = config.UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT;
     const staleCutoff = Date.now() - 10_000; // 10s window
 
     // Remove stale speakers

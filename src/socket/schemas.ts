@@ -159,8 +159,9 @@ export const audioConsumeSchema = z.object({
 export const joinRoomSchema = z.object({
   roomId: roomIdSchema,
   ownerId: z.number().optional(), // Owner ID sent from frontend to verify ownership
-  // BL-008: Per-room seat count from frontend (defaults to 15 for backward compat)
-  seatCount: z.number().int().min(1).max(15).default(15),
+  // BL-008: Per-room seat count from frontend (defaults to 15 for backward compat).
+  // realtime-12: max raised 15→20 to match the Laravel-authoritative 5–20 range.
+  seatCount: z.number().int().min(1).max(20).default(15),
 });
 
 export const leaveRoomSchema = z.object({

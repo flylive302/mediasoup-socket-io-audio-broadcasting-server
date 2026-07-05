@@ -56,7 +56,12 @@ const configSchema = z.object({
   // Limits
   MAX_ROOMS_PER_WORKER: z.coerce.number().default(100),
   MAX_LISTENERS_PER_DISTRIBUTION_ROUTER: z.coerce.number().default(700),
-  MAX_ACTIVE_SPEAKERS_FORWARDED: z.coerce.number().default(3),
+  // realtime-12: presentation-only cap on how many Speakers are surfaced as
+  // "talking" in the `speaker:active` event (top-N by recency). Despite the old
+  // name (MAX_ACTIVE_SPEAKERS_FORWARDED), it does NOT cap or gate audio — every
+  // Speaker's audio is always forwarded to every Listener. Purely a UI highlight
+  // count. See CONTEXT.md "Active Speaker".
+  UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT: z.coerce.number().default(6),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
   // F-44: deliberate fail-policy for the rate limiter on a Redis error.
   // Default false = fail-closed (preserves prior production behavior: deny on

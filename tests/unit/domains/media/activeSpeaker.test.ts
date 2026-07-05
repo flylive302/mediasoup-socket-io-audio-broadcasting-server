@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock config
 vi.mock("@src/config/index.js", () => ({
   config: {
-    MAX_ACTIVE_SPEAKERS_FORWARDED: 3,
+    UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT: 3,
   },
 }));
 
@@ -88,7 +88,7 @@ describe("ActiveSpeakerDetector", () => {
   });
 
   describe("computeTopN()", () => {
-    it("returns at most MAX_ACTIVE_SPEAKERS_FORWARDED speakers", () => {
+    it("returns at most UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT speakers", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
       detector.start();
