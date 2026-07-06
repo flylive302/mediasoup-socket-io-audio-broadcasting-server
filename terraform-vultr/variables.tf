@@ -59,6 +59,12 @@ variable "tracer_region" {
   default     = "bom"
 }
 
+variable "tracer_hostname" {
+  description = "The DNS hostname this tracer's load balancer is reachable at. Deliberately NOT `<tracer_region>.<audio_domain>` (that collides with the real per-region naming convention already in Cloudflare — mumbai/frankfurt/singapore.audio.flyliveapp.com — which is untouched until the real slice-J cutover). Must be covered by the ssl cert's SANs."
+  type        = string
+  default     = "vultr-tracer.audio.flyliveapp.com"
+}
+
 variable "image_tag" {
   description = "Pinned ghcr.io image tag (sha-<commit8> from the CI run that built it). Never \"latest\"."
   type        = string
@@ -126,6 +132,28 @@ variable "hls_r2_access_key_id" {
 
 variable "hls_r2_secret_access_key" {
   description = "R2 Object Read/Write secret access key for HLS publishing."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# --- Load balancer TLS (Cloudflare Origin CA — Vultr's auto_ssl_domain needs a
+# Vultr-hosted DNS zone, which conflicts with keeping Cloudflare as DNS authority) ---
+
+variable "lb_ssl_certificate" {
+  description = "PEM certificate for the tracer region's load balancer (Cloudflare Origin CA)."
+  type        = string
+  sensitive   = true
+}
+
+variable "lb_ssl_private_key" {
+  description = "PEM private key matching lb_ssl_certificate."
+  type        = string
+  sensitive   = true
+}
+
+variable "lb_ssl_chain" {
+  description = "Optional PEM certificate chain."
   type        = string
   sensitive   = true
   default     = ""

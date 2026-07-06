@@ -43,6 +43,9 @@ variables {
 
   cloudflare_turn_api_key = "test-turn-key"
   cloudflare_turn_key_id  = "test-turn-key-id"
+
+  lb_ssl_certificate = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
+  lb_ssl_private_key = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"
 }
 
 run "public_ip_passes_contract" {

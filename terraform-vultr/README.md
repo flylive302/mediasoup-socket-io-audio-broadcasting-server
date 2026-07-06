@@ -22,7 +22,7 @@ The AWS stack in [`../terraform/`](../terraform/) is **kept as a dormant, redepl
 | `modules/networking` | `vultr_firewall_group` + rules (app TCP, WebRTC/cascade UDP+TCP range). No SSH rule — use Vultr's web console. |
 | `modules/valkey` | `vultr_database` (`engine=valkey`, business-tier 2-node HA plan). Vultr generates the admin password/CA itself — there's no `auth_token` input like AWS ElastiCache. |
 | `modules/compute` | `vultr_reserved_ip` (the Terraform-known announced IP) + `vultr_instance` (`reserved_ip_id`) + cloud-init template. |
-| `modules/loadbalancer` | `vultr_load_balancer`, `auto_ssl_domain` (Vultr-issued Let's Encrypt cert), `/health` check, TLS 443 → app port. |
+| `modules/loadbalancer` | `vultr_load_balancer`, TLS via bring-your-own cert (Cloudflare Origin CA — not `auto_ssl_domain`), `/health` check, TLS 443 → app port. |
 | `tests/public_ip_contract.tftest.hcl` | Offline `terraform test` (mocked provider, no cost/credentials) proving the announced-IP contract: accepts a public IPv4, rejects private/loopback/empty. |
 | `staging.tfvars.example` / `prod.tfvars.example` | Per-env values. Copy to `*.tfvars` (gitignored) and fill in secrets. |
 
@@ -61,9 +61,17 @@ terraform plan -var-file=staging.tfvars
 terraform test
 ```
 
-After `apply`, point a Cloudflare DNS-only (grey-cloud) record for `tracer_lb_hostname` at
-`tracer_lb_ipv4` — Vultr's `auto_ssl_domain` only issues the Let's Encrypt cert once that
-record resolves (same two-pass shape as the AWS stack's SNS-endpoint DNS gotcha).
+TLS on the load balancer is a **bring-your-own certificate (Cloudflare Origin CA)**, not
+Vultr's `auto_ssl_domain` — that requires the domain to be a Vultr-hosted DNS zone in this
+account (confirmed live: it fails apply with `"Domain not found for account: <domain>"`
+otherwise), which would conflict with keeping Cloudflare as DNS authority. Generate one in
+the Cloudflare dashboard (**Websites → the zone → SSL/TLS → Origin Server → Create
+Certificate**) for `tracer_lb_hostname` (or a wildcard) and set `lb_ssl_certificate` /
+`lb_ssl_private_key` in `*.tfvars`. After `apply`, point that hostname's Cloudflare DNS
+record at `tracer_lb_ipv4`, **proxied (orange-cloud)** — Origin CA certs are only trusted by
+Cloudflare's edge, not public browsers directly. Raw WebRTC media/cascade bypass this
+hostname entirely (they use the instance's reserved IP directly), so proxying only the
+signaling/WSS hostname is safe.
 
 ## Image registry — ghcr.io
 

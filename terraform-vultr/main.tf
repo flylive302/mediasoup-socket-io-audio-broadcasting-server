@@ -73,5 +73,9 @@ module "loadbalancer" {
   region       = var.tracer_region
   app_port     = var.app_port
   instance_ids = [module.compute.instance_id]
-  hostname     = "${var.tracer_region}.${var.audio_domain}"
+  hostname     = var.tracer_hostname
+
+  ssl_certificate = var.lb_ssl_certificate
+  ssl_private_key = var.lb_ssl_private_key
+  ssl_chain       = var.lb_ssl_chain
 }

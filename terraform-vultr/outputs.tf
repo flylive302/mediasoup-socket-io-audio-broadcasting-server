@@ -17,13 +17,13 @@ output "tracer_public_ip" {
 }
 
 output "tracer_lb_ipv4" {
-  description = "The tracer load balancer's public IPv4 — point the Cloudflare DNS-only record (see loadbalancer module) here."
+  description = "The tracer load balancer's public IPv4 — point tracer_lb_hostname's Cloudflare DNS record (PROXIED / orange-cloud) here."
   value       = module.loadbalancer.ipv4
 }
 
 output "tracer_lb_hostname" {
-  description = "The hostname the load balancer's auto_ssl cert is issued for."
-  value       = "${var.tracer_region}.${var.audio_domain}"
+  description = "The hostname the ssl cert (Cloudflare Origin CA) is issued for, covered by the *.audio.flyliveapp.com wildcard SAN."
+  value       = var.tracer_hostname
 }
 
 output "tracer_valkey_host" {

@@ -1,11 +1,13 @@
 # =============================================================================
 # Load Balancer Module — TLS 443 -> app port, /health check
 # =============================================================================
-# auto_ssl_domain: Vultr terminates TLS and auto-issues/renews a Let's Encrypt
-# cert for var.hostname via ACME HTTP-01, which requires that hostname's DNS
-# to already resolve to this load balancer's IPv4 — a manual, two-pass step
-# (create LB -> point Cloudflare DNS-only record at its ipv4 output -> Vultr
-# issues the cert), same shape as the AWS stack's SNS-endpoint DNS gotcha.
+# TLS is supplied via a bring-your-own certificate (Cloudflare Origin CA), NOT
+# Vultr's auto_ssl_domain — that requires the domain to be a Vultr-hosted DNS
+# zone in this account, which would conflict with keeping Cloudflare as DNS
+# authority (frontend/TURN/R2 all depend on it staying there). Confirmed live:
+# auto_ssl_domain failed apply with "Domain not found for account: <domain>"
+# because `GET /v2/domains` on this account is empty — Vultr checks its OWN
+# DNS zone list, not whether the hostname resolves here from anywhere else.
 # =============================================================================
 
 terraform {
@@ -23,7 +25,11 @@ resource "vultr_load_balancer" "main" {
 
   attached_instances = var.instance_ids
 
-  auto_ssl_domain = var.hostname
+  ssl {
+    private_key = var.ssl_private_key
+    certificate = var.ssl_certificate
+    chain       = var.ssl_chain != "" ? var.ssl_chain : null
+  }
 
   forwarding_rules {
     frontend_protocol = "https"

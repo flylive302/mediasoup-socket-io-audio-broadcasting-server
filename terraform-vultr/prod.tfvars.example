@@ -49,3 +49,14 @@ cloudflare_turn_key_id  = "CHANGE_ME"
 # hls_public_base_url      = "https://live.flyliveapp.com"
 # hls_r2_access_key_id     = "CHANGE_ME"
 # hls_r2_secret_access_key = "CHANGE_ME"
+
+# --- Load balancer TLS (Cloudflare Origin CA — NOT Vultr auto_ssl_domain; that
+# requires a Vultr-hosted DNS zone, which conflicts with keeping Cloudflare as
+# DNS authority). Generate in Cloudflare dashboard: Websites -> flyliveapp.com ->
+# SSL/TLS -> Origin Server -> Create Certificate, for tracer_region.audio_domain
+# (or a wildcard). The Cloudflare DNS record for that hostname MUST be proxied
+# (orange-cloud) — Origin CA certs are only trusted by Cloudflare's edge, not
+# public browsers directly. ---
+lb_ssl_certificate = "CHANGE_ME_PEM_CERT"
+lb_ssl_private_key = "CHANGE_ME_PEM_PRIVATE_KEY"
+# lb_ssl_chain      = "CHANGE_ME_PEM_CHAIN"   # optional
