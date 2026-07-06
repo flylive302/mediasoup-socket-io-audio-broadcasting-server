@@ -20,36 +20,28 @@ terraform {
   }
 
   # -------------------------------------------------------------------------
-  # Remote state on Vultr Object Storage (S3-compatible), mirroring the AWS S3
-  # backend. The per-environment bucket + endpoint live in backend.hcl (which is
-  # gitignored and account-specific) so staging and production never share state:
+  # Remote state on HCP Terraform (Terraform Cloud), free tier: $0, native state
+  # locking, and CI-ready (slice H). Chosen over Vultr Object Storage because the
+  # cheapest usable Object Storage tier is $18/mo for a few-KB state file, and its
+  # conditional-write / locking support is unverified.
   #
-  #   cp backend-staging.hcl.example backend.hcl        # or backend-prod.hcl.example
-  #   # edit bucket + endpoints.s3 for your Object Storage subscription
-  #   export AWS_ACCESS_KEY_ID=<object-storage S3 access key>
-  #   export AWS_SECRET_ACCESS_KEY=<object-storage S3 secret key>
-  #   terraform init -reconfigure -backend-config=backend.hcl
+  # The account-specific org name and the per-environment workspace stay OUT of
+  # committed code (like backend.hcl did) — supplied via environment variables so
+  # staging and production run byte-identical config against separate workspaces:
   #
-  # NOTE — locking is intentionally NOT enabled here. Terraform's native S3
-  # lock (`use_lockfile`) depends on conditional-write (If-None-Match) support,
-  # which Vultr Object Storage (Ceph RGW) may not implement. With a zero-resource
-  # skeleton and a single operator that is fine. Confirming/enabling locking is a
-  # slice-08 (CI, multi-actor) gate — see 08-cicd-deploy-pipelines.md. If Vultr
-  # cannot do conditional writes and locking is wanted, Terraform Cloud's free
-  # tier (native locking, $0) is the clean fallback.
+  #   terraform login                                   # one-time: stores a user token
+  #   export TF_CLOUD_ORGANIZATION=<your HCP org>
+  #   export TF_WORKSPACE=msab-vultr-staging            # or msab-vultr-production
+  #   terraform init
+  #
+  # Set each workspace's Execution Mode to **Local** (Org Settings → Default
+  # Execution Mode → Local is the one-click way) so plan/apply run on your machine
+  # with local secrets/tfvars — HCP only stores state + provides the lock.
   # -------------------------------------------------------------------------
-  backend "s3" {
-    # bucket + endpoints.s3 come from -backend-config=backend.hcl (per-env)
-    key    = "phase1/terraform.tfstate"
-    region = "us-east-1" # dummy; Vultr ignores it, but the AWS SDK requires a value
-
-    # Vultr Object Storage is S3-compatible but not AWS — skip all AWS-specific
-    # validation/metadata calls, and use path-style addressing.
-    use_path_style              = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    skip_s3_checksum            = true
+  cloud {
+    # organization comes from TF_CLOUD_ORGANIZATION
+    workspaces {
+      tags = ["msab-vultr"]
+    }
   }
 }

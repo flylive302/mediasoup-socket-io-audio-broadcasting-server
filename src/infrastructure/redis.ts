@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { Redis } from "ioredis";
 import { config } from "@src/config/index.js";
 import { logger } from "./logger.js";
@@ -13,7 +14,14 @@ export function getRedisClient(): Redis {
     db: config.REDIS_DB,
     ...(config.REDIS_USERNAME && { username: config.REDIS_USERNAME }),
     ...(config.REDIS_PASSWORD && { password: config.REDIS_PASSWORD }),
-    ...(config.REDIS_TLS && { tls: { rejectUnauthorized: true } }),
+    ...(config.REDIS_TLS && {
+      tls: {
+        rejectUnauthorized: true,
+        ...(config.REDIS_TLS_CA_PATH && {
+          ca: fs.readFileSync(config.REDIS_TLS_CA_PATH, "utf8"),
+        }),
+      },
+    }),
     connectTimeout: 10_000,
     commandTimeout: 5_000,
     maxRetriesPerRequest: 3,

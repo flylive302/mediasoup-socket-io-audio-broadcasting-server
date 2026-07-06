@@ -33,6 +33,10 @@ const configSchema = z.object({
   REDIS_PASSWORD: z.string().optional(),
   REDIS_DB: z.coerce.number().default(3), // Separate DB from Laravel
   REDIS_TLS: booleanEnvSchema,
+  // Vultr managed Valkey presents a private CA (not in the OS trust store) —
+  // path to a mounted CA bundle so `rejectUnauthorized: true` can still verify
+  // it. Unset (AWS ElastiCache path): Node's default trust store is used, unchanged.
+  REDIS_TLS_CA_PATH: z.string().optional(),
 
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),

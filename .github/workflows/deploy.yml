@@ -1,8 +1,9 @@
 name: Deploy via ECR + ASG Instance Refresh
 
+# AWS account is suspended (see docs/prd-msab-vultr-migration.md) — kept as a
+# dormant, manually-redeployable backup. No longer runs on push; ghcr-publish.yml
+# is the live image pipeline.
 on:
-  push:
-    branches: [master]
   workflow_dispatch: # Manual trigger from GitHub UI
 
 # Only one deploy workflow at a time (queues, doesn't cancel)

@@ -25,13 +25,17 @@ fleet_regions = {
   fra = 2
   sgp = 2
 }
-# instance_plan = "vhf-2c-4gb"   # set once slice D picks the plan
+instance_plan = "vhf-2c-4gb"
+
+# --- Slice D: single-region tracer ---
+tracer_region   = "bom"
+image_tag       = "CHANGE_ME_sha-<commit8>"   # from the ghcr-publish.yml CI run, never "latest"
+ghcr_pull_token = "CHANGE_ME_classic_PAT_read:packages_only"
 
 # --- Secrets (generate with: openssl rand -hex 32) ---
 jwt_secret           = "CHANGE_ME_64_hex"
 laravel_internal_key = "CHANGE_ME_64_hex"
 session_secret       = "CHANGE_ME_64_hex"
-redis_auth_token     = "CHANGE_ME_16_to_128_chars"
 
 # --- Cloudflare Realtime TURN (staging key from Cloudflare dashboard) ---
 cloudflare_turn_api_key = "CHANGE_ME"

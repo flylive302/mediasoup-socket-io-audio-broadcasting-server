@@ -45,9 +45,47 @@ variable "fleet_regions" {
 }
 
 variable "instance_plan" {
-  description = "Vultr plan ID for MSAB instances (CPU-optimized / High Frequency recommended for mediasoup). Set per env once slice D lands."
+  description = "Vultr plan ID for MSAB instances (CPU-optimized / High Frequency recommended for mediasoup)."
   type        = string
-  default     = ""
+  default     = "vhf-2c-4gb"
+}
+
+# --- Slice D: single-region tracer ------------------------------------------
+# The tracer stands up exactly ONE region (multi-region fan-out is slice 06).
+
+variable "tracer_region" {
+  description = "The single Vultr region code this tracer deploys into. Must be a key of fleet_regions."
+  type        = string
+  default     = "bom"
+}
+
+variable "image_tag" {
+  description = "Pinned ghcr.io image tag (sha-<commit8> from the CI run that built it). Never \"latest\"."
+  type        = string
+}
+
+variable "ghcr_pull_token" {
+  description = "Read-only classic GitHub PAT (read:packages only) instances use to `docker login ghcr.io`. See terraform-vultr/README.md § Image registry."
+  type        = string
+  sensitive   = true
+}
+
+variable "valkey_plan" {
+  description = "Vultr managed-database plan ID for the region's shared HA Valkey endpoint."
+  type        = string
+  default     = "vultr-dbaas-business-rp-intel-1-12-2"
+}
+
+variable "valkey_version" {
+  description = "Valkey engine version. Vultr's \"Deploy Database\" dashboard offers 8.1-9.0 and defaults to 9.0 (confirmed live 2026-07-06)."
+  type        = string
+  default     = "9.0"
+}
+
+variable "mediasoup_num_workers" {
+  description = "MediaSoup workers = vCPU - 1 (reserve one core for the Node.js event loop). Default 1 matches instance_plan's default vhf-2c-4gb (2 vCPU) — adjust if instance_plan changes."
+  type        = number
+  default     = 1
 }
 
 # --- Networking / media ports ------------------------------------------------
@@ -112,12 +150,9 @@ variable "session_secret" {
   default     = ""
 }
 
-variable "redis_auth_token" {
-  description = "AUTH token for the managed Valkey endpoint (per region, shared by that region's fleet for cascade CAS ownership)."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
+# NOTE: no redis_auth_token variable — unlike ElastiCache's auth_token input,
+# Vultr managed databases generate and own the admin password themselves
+# (vultr_database.password, a computed output the compute module consumes).
 
 # --- Cloudflare Realtime TURN ------------------------------------------------
 
