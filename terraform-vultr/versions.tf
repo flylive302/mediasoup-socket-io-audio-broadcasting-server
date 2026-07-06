@@ -31,7 +31,7 @@ terraform {
   #
   #   terraform login                                   # one-time: stores a user token
   #   export TF_CLOUD_ORGANIZATION=<your HCP org>
-  #   export TF_WORKSPACE=msab-vultr-staging            # or msab-vultr-production
+  #   export TF_WORKSPACE=msab-vultr-production         # this (first) account = prod; the future 2nd account = msab-vultr-staging
   #   terraform init
   #
   # Set each workspace's Execution Mode to **Local** (Org Settings → Default

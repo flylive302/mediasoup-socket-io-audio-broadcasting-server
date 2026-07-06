@@ -32,6 +32,11 @@ Two environments = **two separate Vultr accounts** (blast-radius wall), mapped t
 (`msab-vultr-staging` / `msab-vultr-production`). They differ only by `TF_WORKSPACE`, `*.tfvars`, and the
 `VULTR_API_KEY` you export — the Terraform code is identical, so staging faithfully predicts production.
 
+> **Current reality (2026-07-06):** the **first/only** Vultr account so far is **production** — its HCP
+> workspace is `msab-vultr-production` (renamed from the slice-A leftover `msab-vultr-staging` after the
+> single-account-as-prod decision). The **second** account becomes the real **staging** later and will use a
+> fresh `msab-vultr-staging` workspace. So today, `TF_WORKSPACE=msab-vultr-production`.
+
 ## State backend — HCP Terraform (Terraform Cloud), free tier
 
 Chosen over Vultr Object Storage: $0 (vs $18/mo for the cheapest usable Object Storage tier), native state
@@ -39,7 +44,8 @@ locking, and CI-ready for slice H. HCP stores **state only** — plan/apply run 
 (set the workspace Execution Mode to **Local**).
 
 One-time setup: sign up at `app.terraform.io`, note your **organization name**, and set the org's
-**Default Execution Mode → Local** (Org Settings → General). Workspaces are auto-created on first `init`.
+**Default Execution Mode → Local** (Org Settings → General). Tag-based workspaces do **not** auto-create
+under `-input=false`/CI — pre-create them (see Gotchas below).
 
 ## Init an environment
 
@@ -52,8 +58,8 @@ export VULTR_API_KEY=<account PAT>
 
 # 3. select the HCP org + per-env workspace (keeps them out of committed code)
 export TF_CLOUD_ORGANIZATION=<your HCP org>
-export TF_WORKSPACE=msab-vultr-staging          # or msab-vultr-production
-terraform init                                   # creates the workspace if absent
+export TF_WORKSPACE=msab-vultr-production        # this account = prod; the future staging account uses msab-vultr-staging
+terraform init                                   # workspace must already exist (see Gotchas); use -reconfigure after a rename
 
 # 4. plan (creates: firewall group + rules, HA Valkey, N reserved IPs + N instances, load balancer)
 cp staging.tfvars.example staging.tfvars         # fill in secrets, image_tag, ghcr_pull_token
@@ -131,7 +137,10 @@ disabling certificate verification.
   with *"Invalid workspace selection"*. Pre-create each workspace (name = `msab-vultr-<env>`, tag =
   `msab-vultr`, Execution Mode = Local) — via the HCP UI, or the API:
   `POST /organizations/<org>/workspaces` then `POST /workspaces/<id>/relationships/tags`.
-  `msab-vultr-staging` already exists; create `msab-vultr-production` in the prod HCP context before slice J.
+  `msab-vultr-production` is the current (first/prod) account's workspace — renamed from the original
+  `msab-vultr-staging`; a workspace rename in HCP preserves state (relabel only, no recreate), then
+  `terraform init -reconfigure` locally to rebind. Create a fresh `msab-vultr-staging` when the second
+  (staging) account is set up.
 - Provider lockfile `.terraform.lock.hcl` is currently gitignored (mirrors the AWS dir). Reconsider
   committing it at slice H so CI pins provider versions reproducibly.
 - Manual setup steps (accounts, API key, deploy-limit, HCP Terraform org) are in
@@ -141,5 +150,6 @@ disabling certificate verification.
   "vultr-dbaas-business-rp-intel-1-12-2"` (cheapest 2-node/HA Valkey-capable plan, $60/mo — the
   dashboard's own "Deploy Database" summary confirms this exact plan ID and cost), and
   `valkey_version = "9.0"` (dashboard offers 8.1-9.0, defaults to 9.0).
-- Real `terraform plan` (against `msab-vultr-staging`, dummy secrets, no apply) and `terraform test`
-  (mocked provider) both pass as of this slice — see the tracer issue for the full verification note.
+- Real `terraform plan` (against the prod workspace — then named `msab-vultr-staging`, since renamed to
+  `msab-vultr-production`) and `terraform test` (mocked provider) both pass as of this slice — see the
+  tracer issue for the full verification note.
