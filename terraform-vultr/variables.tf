@@ -45,9 +45,20 @@ variable "fleet_regions" {
 }
 
 variable "instance_plan" {
-  description = "Vultr plan ID for MSAB instances (CPU-optimized / High Frequency recommended for mediasoup)."
+  description = "Default Vultr plan ID for MSAB instances (CPU-optimized / High Frequency recommended for mediasoup). Per-region overrides live in region_instance_plans."
   type        = string
   default     = "vhf-2c-4gb"
+}
+
+# Not every plan family exists in every region — Frankfurt (fra), for one, has NO
+# High Frequency (vhf) line, so the vhf-4c-16gb used in bom/sgp errors there with
+# "instance plan is not available in the selected region". This map overrides the
+# plan for specific regions; unset regions fall back to var.instance_plan. Keep
+# vCPU consistent with mediasoup_num_workers (workers = vCPU - 1).
+variable "region_instance_plans" {
+  description = "Optional region code -> instance plan overrides. Unset regions use var.instance_plan."
+  type        = map(string)
+  default     = {}
 }
 
 # --- State-migration anchor (slices D/E -> 06) -------------------------------

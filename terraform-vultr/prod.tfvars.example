@@ -29,6 +29,9 @@ fleet_regions = {
   sgp = 2
 }
 instance_plan = "vhf-2c-4gb"
+# Frankfurt (fra) has NO High Frequency (vhf) line — override per-region for any
+# region that lacks the default plan (unset regions use instance_plan above):
+# region_instance_plans = { fra = "voc-g-4c-16gb-80s-amd" }
 
 # --- State-migration anchor (retained; not a deploy toggle) ---
 # The region slices 04/05 first applied — the moved-block key that re-homes the

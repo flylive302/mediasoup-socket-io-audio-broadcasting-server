@@ -70,7 +70,7 @@ module "compute" {
   project_name      = var.project_name
   environment       = var.environment
   region            = each.key
-  instance_plan     = var.instance_plan
+  instance_plan     = lookup(var.region_instance_plans, each.key, var.instance_plan)
   instance_count    = each.value
   firewall_group_id = module.networking[each.key].firewall_group_id
   vpc_ids           = [module.networking[each.key].vpc_id]
