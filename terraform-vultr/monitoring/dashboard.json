@@ -1,0 +1,97 @@
+{
+  "__comment": "FlyLive MSAB — per-region overview. Import: Grafana → Dashboards → New → Import → paste this JSON, pick your Grafana Cloud Prometheus datasource. Panels group by the `region` label set in config.alloy.",
+  "title": "MSAB — Regions Overview",
+  "uid": "msab-regions",
+  "tags": ["msab", "vultr"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "region",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+        "query": "label_values(up, region)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active socket connections (per region)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (region) (flylive_socket_connections_total{region=~\"$region\"})",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "CPU utilization (per instance)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{region=~\"$region\"}[5m])",
+          "legendFormat": "{{region}}/{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Healthy targets (up) per region",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "min": 0 } },
+      "targets": [
+        {
+          "expr": "sum by (region) (up{region=~\"$region\"})",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Event-fanout failure rate (per region)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1 } },
+      "targets": [
+        {
+          "expr": "sum by (region) (rate(flylive_laravel_events_received_total{delivered=~\"false|rejected\",region=~\"$region\"}[5m])) / clamp_min(sum by (region) (rate(flylive_laravel_events_received_total{region=~\"$region\"}[5m])), 0.0001)",
+          "legendFormat": "{{region}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Active rooms & mediasoup workers",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (region) (flylive_rooms_active{region=~\"$region\"})",
+          "legendFormat": "rooms {{region}}"
+        },
+        {
+          "expr": "sum by (region) (flylive_mediasoup_workers_active{region=~\"$region\"})",
+          "legendFormat": "workers {{region}}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+# =============================================================================
+# FlyLive MSAB — alerting rules (slice 07)
+# =============================================================================
+# The two alarms that matter, rebuilt off CloudWatch onto the scraped Prometheus
+# series. Prometheus/Mimir rule-group format — load into Grafana Cloud with:
+#
+#   mimirtool rules load alert-rules.yml \
+#     --address="https://<stack>.grafana.net" --id="<instance-id>" --key="<token>"
+#
+# (or paste each expression into a Grafana-managed alert rule; see README §Alerts).
+# Every alert routes to the operator contact point via the notification policy —
+# that delivery step (AC4) is configured once in the Grafana UI, see README.
+# =============================================================================
+groups:
+  - name: msab-outage
+    rules:
+      # AC2 — zero healthy targets behind a region. Alloy synthesizes an `up`
+      # series per static target even when the instance is unreachable (value 0),
+      # so `max by (region)` is 0 only when EVERY instance in that region is down
+      # = a total regional outage as seen from the scraper. 2m debounces a rolling
+      # deploy / single reboot.
+      - alert: MSABRegionZeroHealthyTargets
+        expr: max by (region) (up{region=~"bom|fra|sgp"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: msab
+        annotations:
+          summary: "MSAB region {{ $labels.region }} has zero healthy targets"
+          description: >
+            Every MSAB instance in region {{ $labels.region }} is failing scrape
+            (up == 0) for 2m — the region is serving no audio. Check the Vultr LB
+            target health and `docker logs msab` on that region's instances.
+
+      # Safety net: if the scraper itself dies, the `up` series vanish and the
+      # rule above can't fire. Alert when a whole region's series disappear.
+      - alert: MSABRegionScrapeAbsent
+        expr: absent(up{region="bom"}) or absent(up{region="fra"}) or absent(up{region="sgp"})
+        for: 5m
+        labels:
+          severity: warning
+          service: msab
+        annotations:
+          summary: "MSAB scrape series absent — Alloy or a whole region is gone"
+          description: >
+            No `up` series for at least one region for 5m. Either the central
+            Alloy agent is down or a region was removed from config.alloy.
+
+  - name: msab-fanout
+    rules:
+      # AC3 — high Laravel→MSAB event-fanout failure rate. The app increments
+      # flylive_laravel_events_received_total{delivered="true|false|rejected"} for
+      # every inbound realtime event (event-router.ts). A sustained failed-share
+      # >5% means live balance / gift-number / slide updates are not reaching
+      # clients — the exact realtime-bridge canary CloudWatch used to guard.
+      - alert: MSABEventFanoutFailureRate
+        expr: |
+          sum by (region) (rate(flylive_laravel_events_received_total{delivered=~"false|rejected"}[5m]))
+            /
+          sum by (region) (rate(flylive_laravel_events_received_total[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: msab
+        annotations:
+          summary: "MSAB event-fanout failure rate >5% in {{ $labels.region }}"
+          description: >
+            {{ $value | humanizePercentage }} of inbound Laravel realtime events
+            in region {{ $labels.region }} failed delivery over 5m. Live
+            balance/gift/slide updates are dropping — check the Laravel→MSAB
+            bridge, Redis pub/sub, and socket registration.

@@ -1,0 +1,80 @@
+// =============================================================================
+// FlyLive MSAB — Grafana Alloy scrape + remote_write config (slice 07)
+// =============================================================================
+// A SINGLE central Alloy process scrapes every region's MSAB instances over
+// their public reserved IPs on the app port (3030) and remote_writes to Grafana
+// Cloud. This deliberately avoids running an agent on each instance, because a
+// per-instance sidecar would live in cloud-init → any change force-replaces the
+// whole fleet (Vultr replaces vultr_instance on user_data change). Central Alloy
+// keeps monitoring fully decoupled from the deploy path.
+//
+// Targets are the STABLE vultr_reserved_ip addresses (they survive an instance
+// replace), so this list only changes when the fleet size changes — mirror it
+// with `terraform output region_public_ips` after any scale/apply.
+//
+// The /metrics/prometheus endpoint is X-Internal-Key gated (AUDIT-008); the key
+// and the Grafana Cloud push credentials are injected from the environment —
+// NOTHING secret is committed here. `region` and `instance` are attached as
+// static target labels so dashboards/alerts can group by region.
+//
+// Run:  LARAVEL_INTERNAL_KEY=… GRAFANA_CLOUD_URL=… GRAFANA_CLOUD_USER=… \
+//       GRAFANA_CLOUD_TOKEN=… docker compose up -d   (see docker-compose.yml)
+// =============================================================================
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// --- Push all scraped series to Grafana Cloud (hosted Prometheus / Mimir) ---
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_URL") // e.g. https://prometheus-prod-XX.grafana.net/api/prom/push
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_USER") // Grafana Cloud stack instance ID
+      password = sys.env("GRAFANA_CLOUD_TOKEN") // Cloud Access Policy token (metrics:write)
+    }
+  }
+}
+
+// One scrape component per region. metrics_path + scheme are the same across all;
+// the app-key gate travels on every request via http_headers. `region`/`instance`
+// keys in each target become labels on every scraped series.
+prometheus.scrape "bom" {
+  targets = [
+    { __address__ = "65.20.69.175:3030", region = "bom", instance = "bom-0" },
+    { __address__ = "65.20.90.188:3030", region = "bom", instance = "bom-1" },
+  ]
+  metrics_path    = "/metrics/prometheus"
+  scheme          = "http"
+  scrape_interval = "30s"
+  scrape_timeout  = "10s"
+  http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.scrape "fra" {
+  targets = [
+    { __address__ = "95.179.247.170:3030", region = "fra", instance = "fra-0" },
+    { __address__ = "140.82.38.113:3030", region = "fra", instance = "fra-1" },
+  ]
+  metrics_path    = "/metrics/prometheus"
+  scheme          = "http"
+  scrape_interval = "30s"
+  scrape_timeout  = "10s"
+  http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.scrape "sgp" {
+  targets = [
+    { __address__ = "207.148.72.145:3030", region = "sgp", instance = "sgp-0" },
+    { __address__ = "149.28.135.197:3030", region = "sgp", instance = "sgp-1" },
+  ]
+  metrics_path    = "/metrics/prometheus"
+  scheme          = "http"
+  scrape_interval = "30s"
+  scrape_timeout  = "10s"
+  http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}

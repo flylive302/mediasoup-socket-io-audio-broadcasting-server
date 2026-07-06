@@ -1,0 +1,36 @@
+# =============================================================================
+# FlyLive MSAB — central Grafana Alloy runner (slice 07 monitoring)
+# =============================================================================
+# Runs the single scrape agent that feeds Grafana Cloud. Put it anywhere with
+# egress to the fleet's public IPs and to Grafana Cloud: a $5 Vultr box, an
+# existing ops host, or a laptop for a spot check. All secrets come from the
+# environment (see .env.example) — none are baked into the image or config.
+#
+#   cp .env.example .env   # fill in the 4 values
+#   docker compose up -d
+#   docker compose logs -f alloy   # confirm scrapes succeed (look for 200s)
+# =============================================================================
+
+services:
+  alloy:
+    image: grafana/alloy:v1.5.0
+    container_name: msab-alloy
+    restart: unless-stopped
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    ports:
+      - "12345:12345" # Alloy's own UI/debug endpoint (optional; bind to localhost in prod)
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    environment:
+      LARAVEL_INTERNAL_KEY: ${LARAVEL_INTERNAL_KEY:?set LARAVEL_INTERNAL_KEY}
+      GRAFANA_CLOUD_URL: ${GRAFANA_CLOUD_URL:?set GRAFANA_CLOUD_URL}
+      GRAFANA_CLOUD_USER: ${GRAFANA_CLOUD_USER:?set GRAFANA_CLOUD_USER}
+      GRAFANA_CLOUD_TOKEN: ${GRAFANA_CLOUD_TOKEN:?set GRAFANA_CLOUD_TOKEN}
+
+volumes:
+  alloy-data:
