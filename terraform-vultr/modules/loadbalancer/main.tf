@@ -22,6 +22,7 @@ resource "vultr_load_balancer" "main" {
   region              = var.region
   label               = "${var.project_name}-${var.environment}-${var.region}-lb"
   balancing_algorithm = "roundrobin"
+  vpc                 = var.vpc_id != "" ? var.vpc_id : null
 
   attached_instances = var.instance_ids
 
@@ -46,5 +47,14 @@ resource "vultr_load_balancer" "main" {
     response_timeout    = 5
     unhealthy_threshold = 3
     healthy_threshold   = 2
+  }
+
+  dynamic "firewall_rules" {
+    for_each = var.allowed_sources
+    content {
+      port    = 443
+      ip_type = firewall_rules.value.ip_type
+      source  = firewall_rules.value.source
+    }
   }
 }

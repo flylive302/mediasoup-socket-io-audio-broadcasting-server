@@ -40,6 +40,7 @@ resource "vultr_instance" "main" {
   tags              = [var.project_name, var.environment, var.region]
   firewall_group_id = var.firewall_group_id
   reserved_ip_id    = vultr_reserved_ip.main.id
+  vpc_ids           = var.vpc_ids
   backups           = "disabled"
 
   # NOT base64encode()'d here — the Vultr provider base64-encodes user_data

@@ -18,6 +18,12 @@ variable "firewall_group_id" {
   type = string
 }
 
+variable "vpc_ids" {
+  description = "Legacy VPC (private network) IDs to attach the instance to, so the load balancer can reach it over the private network. Empty = no private network."
+  type        = list(string)
+  default     = []
+}
+
 variable "app_port" {
   type = number
 }

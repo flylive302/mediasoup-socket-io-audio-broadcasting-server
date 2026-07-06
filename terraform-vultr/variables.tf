@@ -159,6 +159,15 @@ variable "lb_ssl_chain" {
   default     = ""
 }
 
+variable "lb_allowed_sources" {
+  description = "Frontend firewall allow-list for the LB's 443 listener. Empty = open to all. Production (Cloudflare-proxied) should be [{ source = \"cloudflare\", ip_type = \"v4\" }]."
+  type = list(object({
+    source  = string
+    ip_type = string
+  }))
+  default = []
+}
+
 # --- Networking / media ports ------------------------------------------------
 
 variable "app_port" {

@@ -52,3 +52,17 @@ resource "vultr_firewall_rule" "rtc_tcp" {
   port              = "${var.rtc_min_port}:${var.rtc_max_port}"
   notes             = "WebRTC TCP fallback"
 }
+
+# --- Private network (VPC) ---
+# Vultr Load Balancers reach their backend instances over a shared private
+# network — NOT the public/main IP. Without this, the LB's health check to the
+# instance's app port can never succeed, so it has zero healthy nodes and never
+# binds its frontend listener (confirmed live 2026-07-06: both :443 and :80
+# time out despite correct forwarding rules + open firewall). Legacy vultr_vpc
+# (DHCP) is used over vpc2 so the instance auto-configures its private NIC via
+# cloud-init's network config, no guest-side netplan needed. Subnet is
+# auto-assigned by Vultr when omitted.
+resource "vultr_vpc" "msab" {
+  region      = var.region
+  description = "${var.project_name}-${var.environment}-${var.region}-vpc"
+}

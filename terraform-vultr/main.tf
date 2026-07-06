@@ -36,6 +36,7 @@ module "compute" {
   region            = var.tracer_region
   instance_plan     = var.instance_plan
   firewall_group_id = module.networking.firewall_group_id
+  vpc_ids           = [module.networking.vpc_id]
   app_port          = var.app_port
   rtc_min_port      = var.rtc_min_port
   rtc_max_port      = var.rtc_max_port
@@ -72,9 +73,12 @@ module "loadbalancer" {
   region       = var.tracer_region
   app_port     = var.app_port
   instance_ids = [module.compute.instance_id]
+  vpc_id       = module.networking.vpc_id
   hostname     = var.tracer_hostname
 
   ssl_certificate = var.lb_ssl_certificate
   ssl_private_key = var.lb_ssl_private_key
   ssl_chain       = var.lb_ssl_chain
+
+  allowed_sources = var.lb_allowed_sources
 }
