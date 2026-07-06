@@ -52,10 +52,9 @@ module "compute" {
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
   mediasoup_num_workers   = var.mediasoup_num_workers
 
-  redis_host           = module.valkey.host
-  redis_port           = module.valkey.port
-  redis_password       = module.valkey.password
-  redis_ca_certificate = module.valkey.ca_certificate
+  redis_host     = module.valkey.host
+  redis_port     = module.valkey.port
+  redis_password = module.valkey.password
 
   broadcast_hls_enabled    = var.broadcast_hls_enabled
   hls_r2_endpoint          = var.hls_r2_endpoint

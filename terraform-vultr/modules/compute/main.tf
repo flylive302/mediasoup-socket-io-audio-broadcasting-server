@@ -42,7 +42,12 @@ resource "vultr_instance" "main" {
   reserved_ip_id    = vultr_reserved_ip.main.id
   backups           = "disabled"
 
-  user_data = base64encode(templatefile("${path.module}/templates/cloud-init.sh.tpl", {
+  # NOT base64encode()'d here — the Vultr provider base64-encodes user_data
+  # itself before sending it to the API. Wrapping it ourselves double-encodes
+  # it: cloud-init receives a base64 STRING instead of a script and silently
+  # never executes anything (confirmed live: 0GB bandwidth, no
+  # /var/log/user-data.log, docker never installed — see chat 2026-07-06).
+  user_data = templatefile("${path.module}/templates/cloud-init.sh.tpl", {
     announced_ip            = vultr_reserved_ip.main.subnet
     app_port                = var.app_port
     rtc_min_port            = var.rtc_min_port
@@ -64,7 +69,6 @@ resource "vultr_instance" "main" {
     redis_host              = var.redis_host
     redis_port              = var.redis_port
     redis_password          = var.redis_password
-    redis_ca_certificate    = var.redis_ca_certificate
 
     broadcast_hls_enabled    = var.broadcast_hls_enabled
     hls_r2_endpoint          = var.hls_r2_endpoint
@@ -72,7 +76,7 @@ resource "vultr_instance" "main" {
     hls_public_base_url      = var.hls_public_base_url
     hls_r2_access_key_id     = var.hls_r2_access_key_id
     hls_r2_secret_access_key = var.hls_r2_secret_access_key
-  }))
+  })
 }
 
 # --- Public-IP contract (the required smoke check, enforced on every plan/apply) ---

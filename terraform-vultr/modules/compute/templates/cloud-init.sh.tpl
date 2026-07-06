@@ -24,6 +24,14 @@ echo "Announced public IP (Terraform-known): ${announced_ip}"
 apt-get update -qq
 apt-get upgrade -y -qq
 
+# --- Disable ufw early: Vultr's cloud firewall is the single intended perimeter ---
+# Ubuntu images may ship ufw active (only 22/tcp allowed), which would block the
+# app port (${app_port}) and the WebRTC range under --network host. Guarded so it's
+# a true no-op (won't trip `set -e`) on images where ufw isn't installed.
+if command -v ufw >/dev/null 2>&1; then
+  ufw --force disable || true
+fi
+
 # --- Install Docker ---
 curl -fsSL https://get.docker.com | sh
 systemctl enable docker
@@ -90,11 +98,13 @@ if [ "$MISSING_SECRETS" -eq 1 ]; then
   exit 1
 fi
 
-# --- Valkey CA certificate (Vultr's private CA — not in the OS trust store) ---
-cat > "$APP_DIR/valkey-ca.pem" << 'CACERT'
-${redis_ca_certificate}
-CACERT
-chmod 644 "$APP_DIR/valkey-ca.pem"
+# --- Valkey TLS: Vultr's managed Valkey presents a PUBLICLY-rooted certificate
+# (verified: it chains to a root already in Node's built-in trust store). Do NOT
+# pass a custom CA — setting `ca:` makes Node REPLACE its default roots with only
+# that cert, which can't complete the chain → "unable to get local issuer
+# certificate" → every Redis command rejects → crash loop. So REDIS_TLS_CA_PATH is
+# intentionally unset below; redis.ts then uses rejectUnauthorized:true with the
+# built-in roots. (This differs from AWS ElastiCache, which uses a private CA.) ---
 
 # --- Pull image from ghcr.io (read-only classic PAT, read:packages only) ---
 echo "${ghcr_pull_token}" | docker login ghcr.io -u flylive302 --password-stdin
@@ -106,12 +116,12 @@ NODE_ENV=production
 PORT=${app_port}
 LOG_LEVEL=info
 
-# Valkey (managed, TLS required — password/CA passed separately)
+# Valkey (managed, TLS required — publicly-rooted cert, so no custom CA path;
+# see the Valkey TLS note above for why REDIS_TLS_CA_PATH must stay unset)
 REDIS_HOST=${redis_host}
 REDIS_PORT=${redis_port}
 REDIS_DB=3
 REDIS_TLS=true
-REDIS_TLS_CA_PATH=/etc/msab/valkey-ca.pem
 
 # JWT Authentication
 JWT_MAX_AGE_SECONDS=${jwt_max_age_seconds}
@@ -166,7 +176,6 @@ docker run -d \
   -e "REDIS_PASSWORD=${redis_password}" \
   -e "HLS_R2_ACCESS_KEY_ID=${hls_r2_access_key_id}" \
   -e "HLS_R2_SECRET_ACCESS_KEY=${hls_r2_secret_access_key}" \
-  -v "$APP_DIR/valkey-ca.pem:/etc/msab/valkey-ca.pem:ro" \
   ${image_ref}
 
 # --- Wait for /health ---

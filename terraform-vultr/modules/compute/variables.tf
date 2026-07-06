@@ -164,9 +164,3 @@ variable "redis_password" {
   type      = string
   sensitive = true
 }
-
-variable "redis_ca_certificate" {
-  description = "PEM CA certificate for the managed Valkey endpoint's TLS cert (Vultr's private CA — not in the OS trust store)."
-  type        = string
-  sensitive   = true
-}
