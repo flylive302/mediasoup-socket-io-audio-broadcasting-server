@@ -56,6 +56,13 @@ module "compute" {
   redis_port           = module.valkey.port
   redis_password       = module.valkey.password
   redis_ca_certificate = module.valkey.ca_certificate
+
+  broadcast_hls_enabled    = var.broadcast_hls_enabled
+  hls_r2_endpoint          = var.hls_r2_endpoint
+  hls_r2_bucket            = var.hls_r2_bucket
+  hls_public_base_url      = var.hls_public_base_url
+  hls_r2_access_key_id     = var.hls_r2_access_key_id
+  hls_r2_secret_access_key = var.hls_r2_secret_access_key
 }
 
 module "loadbalancer" {

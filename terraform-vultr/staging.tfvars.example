@@ -40,3 +40,11 @@ session_secret       = "CHANGE_ME_64_hex"
 # --- Cloudflare Realtime TURN (staging key from Cloudflare dashboard) ---
 cloudflare_turn_api_key = "CHANGE_ME"
 cloudflare_turn_key_id  = "CHANGE_ME"
+
+# --- Broadcast HLS tier (realtime-09) — optional, defaults to disabled ---
+# broadcast_hls_enabled    = true
+# hls_r2_endpoint          = "https://<acct>.r2.cloudflarestorage.com"
+# hls_r2_bucket            = "flylive-live-hls-staging"
+# hls_public_base_url      = "https://live.staging.flyliveapp.com"
+# hls_r2_access_key_id     = "CHANGE_ME"
+# hls_r2_secret_access_key = "CHANGE_ME"

@@ -138,6 +138,12 @@ CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 CASCADE_ENABLED=${cascade_enabled}
 CASCADE_THRESHOLD=1800
 PUBLIC_IP=${announced_ip}
+
+# realtime-09 broadcast HLS tier (non-sensitive; R2 keys passed via docker -e)
+BROADCAST_HLS_ENABLED=${broadcast_hls_enabled}
+HLS_R2_ENDPOINT=${hls_r2_endpoint}
+HLS_R2_BUCKET=${hls_r2_bucket}
+HLS_PUBLIC_BASE_URL=${hls_public_base_url}
 ENVEOF
 chmod 600 "$APP_DIR/.env"
 
@@ -158,6 +164,8 @@ docker run -d \
   -e "SESSION_SECRET=${session_secret}" \
   -e "CLOUDFLARE_TURN_API_KEY=${cloudflare_turn_api_key}" \
   -e "REDIS_PASSWORD=${redis_password}" \
+  -e "HLS_R2_ACCESS_KEY_ID=${hls_r2_access_key_id}" \
+  -e "HLS_R2_SECRET_ACCESS_KEY=${hls_r2_secret_access_key}" \
   -v "$APP_DIR/valkey-ca.pem:/etc/msab/valkey-ca.pem:ro" \
   ${image_ref}
 

@@ -65,6 +65,13 @@ resource "vultr_instance" "main" {
     redis_port              = var.redis_port
     redis_password          = var.redis_password
     redis_ca_certificate    = var.redis_ca_certificate
+
+    broadcast_hls_enabled    = var.broadcast_hls_enabled
+    hls_r2_endpoint          = var.hls_r2_endpoint
+    hls_r2_bucket            = var.hls_r2_bucket
+    hls_public_base_url      = var.hls_public_base_url
+    hls_r2_access_key_id     = var.hls_r2_access_key_id
+    hls_r2_secret_access_key = var.hls_r2_secret_access_key
   }))
 }
 

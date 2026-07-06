@@ -116,6 +116,40 @@ variable "mediasoup_num_workers" {
   default     = 1
 }
 
+# --- Broadcast HLS tier (realtime-09) ---
+
+variable "broadcast_hls_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "hls_r2_endpoint" {
+  type    = string
+  default = ""
+}
+
+variable "hls_r2_bucket" {
+  type    = string
+  default = ""
+}
+
+variable "hls_public_base_url" {
+  type    = string
+  default = ""
+}
+
+variable "hls_r2_access_key_id" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "hls_r2_secret_access_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
 # --- Valkey (from the valkey module's outputs) ---
 
 variable "redis_host" {

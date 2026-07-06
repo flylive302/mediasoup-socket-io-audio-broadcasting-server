@@ -88,6 +88,49 @@ variable "mediasoup_num_workers" {
   default     = 1
 }
 
+# --- Broadcast HLS tier (realtime-09) -----------------------------------------
+# Mirrors ../terraform/variables.tf exactly (same runtime, same feature). The
+# config schema's refine() only requires the R2 fields when enabled, so a
+# default-false instance boots fine untouched.
+
+variable "broadcast_hls_enabled" {
+  description = "Enable the LL-HLS broadcast publish tier (realtime-09)."
+  type        = bool
+  default     = false
+}
+
+variable "hls_r2_endpoint" {
+  description = "R2 S3 API endpoint, e.g. https://<acct>.r2.cloudflarestorage.com"
+  type        = string
+  default     = ""
+}
+
+variable "hls_r2_bucket" {
+  description = "R2 bucket for live HLS artifacts (e.g. flylive-live-hls)."
+  type        = string
+  default     = ""
+}
+
+variable "hls_public_base_url" {
+  description = "Public CDN base for HLS playback (no trailing slash), e.g. https://live.flyliveapp.com"
+  type        = string
+  default     = ""
+}
+
+variable "hls_r2_access_key_id" {
+  description = "R2 Object Read/Write access key id for HLS publishing."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "hls_r2_secret_access_key" {
+  description = "R2 Object Read/Write secret access key for HLS publishing."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # --- Networking / media ports ------------------------------------------------
 
 variable "app_port" {
