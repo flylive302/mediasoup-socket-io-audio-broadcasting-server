@@ -137,6 +137,10 @@ MEDIASOUP_RTC_MIN_PORT=${rtc_min_port}
 MEDIASOUP_RTC_MAX_PORT=${rtc_max_port}
 MEDIASOUP_NUM_WORKERS=${mediasoup_num_workers}
 
+# Metrics — Vultr has no AWS CloudWatch, so the publisher only spams
+# "Region is missing" / "Failed to publish CloudWatch metrics". Keep it off here.
+CLOUDWATCH_ENABLED=false
+
 # Security
 CORS_ORIGINS=${cors_origins}
 

@@ -486,9 +486,12 @@ export class RoomMediaCluster {
           "RoomMediaCluster: producer piped to distribution router",
         );
       }
-    } catch (error) {
+    } catch (err) {
+      // Key MUST be `err` (not `error`) so Pino's Error serializer runs — otherwise
+      // the Error serializes to `{}` and the real cause is lost (see the 2026-07-06
+      // num-workers pipe bug: this exact failure was invisible for hours).
       this.logger.error(
-        { error, sourceProducerId },
+        { err, sourceProducerId },
         "RoomMediaCluster: failed to pipe producer",
       );
     }
