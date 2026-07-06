@@ -21,6 +21,8 @@ cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com"
 laravel_api_url = "https://app.flyliveapp.com"
 
 # --- Region fleet (conservative-high fixed HA fleet; >= 2 per region) ---
+# The tracer region's instance_count = fleet_regions[tracer_region] (slice 05:
+# each entry is that region's fixed multi-instance fleet size behind its LB).
 fleet_regions = {
   bom = 2
   fra = 2
@@ -28,7 +30,7 @@ fleet_regions = {
 }
 instance_plan = "vhf-2c-4gb"
 
-# --- Slice D: single-region tracer ---
+# --- Tracer region (single region until the slice-06 3-region fan-out) ---
 tracer_region   = "bom"
 image_tag       = "CHANGE_ME_sha-<commit8>"   # from the ghcr-publish.yml CI run, never "latest"
 ghcr_pull_token = "CHANGE_ME_classic_PAT_read:packages_only"

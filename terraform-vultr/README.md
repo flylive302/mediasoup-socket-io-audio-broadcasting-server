@@ -3,12 +3,14 @@
 The new MSAB substrate (PRD [`docs/prd-msab-vultr-migration.md`](../../docs/prd-msab-vultr-migration.md)).
 The AWS stack in [`../terraform/`](../terraform/) is **kept as a dormant, redeployable backup** — do not delete it.
 
-> **Slice D status: single-region tracer.** `main.tf` wires four modules —
-> `networking` (firewall), `valkey` (HA managed database), `compute` (reserved IP +
-> instance + cloud-init), `loadbalancer` (TLS 443) — for exactly ONE region
-> (`var.tracer_region`, default `bom`). Multi-instance cascade (slice 05) and the
-> 3-region staging replica (slice 06) extend this by looping the same modules over
-> `fleet_regions`, not by restructuring it. See `docs/issues/vultr-migration/04-single-region-vultr-tracer.md`.
+> **Slice E status: single-region multi-instance fleet.** `main.tf` wires four
+> modules — `networking` (firewall), `valkey` (HA managed database), `compute`
+> (a fixed HA fleet of `fleet_regions[tracer_region]` instances, each with its
+> own reserved/announced IP + a unique CAS `INSTANCE_ID_OVERRIDE` + cloud-init),
+> `loadbalancer` (TLS 443, round-robins across the whole fleet) — for ONE region
+> (`var.tracer_region`, default `bom`). The 3-region staging replica (slice 06)
+> extends this by looping the same modules over `fleet_regions` with `for_each`,
+> not by restructuring it. See `docs/issues/vultr-migration/{04-single-region-vultr-tracer,05-multi-instance-cascade}.md`.
 
 ## Layout
 
@@ -17,13 +19,13 @@ The AWS stack in [`../terraform/`](../terraform/) is **kept as a dormant, redepl
 | `versions.tf` | Terraform + `vultr/vultr` provider pin; **HCP Terraform (Terraform Cloud)** remote state backend (free tier, native locking). |
 | `providers.tf` | `provider "vultr"` — API key from `VULTR_API_KEY`. Region is a per-resource arg, **not** a provider alias. |
 | `variables.tf` | Variable surface shared by both environments. |
-| `main.tf` | Wires `modules/{networking,valkey,compute,loadbalancer}` for the single tracer region. |
-| `outputs.tf` | `tracer_public_ip`, `tracer_lb_ipv4`, `tracer_lb_hostname`, `tracer_valkey_host`. |
+| `main.tf` | Wires `modules/{networking,valkey,compute,loadbalancer}` for the tracer region; `compute.instance_count = fleet_regions[tracer_region]`. |
+| `outputs.tf` | `tracer_public_ips` (list — one per fleet instance), `tracer_lb_ipv4`, `tracer_lb_hostname`, `tracer_valkey_host`. |
 | `modules/networking` | `vultr_firewall_group` + rules (app TCP, WebRTC/cascade UDP+TCP range). No SSH rule — use Vultr's web console. |
 | `modules/valkey` | `vultr_database` (`engine=valkey`, business-tier 2-node HA plan). Vultr generates the admin password/CA itself — there's no `auth_token` input like AWS ElastiCache. |
-| `modules/compute` | `vultr_reserved_ip` (the Terraform-known announced IP) + `vultr_instance` (`reserved_ip_id`) + cloud-init template. |
+| `modules/compute` | `count = instance_count` fleet: one `vultr_reserved_ip` (Terraform-known announced IP) + `vultr_instance` (`reserved_ip_id`) per instance, each with a unique index-derived `INSTANCE_ID_OVERRIDE`; cloud-init template; fleet-wide public-IP `check`. |
 | `modules/loadbalancer` | `vultr_load_balancer`, TLS via bring-your-own cert (Cloudflare Origin CA — not `auto_ssl_domain`), `/health` check, TLS 443 → app port. |
-| `tests/public_ip_contract.tftest.hcl` | Offline `terraform test` (mocked provider, no cost/credentials) proving the announced-IP contract: accepts a public IPv4, rejects private/loopback/empty. |
+| `tests/public_ip_contract.tftest.hcl` | Offline `terraform test` (mocked provider, no cost/credentials) proving the **fleet-wide** announced-IP contract on a 2-instance fleet: accepts an all-public fleet, rejects one where ANY instance's IP is private/loopback/empty. |
 | `staging.tfvars.example` / `prod.tfvars.example` | Per-env values. Copy to `*.tfvars` (gitignored) and fill in secrets. |
 
 Two environments = **two separate Vultr accounts** (blast-radius wall), mapped to two HCP workspaces
@@ -53,7 +55,7 @@ export TF_CLOUD_ORGANIZATION=<your HCP org>
 export TF_WORKSPACE=msab-vultr-staging          # or msab-vultr-production
 terraform init                                   # creates the workspace if absent
 
-# 4. plan (creates: firewall group + rules, HA Valkey, reserved IP, instance, load balancer)
+# 4. plan (creates: firewall group + rules, HA Valkey, N reserved IPs + N instances, load balancer)
 cp staging.tfvars.example staging.tfvars         # fill in secrets, image_tag, ghcr_pull_token
 terraform plan -var-file=staging.tfvars
 

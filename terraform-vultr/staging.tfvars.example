@@ -20,6 +20,8 @@ cors_origins    = "https://staging.flyliveapp.com,https://app.staging.flyliveapp
 laravel_api_url = "https://app.staging.flyliveapp.com"
 
 # --- Region fleet (faithful 3-region replica; drop counts to 1 between test cycles) ---
+# The tracer region's instance_count = fleet_regions[tracer_region]. Keep bom = 2
+# to exercise slice-05 intra-region cross-instance cascade on the staging gate.
 fleet_regions = {
   bom = 2
   fra = 2
@@ -27,7 +29,7 @@ fleet_regions = {
 }
 instance_plan = "vhf-2c-4gb"
 
-# --- Slice D: single-region tracer ---
+# --- Tracer region (single region until the slice-06 3-region fan-out) ---
 tracer_region   = "bom"
 image_tag       = "CHANGE_ME_sha-<commit8>"   # from the ghcr-publish.yml CI run, never "latest"
 ghcr_pull_token = "CHANGE_ME_classic_PAT_read:packages_only"

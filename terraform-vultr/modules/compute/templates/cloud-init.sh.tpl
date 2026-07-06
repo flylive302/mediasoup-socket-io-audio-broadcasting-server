@@ -153,6 +153,12 @@ CASCADE_ENABLED=${cascade_enabled}
 CASCADE_THRESHOLD=1800
 PUBLIC_IP=${announced_ip}
 
+# Fleet identity (slice 05): deterministic, unique-per-instance CAS selfId.
+# instance-identity.ts reads INSTANCE_ID_OVERRIDE FIRST — before the AWS-only
+# IMDSv2 probe (which run-and-fails on Vultr) and the os.hostname() fallback.
+# Guarantees no two instances share a Redis CAS ownership id (→ split-brain).
+INSTANCE_ID_OVERRIDE=${instance_id_override}
+
 # realtime-09 broadcast HLS tier (non-sensitive; R2 keys passed via docker -e)
 BROADCAST_HLS_ENABLED=${broadcast_hls_enabled}
 HLS_R2_ENDPOINT=${hls_r2_endpoint}

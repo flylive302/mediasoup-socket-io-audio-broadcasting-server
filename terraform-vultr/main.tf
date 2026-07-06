@@ -1,10 +1,12 @@
 # =============================================================================
-# FlyLive Audio Server (Vultr) — Single-region tracer (slice D)
+# FlyLive Audio Server (Vultr) — Single-region multi-instance fleet (slices D + E)
 # =============================================================================
-# Stands up ONE region end-to-end: firewall, one instance, HA Valkey, a load
-# balancer terminating TLS at 443. Multi-instance-per-region cascade is slice
-# 05; the 3-region staging replica is slice 06 — both extend this file by
-# looping module calls over `fleet_regions`/`for_each`, not by restructuring it.
+# Stands up ONE region end-to-end: firewall, HA Valkey, a load balancer
+# terminating TLS at 443, and a fixed HA fleet of `fleet_regions[tracer_region]`
+# instances (slice 05). Each instance gets its own reserved/announced IP and a
+# unique CAS selfId, so intra-region cross-instance cascade (origin/edge) works.
+# The 3-region staging replica is slice 06 — it extends this file by looping the
+# module calls over `fleet_regions` with `for_each`, not by restructuring them.
 # =============================================================================
 
 module "networking" {
@@ -35,6 +37,7 @@ module "compute" {
   environment       = var.environment
   region            = var.tracer_region
   instance_plan     = var.instance_plan
+  instance_count    = var.fleet_regions[var.tracer_region]
   firewall_group_id = module.networking.firewall_group_id
   vpc_ids           = [module.networking.vpc_id]
   app_port          = var.app_port
@@ -72,7 +75,7 @@ module "loadbalancer" {
   environment  = var.environment
   region       = var.tracer_region
   app_port     = var.app_port
-  instance_ids = [module.compute.instance_id]
+  instance_ids = module.compute.instance_ids
   vpc_id       = module.networking.vpc_id
   hostname     = var.tracer_hostname
 

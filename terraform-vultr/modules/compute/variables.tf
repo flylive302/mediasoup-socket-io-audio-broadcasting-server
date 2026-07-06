@@ -14,6 +14,17 @@ variable "instance_plan" {
   type = string
 }
 
+variable "instance_count" {
+  description = "Number of instances in this region's fixed HA fleet (slice 05). Each gets its OWN reserved IP (announced IP) and a unique, deterministic INSTANCE_ID_OVERRIDE (`<project>-<region>-<n>`) so Redis CAS room-ownership never collides. Keep >= 2 in prod for HA."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.instance_count >= 1
+    error_message = "instance_count must be >= 1."
+  }
+}
+
 variable "firewall_group_id" {
   type = string
 }
