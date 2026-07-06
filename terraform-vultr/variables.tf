@@ -50,19 +50,29 @@ variable "instance_plan" {
   default     = "vhf-2c-4gb"
 }
 
-# --- Slice D: single-region tracer ------------------------------------------
-# The tracer stands up exactly ONE region (multi-region fan-out is slice 06).
+# --- State-migration anchor (slices D/E -> 06) -------------------------------
+# The tracer (slices 04/05) stood up exactly ONE region via un-keyed module
+# calls. Slice 06 fans out over fleet_regions with for_each; `tracer_region` is
+# retained ONLY as the `moved`-block target that re-homes that live region to its
+# map key (see main.tf) so it isn't destroyed. It must be a key of fleet_regions.
 
 variable "tracer_region" {
-  description = "The single Vultr region code this tracer deploys into. Must be a key of fleet_regions."
+  description = "The Vultr region the pre-slice-06 single-region stack was applied into (slices 04/05). Retained solely as the moved-block key so the live region migrates cleanly to the keyed for_each. Must be a key of fleet_regions."
   type        = string
   default     = "bom"
 }
 
-variable "tracer_hostname" {
-  description = "The DNS hostname this tracer's load balancer is reachable at. Deliberately NOT `<tracer_region>.<audio_domain>` (that collides with the real per-region naming convention already in Cloudflare — mumbai/frankfurt/singapore.audio.flyliveapp.com — which is untouched until the real slice-J cutover). Must be covered by the ssl cert's SANs."
-  type        = string
-  default     = "vultr-tracer.audio.flyliveapp.com"
+# --- Per-region LB hostnames (slice 06) --------------------------------------
+# region code -> LB hostname override. Leave a region unset to derive
+# `<city>.<audio_domain>` from main.tf's region_city map (mumbai/frankfurt/
+# singapore) — the exact hosts config/realtime.php resolves Rooms to. Only set an
+# entry to point a region at a non-conventional host. The TLS cert (var.lb_ssl_*)
+# must cover every resulting hostname (a `*.<audio_domain>` wildcard covers the
+# derived defaults for all three regions).
+variable "region_hostnames" {
+  description = "Optional region code -> LB hostname overrides. Unset regions derive `<city>.<audio_domain>`."
+  type        = map(string)
+  default     = {}
 }
 
 variable "image_tag" {

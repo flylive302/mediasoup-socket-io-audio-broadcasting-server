@@ -1,45 +1,79 @@
 # =============================================================================
-# FlyLive Audio Server (Vultr) — Single-region multi-instance fleet (slices D + E)
+# FlyLive Audio Server (Vultr) — 3-region fleet (slice 06)
 # =============================================================================
-# Stands up ONE region end-to-end: firewall, HA Valkey, a load balancer
-# terminating TLS at 443, and a fixed HA fleet of `fleet_regions[tracer_region]`
-# instances (slice 05). Each instance gets its own reserved/announced IP and a
-# unique CAS selfId, so intra-region cross-instance cascade (origin/edge) works.
-# The 3-region staging replica is slice 06 — it extends this file by looping the
-# module calls over `fleet_regions` with `for_each`, not by restructuring them.
+# Stands up the FULL region set in `var.fleet_regions` (Mumbai/Frankfurt/
+# Singapore) — each region a complete stack: firewall + VPC, HA Valkey, a load
+# balancer terminating TLS at 443, and a fixed HA fleet of `fleet_regions[r]`
+# instances. Each instance gets its own reserved/announced IP and a unique CAS
+# selfId, so intra-region cross-instance cascade (origin/edge) works, and a user
+# in one region participating in a Room homed in another region reaches the
+# correct regional LB (cross-region participation, driven by Laravel's
+# config/realtime.php region routing).
+#
+# Slices D + E (04/05) stood up ONE region via un-keyed module calls. This slice
+# loops those SAME module calls over `fleet_regions` with `for_each` — it does
+# not restructure them. The un-keyed → keyed transition is state-migrated by the
+# root `moved` blocks at the bottom so the live tracer region (its reserved IPs,
+# instances and LB) is re-homed to the map key `var.tracer_region` rather than
+# destroyed + recreated.
 # =============================================================================
 
+# --- Per-region LB hostnames -------------------------------------------------
+# Laravel (config/realtime.php `regions` map) builds a Room's media endpoint as
+# `wss://<city>.<sfu_domain>`, where <city> is one of mumbai/frankfurt/singapore.
+# The regional LB's hostname (and its TLS cert SAN) MUST equal that exact host,
+# or region routing resolves to a name that doesn't terminate here (AC#2/AC#3).
+# This map is the Terraform side of that cross-file contract — keep it in lockstep
+# with config/realtime.php's `regions` values.
+locals {
+  region_city = {
+    bom = "mumbai"
+    fra = "frankfurt"
+    sgp = "singapore"
+  }
+
+  # region code -> LB hostname. An explicit `var.region_hostnames` entry wins;
+  # otherwise derive `<city>.<audio_domain>` (e.g. mumbai.audio.staging.flyliveapp.com).
+  region_hostnames = {
+    for r in keys(var.fleet_regions) :
+    r => try(var.region_hostnames[r], "${local.region_city[r]}.${var.audio_domain}")
+  }
+}
+
 module "networking" {
-  source = "./modules/networking"
+  for_each = var.fleet_regions
+  source   = "./modules/networking"
 
   project_name = var.project_name
   environment  = var.environment
-  region       = var.tracer_region
+  region       = each.key
   app_port     = var.app_port
   rtc_min_port = var.rtc_min_port
   rtc_max_port = var.rtc_max_port
 }
 
 module "valkey" {
-  source = "./modules/valkey"
+  for_each = var.fleet_regions
+  source   = "./modules/valkey"
 
   project_name   = var.project_name
   environment    = var.environment
-  region         = var.tracer_region
+  region         = each.key
   valkey_plan    = var.valkey_plan
   valkey_version = var.valkey_version
 }
 
 module "compute" {
-  source = "./modules/compute"
+  for_each = var.fleet_regions
+  source   = "./modules/compute"
 
   project_name      = var.project_name
   environment       = var.environment
-  region            = var.tracer_region
+  region            = each.key
   instance_plan     = var.instance_plan
-  instance_count    = var.fleet_regions[var.tracer_region]
-  firewall_group_id = module.networking.firewall_group_id
-  vpc_ids           = [module.networking.vpc_id]
+  instance_count    = each.value
+  firewall_group_id = module.networking[each.key].firewall_group_id
+  vpc_ids           = [module.networking[each.key].vpc_id]
   app_port          = var.app_port
   rtc_min_port      = var.rtc_min_port
   rtc_max_port      = var.rtc_max_port
@@ -56,9 +90,9 @@ module "compute" {
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
   mediasoup_num_workers   = var.mediasoup_num_workers
 
-  redis_host     = module.valkey.host
-  redis_port     = module.valkey.port
-  redis_password = module.valkey.password
+  redis_host     = module.valkey[each.key].host
+  redis_port     = module.valkey[each.key].port
+  redis_password = module.valkey[each.key].password
 
   broadcast_hls_enabled    = var.broadcast_hls_enabled
   hls_r2_endpoint          = var.hls_r2_endpoint
@@ -69,19 +103,56 @@ module "compute" {
 }
 
 module "loadbalancer" {
-  source = "./modules/loadbalancer"
+  for_each = var.fleet_regions
+  source   = "./modules/loadbalancer"
 
   project_name = var.project_name
   environment  = var.environment
-  region       = var.tracer_region
+  region       = each.key
   app_port     = var.app_port
-  instance_ids = module.compute.instance_ids
-  vpc_id       = module.networking.vpc_id
-  hostname     = var.tracer_hostname
+  instance_ids = module.compute[each.key].instance_ids
+  vpc_id       = module.networking[each.key].vpc_id
+  hostname     = local.region_hostnames[each.key]
 
   ssl_certificate = var.lb_ssl_certificate
   ssl_private_key = var.lb_ssl_private_key
   ssl_chain       = var.lb_ssl_chain
 
   allowed_sources = var.lb_allowed_sources
+}
+
+# --- State migration: un-keyed (slice D/E) -> keyed (slice 06) ----------------
+# Terraform treats `module.compute` and `module.compute["bom"]` as DIFFERENT
+# addresses. WITHOUT these `moved` blocks the first 3-region apply against the
+# live single-region state would DESTROY the running tracer (deallocating its
+# reserved IPs — the announced-IP Cloudflare DNS record breaks — and recreating
+# its instances/LB). With them, the live region is re-homed to key
+# `var.tracer_region` and only the two NEW regions plan as creates.
+#
+# The move key is HARDCODED "bom": `moved` blocks require a constant key (no
+# variable/interpolation allowed), and bom is the region slices 04/05 applied
+# (var.tracer_region's default, the live tracer 65.20.69.175). The compute
+# module's OWN internal `main -> main[0]` moves still apply underneath these.
+#
+# NOTE: offline `terraform test` cannot verify state migration. The destroy-safety
+# of the live reserved IP is a HITL pre-apply gate: `terraform plan` against the
+# real HCP state MUST show 0 `vultr_reserved_ip` destroys before apply.
+moved {
+  from = module.networking
+  to   = module.networking["bom"]
+}
+
+moved {
+  from = module.valkey
+  to   = module.valkey["bom"]
+}
+
+moved {
+  from = module.compute
+  to   = module.compute["bom"]
+}
+
+moved {
+  from = module.loadbalancer
+  to   = module.loadbalancer["bom"]
 }

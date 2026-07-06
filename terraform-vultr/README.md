@@ -3,14 +3,18 @@
 The new MSAB substrate (PRD [`docs/prd-msab-vultr-migration.md`](../../docs/prd-msab-vultr-migration.md)).
 The AWS stack in [`../terraform/`](../terraform/) is **kept as a dormant, redeployable backup** — do not delete it.
 
-> **Slice E status: single-region multi-instance fleet.** `main.tf` wires four
-> modules — `networking` (firewall), `valkey` (HA managed database), `compute`
-> (a fixed HA fleet of `fleet_regions[tracer_region]` instances, each with its
-> own reserved/announced IP + a unique CAS `INSTANCE_ID_OVERRIDE` + cloud-init),
-> `loadbalancer` (TLS 443, round-robins across the whole fleet) — for ONE region
-> (`var.tracer_region`, default `bom`). The 3-region staging replica (slice 06)
-> extends this by looping the same modules over `fleet_regions` with `for_each`,
-> not by restructuring it. See `docs/issues/vultr-migration/{04-single-region-vultr-tracer,05-multi-instance-cascade}.md`.
+> **Slice 06 status: full 3-region fleet.** `main.tf` wires four modules —
+> `networking` (firewall), `valkey` (HA managed database), `compute` (a fixed HA
+> fleet of `fleet_regions[r]` instances per region, each with its own
+> reserved/announced IP + a unique CAS `INSTANCE_ID_OVERRIDE` + cloud-init),
+> `loadbalancer` (TLS 443, round-robins across the region's fleet) — looped over
+> EVERY region in `var.fleet_regions` with `for_each` (bom/fra/sgp). Each
+> region's LB fronts `<city>.<audio_domain>` (mumbai/frankfurt/singapore), the
+> exact hosts `config/realtime.php` resolves Rooms to. Slices 04/05 stood the
+> same modules up un-keyed for ONE region; root `moved` blocks re-home that live
+> region to key `"bom"` so it isn't destroyed. See
+> `docs/issues/done/vultr-migration/{04-single-region-vultr-tracer,05-multi-instance-cascade}.md`
+> and `06-three-region-staging-replica.md`.
 
 ## Layout
 
@@ -19,8 +23,8 @@ The AWS stack in [`../terraform/`](../terraform/) is **kept as a dormant, redepl
 | `versions.tf` | Terraform + `vultr/vultr` provider pin; **HCP Terraform (Terraform Cloud)** remote state backend (free tier, native locking). |
 | `providers.tf` | `provider "vultr"` — API key from `VULTR_API_KEY`. Region is a per-resource arg, **not** a provider alias. |
 | `variables.tf` | Variable surface shared by both environments. |
-| `main.tf` | Wires `modules/{networking,valkey,compute,loadbalancer}` for the tracer region; `compute.instance_count = fleet_regions[tracer_region]`. |
-| `outputs.tf` | `tracer_public_ips` (list — one per fleet instance), `tracer_lb_ipv4`, `tracer_lb_hostname`, `tracer_valkey_host`. |
+| `main.tf` | `for_each`-loops `modules/{networking,valkey,compute,loadbalancer}` over every region in `fleet_regions`; `compute.instance_count = fleet_regions[r]`. Root `moved` blocks migrate the slice-04/05 un-keyed state to key `"bom"`. Derives per-region LB hostnames (`<city>.<audio_domain>`) via a region→city map kept in lockstep with `config/realtime.php`. |
+| `outputs.tf` | Per-region maps: `region_public_ips` (region → list, with the all-regions public-IP precondition), `region_lb_ipv4`, `region_lb_hostnames`, `region_valkey_hosts`. |
 | `modules/networking` | `vultr_firewall_group` + rules (app TCP, WebRTC/cascade UDP+TCP range). No SSH rule — use Vultr's web console. |
 | `modules/valkey` | `vultr_database` (`engine=valkey`, business-tier 2-node HA plan). Vultr generates the admin password/CA itself — there's no `auth_token` input like AWS ElastiCache. |
 | `modules/compute` | `count = instance_count` fleet: one `vultr_reserved_ip` (Terraform-known announced IP) + `vultr_instance` (`reserved_ip_id`) per instance, each with a unique index-derived `INSTANCE_ID_OVERRIDE`; cloud-init template; fleet-wide public-IP `check`. |

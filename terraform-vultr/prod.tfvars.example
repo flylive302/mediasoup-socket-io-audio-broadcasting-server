@@ -20,9 +20,9 @@ audio_domain    = "audio.flyliveapp.com"
 cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com"
 laravel_api_url = "https://app.flyliveapp.com"
 
-# --- Region fleet (conservative-high fixed HA fleet; >= 2 per region) ---
-# The tracer region's instance_count = fleet_regions[tracer_region] (slice 05:
-# each entry is that region's fixed multi-instance fleet size behind its LB).
+# --- Region fleet (slice 06: full 3-region fleet; >= 2 per region for HA) ---
+# Each entry deploys a complete stack in that region (its fixed multi-instance
+# fleet behind its own LB).
 fleet_regions = {
   bom = 2
   fra = 2
@@ -30,8 +30,17 @@ fleet_regions = {
 }
 instance_plan = "vhf-2c-4gb"
 
-# --- Tracer region (single region until the slice-06 3-region fan-out) ---
+# --- State-migration anchor (retained; not a deploy toggle) ---
+# The region slices 04/05 first applied — the moved-block key that re-homes the
+# live single-region state to the keyed for_each. Must be a key of fleet_regions.
 tracer_region   = "bom"
+
+# --- Per-region LB hostnames (slice 06) ---
+# Left unset → each region derives `<city>.audio.flyliveapp.com`
+# (mumbai/frankfurt/singapore), the exact hosts config/realtime.php resolves Rooms
+# to. Override only for non-conventional hosts:
+# region_hostnames = { bom = "mumbai.audio.flyliveapp.com" }
+
 image_tag       = "CHANGE_ME_sha-<commit8>"   # from the ghcr-publish.yml CI run, never "latest"
 ghcr_pull_token = "CHANGE_ME_classic_PAT_read:packages_only"
 
@@ -54,11 +63,12 @@ cloudflare_turn_key_id  = "CHANGE_ME"
 
 # --- Load balancer TLS (Cloudflare Origin CA — NOT Vultr auto_ssl_domain; that
 # requires a Vultr-hosted DNS zone, which conflicts with keeping Cloudflare as
-# DNS authority). Generate in Cloudflare dashboard: Websites -> flyliveapp.com ->
-# SSL/TLS -> Origin Server -> Create Certificate, for tracer_region.audio_domain
-# (or a wildcard). The Cloudflare DNS record for that hostname MUST be proxied
-# (orange-cloud) — Origin CA certs are only trusted by Cloudflare's edge, not
-# public browsers directly. ---
+# DNS authority). PREREQUISITE (operator-generated): in the Cloudflare dashboard,
+# Websites -> flyliveapp.com -> SSL/TLS -> Origin Server -> Create Certificate, for
+# a WILDCARD `*.audio.flyliveapp.com` — one cert covers all three regional LB
+# hostnames (mumbai/frankfurt/singapore). The Cloudflare DNS record for EACH
+# regional hostname MUST be proxied (orange-cloud) — Origin CA certs are only
+# trusted by Cloudflare's edge, not public browsers directly. ---
 lb_ssl_certificate = "CHANGE_ME_PEM_CERT"
 lb_ssl_private_key = "CHANGE_ME_PEM_PRIVATE_KEY"
 # lb_ssl_chain      = "CHANGE_ME_PEM_CHAIN"   # optional

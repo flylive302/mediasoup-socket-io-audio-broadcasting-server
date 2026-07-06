@@ -24,7 +24,7 @@ mock_provider "vultr" {
 # vultr_instance.os_id (a number). The mock generator doesn't know that
 # convention and produces a non-numeric placeholder string, so pin it here.
 override_data {
-  target = module.compute.data.vultr_os.ubuntu
+  target = module.compute["bom"].data.vultr_os.ubuntu
   values = {
     id = "2284"
   }
@@ -41,8 +41,11 @@ variables {
   jwt_secret           = "test-jwt-secret-0123456789abcdef"
   session_secret       = "test-session-secret-0123456789ab"
 
-  # 2-instance fleet in the tracer region — the slice-05 multi-instance case.
-  fleet_regions   = { bom = 2, fra = 2, sgp = 2 }
+  # Single region, 2-instance fleet — the slice-05 multi-instance case. Scoped to
+  # ONE region so the root all-regions public-IP precondition only evaluates the
+  # bom instances these runs override; other regions' mock-generated reserved-IP
+  # subnets aren't dotted quads and would spuriously fail the contract.
+  fleet_regions   = { bom = 2 }
   tracer_region   = "bom"
   instance_plan   = "vhf-2c-4gb"
   image_tag       = "sha-testtest"
@@ -59,21 +62,21 @@ run "all_instances_public_ip_passes_contract" {
   command = plan
 
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[0]
+    target          = module.compute["bom"].vultr_reserved_ip.main[0]
     override_during = plan
     values          = { subnet = "203.0.113.45" }
   }
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[1]
+    target          = module.compute["bom"].vultr_reserved_ip.main[1]
     override_during = plan
     values          = { subnet = "198.51.100.20" }
   }
 
   assert {
     condition = (
-      length(output.tracer_public_ips) == 2
-      && output.tracer_public_ips[0] == "203.0.113.45"
-      && output.tracer_public_ips[1] == "198.51.100.20"
+      length(output.region_public_ips["bom"]) == 2
+      && output.region_public_ips["bom"][0] == "203.0.113.45"
+      && output.region_public_ips["bom"][1] == "198.51.100.20"
     )
     error_message = "expected tracer_public_ips to pass through both overridden reserved IPs, in index order"
   }
@@ -85,18 +88,18 @@ run "one_private_ip_rejects_fleet" {
   command = plan
 
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[0]
+    target          = module.compute["bom"].vultr_reserved_ip.main[0]
     override_during = plan
     values          = { subnet = "10.0.5.5" }
   }
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[1]
+    target          = module.compute["bom"].vultr_reserved_ip.main[1]
     override_during = plan
     values          = { subnet = "198.51.100.20" }
   }
 
   expect_failures = [
-    output.tracer_public_ips,
+    output.region_public_ips["bom"],
   ]
 }
 
@@ -106,18 +109,18 @@ run "one_loopback_ip_rejects_fleet" {
   command = plan
 
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[0]
+    target          = module.compute["bom"].vultr_reserved_ip.main[0]
     override_during = plan
     values          = { subnet = "203.0.113.45" }
   }
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[1]
+    target          = module.compute["bom"].vultr_reserved_ip.main[1]
     override_during = plan
     values          = { subnet = "127.0.0.1" }
   }
 
   expect_failures = [
-    output.tracer_public_ips,
+    output.region_public_ips["bom"],
   ]
 }
 
@@ -126,17 +129,17 @@ run "one_empty_ip_rejects_fleet" {
   command = plan
 
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[0]
+    target          = module.compute["bom"].vultr_reserved_ip.main[0]
     override_during = plan
     values          = { subnet = "" }
   }
   override_resource {
-    target          = module.compute.vultr_reserved_ip.main[1]
+    target          = module.compute["bom"].vultr_reserved_ip.main[1]
     override_during = plan
     values          = { subnet = "198.51.100.20" }
   }
 
   expect_failures = [
-    output.tracer_public_ips,
+    output.region_public_ips["bom"],
   ]
 }
