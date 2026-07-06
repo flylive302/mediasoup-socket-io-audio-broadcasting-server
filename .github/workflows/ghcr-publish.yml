@@ -4,6 +4,14 @@ on:
   push:
     branches: [master]
   workflow_dispatch: # Manual trigger from GitHub UI
+  workflow_call: # Reused by the deploy workflows (build the caller's ref, return the tag)
+    outputs:
+      image_tag:
+        description: "The sha-<commit8> tag that was pushed."
+        value: ${{ jobs.build-and-push.outputs.image_tag }}
+      full_image:
+        description: "The full ghcr.io image path (no tag)."
+        value: ${{ jobs.build-and-push.outputs.full_image }}
 
 # Only one publish at a time (queues, doesn't cancel)
 concurrency:

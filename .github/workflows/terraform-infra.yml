@@ -1,0 +1,74 @@
+name: Terraform — Infra (manual dispatch only)
+
+# Infrastructure changes (networking / Valkey / load balancer / fleet scaling) —
+# the FULL terraform plan/apply, distinct from the app rolling deploy. Runnable
+# ONLY via manual dispatch (AC4): there is no push/PR trigger, so `terraform
+# apply` can never run automatically on a push. `apply` additionally targets the
+# environment's required-reviewer gate for production.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment."
+        required: true
+        type: choice
+        options: [staging, production]
+      action:
+        description: "plan (safe, read-only) or apply."
+        required: true
+        type: choice
+        options: [plan, apply]
+        default: plan
+      image_tag:
+        description: "Pinned ghcr image tag the fleet should run (sha-<commit8>)."
+        required: true
+        type: string
+
+concurrency:
+  group: tf-infra-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    # For production, this environment carries the required-reviewer gate so an
+    # apply pauses for approval. staging can be ungated.
+    environment: vultr-${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: mediasoup-socket-io-audio-broadcasting-server/terraform-vultr
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+      TF_WORKSPACE: msab-vultr-${{ inputs.environment }}
+      # Non-secret vars via file; secrets via TF_VAR_*; image_tag via -var below.
+      TFVARS_FILE: ci/${{ inputs.environment }}.tfvars
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      TF_VAR_laravel_internal_key: ${{ secrets.TF_VAR_laravel_internal_key }}
+      TF_VAR_jwt_secret: ${{ secrets.TF_VAR_jwt_secret }}
+      TF_VAR_session_secret: ${{ secrets.TF_VAR_session_secret }}
+      TF_VAR_ghcr_pull_token: ${{ secrets.TF_VAR_ghcr_pull_token }}
+      TF_VAR_lb_ssl_certificate: ${{ secrets.TF_VAR_lb_ssl_certificate }}
+      TF_VAR_lb_ssl_private_key: ${{ secrets.TF_VAR_lb_ssl_private_key }}
+      TF_VAR_cloudflare_turn_api_key: ${{ secrets.TF_VAR_cloudflare_turn_api_key }}
+      TF_VAR_cloudflare_turn_key_id: ${{ secrets.TF_VAR_cloudflare_turn_key_id }}
+      TF_VAR_hls_r2_access_key_id: ${{ secrets.TF_VAR_hls_r2_access_key_id }}
+      TF_VAR_hls_r2_secret_access_key: ${{ secrets.TF_VAR_hls_r2_secret_access_key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform plan
+        run: terraform plan -input=false -var-file="$TFVARS_FILE" -var "image_tag=$IMAGE_TAG" -out=tfplan
+
+      - name: Terraform apply
+        if: ${{ inputs.action == 'apply' }}
+        run: terraform apply -input=false tfplan

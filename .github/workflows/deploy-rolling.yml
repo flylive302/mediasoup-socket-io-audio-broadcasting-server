@@ -1,0 +1,76 @@
+name: _deploy-rolling (reusable)
+
+# Reusable rolling, drain-gated, one-instance-at-a-time app deploy for the Vultr
+# fleet (slice 08 / issue H). Called by deploy-staging.yml and deploy-production.yml.
+# Runs terraform-vultr/scripts/rolling-deploy.sh: per instance, drain → scoped
+# `terraform apply -replace` → wait /health, halting the roll on any failure.
+#
+# NOTE: this only ever runs a compute-scoped `-replace` (a deploy), never an
+# infra-diff apply. Infra changes go through terraform-infra.yml (manual dispatch).
+# (The AWS ECR+ASG deploy.yml alongside this is dormant — kept as backup.)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub environment providing secrets + (for prod) the required-reviewer gate."
+        required: true
+        type: string
+      tf_workspace:
+        description: "HCP Terraform workspace (msab-vultr-staging | msab-vultr-production)."
+        required: true
+        type: string
+      tfvars_file:
+        description: "Non-secret var file, relative to terraform-vultr/ (ci/staging.tfvars | ci/production.tfvars)."
+        required: true
+        type: string
+      image_tag:
+        description: "ghcr image tag to roll to (sha-<commit8>)."
+        required: true
+        type: string
+
+concurrency:
+  # One deploy per environment at a time (a roll must never overlap another).
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: mediasoup-socket-io-audio-broadcasting-server/terraform-vultr
+    env:
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+      TF_WORKSPACE: ${{ inputs.tf_workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Rolling deploy
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          TFVARS_FILE: ${{ inputs.tfvars_file }}
+          # /admin/* auth == the laravel_internal_key TF var.
+          LARAVEL_INTERNAL_KEY: ${{ secrets.TF_VAR_laravel_internal_key }}
+          # Secrets the scoped -replace apply needs (non-secret vars come from TFVARS_FILE).
+          TF_VAR_laravel_internal_key: ${{ secrets.TF_VAR_laravel_internal_key }}
+          TF_VAR_jwt_secret: ${{ secrets.TF_VAR_jwt_secret }}
+          TF_VAR_session_secret: ${{ secrets.TF_VAR_session_secret }}
+          TF_VAR_ghcr_pull_token: ${{ secrets.TF_VAR_ghcr_pull_token }}
+          TF_VAR_lb_ssl_certificate: ${{ secrets.TF_VAR_lb_ssl_certificate }}
+          TF_VAR_lb_ssl_private_key: ${{ secrets.TF_VAR_lb_ssl_private_key }}
+          TF_VAR_cloudflare_turn_api_key: ${{ secrets.TF_VAR_cloudflare_turn_api_key }}
+          TF_VAR_cloudflare_turn_key_id: ${{ secrets.TF_VAR_cloudflare_turn_key_id }}
+          TF_VAR_hls_r2_access_key_id: ${{ secrets.TF_VAR_hls_r2_access_key_id }}
+          TF_VAR_hls_r2_secret_access_key: ${{ secrets.TF_VAR_hls_r2_secret_access_key }}
+        run: ./scripts/rolling-deploy.sh

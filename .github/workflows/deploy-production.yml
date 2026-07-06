@@ -1,0 +1,29 @@
+name: Deploy — Production (rolling, gated)
+
+# Production deploy: build → push ghcr.io → roll the prod fleet one instance at a
+# time. Requires ONE manual approval before the roll runs (AC3): the `deploy` job
+# targets the `vultr-production` GitHub environment, which MUST be configured with
+# a Required reviewer (Settings → Environments → vultr-production → Required
+# reviewers). GitHub pauses the job for approval before any instance is touched.
+#
+# Manual-dispatch only — never auto-deploys prod on push.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/ghcr-publish.yml
+    permissions:
+      contents: read
+      packages: write
+
+  deploy:
+    needs: build
+    uses: ./.github/workflows/deploy-rolling.yml
+    with:
+      environment: vultr-production # ← required-reviewer gate = the manual approval
+      tf_workspace: msab-vultr-production
+      tfvars_file: ci/production.tfvars
+      image_tag: ${{ needs.build.outputs.image_tag }}
+    secrets: inherit
