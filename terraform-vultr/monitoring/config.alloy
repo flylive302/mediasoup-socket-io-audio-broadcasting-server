@@ -53,18 +53,23 @@ prometheus.scrape "bom" {
   forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
 }
 
-prometheus.scrape "fra" {
-  targets = [
-    { __address__ = "95.179.247.170:3030", region = "fra", instance = "fra-0" },
-    { __address__ = "140.82.38.113:3030", region = "fra", instance = "fra-1" },
-  ]
-  metrics_path    = "/metrics/prometheus"
-  scheme          = "http"
-  scrape_interval = "30s"
-  scrape_timeout  = "10s"
-  http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
-  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
-}
+// --- Frankfurt (fra): DISABLED until slice 06's apply creates the fra instances.
+// Its reserved IPs exist but no instance answers yet, so scraping it would leave a
+// permanently-down target that trips MSABRegionZeroHealthyTargets. Re-enable this
+// block (uncomment) the moment the two fra instances are live — that's the ONLY
+// change needed; the region-agnostic alert auto-picks it up.
+// prometheus.scrape "fra" {
+//   targets = [
+//     { __address__ = "95.179.247.170:3030", region = "fra", instance = "fra-0" },
+//     { __address__ = "140.82.38.113:3030", region = "fra", instance = "fra-1" },
+//   ]
+//   metrics_path    = "/metrics/prometheus"
+//   scheme          = "http"
+//   scrape_interval = "30s"
+//   scrape_timeout  = "10s"
+//   http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
+//   forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+// }
 
 prometheus.scrape "sgp" {
   targets = [

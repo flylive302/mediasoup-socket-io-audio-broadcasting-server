@@ -18,9 +18,11 @@ groups:
       # series per static target even when the instance is unreachable (value 0),
       # so `max by (region)` is 0 only when EVERY instance in that region is down
       # = a total regional outage as seen from the scraper. 2m debounces a rolling
-      # deploy / single reboot.
+      # deploy / single reboot. Region-agnostic on purpose: it covers exactly the
+      # regions currently scraped in config.alloy (bom+sgp today; fra auto-joins
+      # when its scrape block is re-enabled after deploy) — no regex to maintain.
       - alert: MSABRegionZeroHealthyTargets
-        expr: max by (region) (up{region=~"bom|fra|sgp"}) == 0
+        expr: max by (region) (up) == 0
         for: 2m
         labels:
           severity: critical
@@ -35,7 +37,7 @@ groups:
       # Safety net: if the scraper itself dies, the `up` series vanish and the
       # rule above can't fire. Alert when a whole region's series disappear.
       - alert: MSABRegionScrapeAbsent
-        expr: absent(up{region="bom"}) or absent(up{region="fra"}) or absent(up{region="sgp"})
+        expr: absent(up{region="bom"}) or absent(up{region="sgp"})
         for: 5m
         labels:
           severity: warning
@@ -45,6 +47,7 @@ groups:
           description: >
             No `up` series for at least one region for 5m. Either the central
             Alloy agent is down or a region was removed from config.alloy.
+            (Add `or absent(up{region="fra"})` here once fra is deployed + re-enabled.)
 
   - name: msab-fanout
     rules:

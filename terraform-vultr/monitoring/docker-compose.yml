@@ -13,7 +13,7 @@
 
 services:
   alloy:
-    image: grafana/alloy:v1.5.0
+    image: grafana/alloy:v1.17.1
     container_name: msab-alloy
     restart: unless-stopped
     command:
