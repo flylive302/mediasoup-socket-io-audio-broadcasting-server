@@ -17,7 +17,7 @@
 # --- Environment-specific (non-secret) ---
 environment     = "production"
 audio_domain    = "audio.flyliveapp.com"
-cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com"
+cors_origins    = "https://flyliveapp.com,https://app.flyliveapp.com,https://localhost,capacitor://localhost"  # localhost origins = Capacitor native shell (Android https://localhost, iOS capacitor://localhost)
 laravel_api_url = "https://app.flyliveapp.com"
 
 # --- Region fleet (slice 06: full 3-region fleet; >= 2 per region for HA) ---

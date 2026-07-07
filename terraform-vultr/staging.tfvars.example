@@ -16,7 +16,7 @@
 # --- Environment-specific (non-secret) ---
 environment     = "staging"
 audio_domain    = "audio.staging.flyliveapp.com"
-cors_origins    = "https://staging.flyliveapp.com,https://app.staging.flyliveapp.com"
+cors_origins    = "https://staging.flyliveapp.com,https://app.staging.flyliveapp.com,https://localhost,capacitor://localhost"
 laravel_api_url = "https://app.staging.flyliveapp.com"
 
 # --- Region fleet (slice 06: full 3-region replica; every key here is deployed) ---

@@ -13,13 +13,15 @@ export async function authMiddleware(
 ) {
   // ── GATE: Validate origin ──────────────────────────────
   // F-63: require an allowlisted Origin header. Every legitimate client is
-  // browser-backed (the TWA runs in Chrome Custom Tabs, the PWA in the
-  // browser), so all real connections carry Origin: https://flyliveapp.com.
-  // MSAB has no native socket client and no server-to-server socket.io caller
-  // (no socket.io-client dependency), so a missing Origin only ever indicates
-  // curl/script reuse of a leaked JWT — reject it. (Origin is browser-enforced
-  // but spoofable by a determined attacker; the primary control remains JWT
-  // signature + revocation + the shortened token lifetime, F-56.)
+  // WebView-backed: the PWA/web in the browser (Origin: https://app.flyliveapp.com)
+  // and the Capacitor native shell, whose Android WebView reports
+  // Origin: https://localhost (iOS: capacitor://localhost) — all must be in
+  // CORS_ORIGINS or the socket handshake is refused ("audio connection failure"
+  // in the native app). MSAB has no native socket client and no server-to-server
+  // socket.io caller (no socket.io-client dependency), so a missing Origin only
+  // ever indicates curl/script reuse of a leaked JWT — reject it. (Origin is
+  // browser-enforced but spoofable by a determined attacker; the primary control
+  // remains JWT signature + revocation + the shortened token lifetime, F-56.)
   const origin = socket.handshake.headers.origin;
   if (!origin || !config.CORS_ORIGINS.has(origin)) {
     logger.warn({ socketId: socket.id, origin: origin ?? null }, "Origin not allowed");
