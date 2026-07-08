@@ -9,3 +9,6 @@ coverage
 # SSH known_hosts files for deployment scripts
 scripts/deploy/.known_hosts
 terraform/tfplan
+
+# Local Vultr API key for terraform (never commit)
+terraform-vultr/.vultr-api-key
