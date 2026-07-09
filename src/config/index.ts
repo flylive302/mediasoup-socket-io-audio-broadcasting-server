@@ -67,6 +67,9 @@ const configSchema = z.object({
   // count. See CONTEXT.md "Active Speaker".
   UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT: z.coerce.number().default(6),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
+  // Seat Reactions: ~1 per 1.5s per sender (ADR 0015 / seat-reactions slice 01)
+  RATE_LIMIT_SEAT_REACTIONS_PER_WINDOW: z.coerce.number().default(1),
+  RATE_LIMIT_SEAT_REACTIONS_WINDOW_SECONDS: z.coerce.number().default(1.5),
   // F-44: deliberate fail-policy for the rate limiter on a Redis error.
   // Default false = fail-closed (preserves prior production behavior: deny on
   // Redis blip). Set true to fail-open (allow), matching jwtValidator's

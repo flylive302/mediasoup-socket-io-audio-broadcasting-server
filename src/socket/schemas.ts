@@ -265,6 +265,13 @@ export const seatInviteActionSchema = z.object({
   seatIndex: z.number().int().min(0).max(99).optional(),
 });
 
+// Seat Reaction — `code` is a Noto codepoint slug, e.g. "1f602" or "1f1fa-1f1f8"
+// (multi-codepoint sequences joined by hyphens, as used by the Noto catalog).
+export const seatReactionSchema = z.object({
+  roomId: roomIdSchema,
+  code: z.string().regex(/^[0-9a-f]{4,8}(-[0-9a-f]{4,8})*$/, "Invalid reaction code"),
+});
+
 // ─────────────────────────────────────────────────────────────────
 // User Schemas
 // ─────────────────────────────────────────────────────────────────

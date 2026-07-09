@@ -21,6 +21,7 @@ import {
   inviteDeclineHandler,
 } from "./handlers/invite-response.handler.js";
 import { kickUserHandler } from "@src/domains/room/handlers/kick-user.handler.js";
+import { seatReactionHandler } from "./handlers/seat-reaction.handler.js";
 
 /**
  * Register all seat-related socket event handlers
@@ -35,6 +36,7 @@ export function registerSeatHandlers(
   // User actions
   socket.on("seat:take", takeSeatHandler(socket, context));
   socket.on("seat:leave", leaveSeatHandler(socket, context));
+  socket.on("seat:reaction", seatReactionHandler(socket, context));
 
   // Owner actions
   socket.on("seat:assign", assignSeatHandler(socket, context));

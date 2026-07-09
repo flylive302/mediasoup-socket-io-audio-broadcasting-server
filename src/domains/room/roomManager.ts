@@ -246,7 +246,10 @@ export class RoomManager {
         this.io,
         roomId,
         "seat:cleared",
-        { seatIndex, userId },
+        // reason:"grace" marks this DELAYED sweep release so clients can tell
+        // it apart from an explicit leave/kick — the FE self-retake guard
+        // (F-24) must only ever swallow grace clears, never a real leave.
+        { seatIndex, userId, reason: "grace" },
         this.cascadeRelay,
       );
       broadcastToRoom(this.io, roomId, "room:userLeft", { userId }, this.cascadeRelay);
