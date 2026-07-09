@@ -6,9 +6,16 @@ name: Deploy — Production (rolling, gated)
 # a Required reviewer (Settings → Environments → vultr-production → Required
 # reviewers). GitHub pauses the job for approval before any instance is touched.
 #
-# Manual-dispatch only — never auto-deploys prod on push.
+# Auto-deploys the prod fleet on push to `master` (mirrors AWS' old master→deploy
+# behaviour and the staging push→roll flow). Also runnable on demand via
+# workflow_dispatch. The required-reviewer gate on the `vultr-production`
+# environment still applies, so the roll pauses for approval before any instance
+# is touched — set that environment to zero required reviewers if you want the
+# push to roll straight through with no manual approval.
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
 
 jobs:
