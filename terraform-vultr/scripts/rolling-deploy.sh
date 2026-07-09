@@ -21,11 +21,17 @@
 # instance across a replace (proven slice D/E), so an instance's public IP is
 # STABLE across its own replacement — we read the IP map once, up front.
 #
-# ⚠️ roll_one_instance() body is UNVALIDATED — it depends on the unresolved
-# A-vs-C LB-attachment decision (see docs/issues/vultr-migration/PENDING-vultr-verification.md
-# § "Rolling-deploy LB-attachment mechanism"). Everything else in this script is
-# mechanism-independent and reviewable now. Do NOT trust the replace step against
-# a live fleet until that decision is made and tested.
+# LB-attachment mechanism (the old A-vs-C open question) — RESOLVED, validated
+# live 2026-07-09: the Vultr LB attaches backends by INSTANCE ID, so every
+# replace orphans the LB (fleet-wide 503 at the LB even with healthy instances)
+# until a targeted apply of the region's vultr_load_balancer re-attaches the new
+# id. reattach_lb() runs after every replace for exactly this reason.
+#
+# Vultr fee-cap billing lag (validated live 2026-07-08/09): right after a
+# destroy, the destroyed instance still counts against the account's monthly
+# fee cap for a few minutes, so the create half of a replace can be rejected
+# ("maximum monthly fee limit"). roll_one_instance() retries the create-only
+# apply (the destroy has already happened, so -replace must be dropped).
 # =============================================================================
 set -euo pipefail
 
@@ -52,8 +58,14 @@ drain_instance() {
   if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN drain ${ip}"; return 0; fi
 
   log "   ⇢ draining ${ip} (rooms close, ≤${DRAIN_TIMEOUT}s)"
-  curl -fsS -X POST "http://${ip}:${APP_PORT}/admin/drain?timeout=${DRAIN_TIMEOUT}" \
-    -H "X-Internal-Key: ${LARAVEL_INTERNAL_KEY}" >/dev/null
+  if ! curl -fsS -X POST "http://${ip}:${APP_PORT}/admin/drain?timeout=${DRAIN_TIMEOUT}" \
+    -H "X-Internal-Key: ${LARAVEL_INTERNAL_KEY}" >/dev/null; then
+    # Unreachable instance — the usual cause is a previously halted roll that
+    # destroyed it (fee-cap rejection). Nothing to drain; the replace step
+    # recreates it, so a plain workflow re-run recovers the fleet.
+    log "   ⇢ ${ip} unreachable — skipping drain (destroyed/dead instance; replace recreates it)"
+    return 0
+  fi
 
   local elapsed=0 deadline=$((DRAIN_TIMEOUT + 60)) status
   while (( elapsed < deadline )); do
@@ -69,17 +81,48 @@ drain_instance() {
   return 1
 }
 
-# ─── REPLACE (mechanism seam — SINGLE unvalidated line) ──────────────────────
-# The pinned image_tag change forces a vultr_instance replacement; the open
-# A-vs-C decision only changes HOW the LB re-attaches the new id without churning
-# the live sibling. Until resolved, this is the naive form and is guarded by the
-# PENDING note above. `-target` confines the plan to just this index; siblings
-# stay out of the graph (and un-dirtied) until their turn.
+# ─── REPLACE ─────────────────────────────────────────────────────────────────
+# The pinned image_tag change forces a vultr_instance replacement. `-target`
+# confines the plan to just this index; siblings stay out of the graph (and
+# un-dirtied) until their turn. If the create half is rejected (Vultr fee-cap
+# billing lag — see header), the instance is already destroyed and gone from
+# state, so the retries are create-only targeted applies WITHOUT -replace
+# (-replace on a state-absent address errors instead of creating).
+REPLACE_RETRIES="${REPLACE_RETRIES:-3}"
+REPLACE_RETRY_DELAY="${REPLACE_RETRY_DELAY:-120}"
+
 roll_one_instance() {
   local addr="$1"
   if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN terraform apply -replace=${addr} -var image_tag=${IMAGE_TAG}"; return 0; fi
-  terraform apply -input=false -auto-approve \
+  if terraform apply -input=false -auto-approve \
     -target="${addr}" -replace="${addr}" \
+    -var "image_tag=${IMAGE_TAG}" "${TF_VARFILE_ARG[@]}"; then
+    return 0
+  fi
+
+  local attempt
+  for (( attempt = 1; attempt <= REPLACE_RETRIES; attempt++ )); do
+    log "   ⇢ replace failed (fee-cap billing lag is the usual cause) — create-only retry ${attempt}/${REPLACE_RETRIES} in ${REPLACE_RETRY_DELAY}s"
+    sleep "${REPLACE_RETRY_DELAY}"
+    if terraform apply -input=false -auto-approve \
+      -target="${addr}" \
+      -var "image_tag=${IMAGE_TAG}" "${TF_VARFILE_ARG[@]}"; then
+      return 0
+    fi
+  done
+  log "   ✖ replace of ${addr} failed after ${REPLACE_RETRIES} retries — halting roll"
+  return 1
+}
+
+# ─── LB RE-ATTACH (runs after every replace) ─────────────────────────────────
+# The Vultr LB references backends by instance id; the replace above changed the
+# id, so without this the LB serves 503 fleet-wide even though every instance is
+# healthy (observed live 2026-07-09). In-place update, ~2s, idempotent.
+reattach_lb() {
+  local region="$1"
+  if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN terraform apply -target=module.loadbalancer[\"${region}\"].vultr_load_balancer.main"; return 0; fi
+  terraform apply -input=false -auto-approve \
+    -target="module.loadbalancer[\"${region}\"].vultr_load_balancer.main" \
     -var "image_tag=${IMAGE_TAG}" "${TF_VARFILE_ARG[@]}"
 }
 
@@ -116,7 +159,8 @@ main() {
       addr="module.compute[\"${region}\"].vultr_instance.main[${i}]"
       log "── ${region}[${i}]  ${ip}  →  ${addr}"
       drain_instance "$ip"       # halts roll on stall
-      roll_one_instance "$addr"  # halts roll on terraform error
+      roll_one_instance "$addr"  # halts roll on terraform error (after create-only retries)
+      reattach_lb "$region"      # LB binds instance ids — re-attach the new id or the LB 503s
       wait_health "$ip"          # halts roll if the new instance never goes healthy
     done
   done
