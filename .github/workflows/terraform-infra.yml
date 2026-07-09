@@ -37,7 +37,7 @@ jobs:
     environment: vultr-${{ inputs.environment }}
     defaults:
       run:
-        working-directory: mediasoup-socket-io-audio-broadcasting-server/terraform-vultr
+        working-directory: terraform-vultr
     env:
       VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
       TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}

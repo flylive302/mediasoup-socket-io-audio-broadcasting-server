@@ -14,6 +14,9 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Per-environment var files contain secrets — never commit. Templates (*.tfvars.example) are safe.
+# Per-environment var files contain secrets — never commit. Templates (*.tfvars.example)
+# and the CI var files (ci/*.tfvars, non-secret by contract — secrets are injected
+# via TF_VAR_* env vars from GitHub Actions secrets) are safe.
 *.tfvars
 !*.tfvars.example
+!ci/*.tfvars
