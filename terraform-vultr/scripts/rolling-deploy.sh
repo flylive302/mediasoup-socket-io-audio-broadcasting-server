@@ -24,8 +24,8 @@
 # LB-attachment mechanism (the old A-vs-C open question) — RESOLVED, validated
 # live 2026-07-09: the Vultr LB attaches backends by INSTANCE ID, so every
 # replace orphans the LB (fleet-wide 503 at the LB even with healthy instances)
-# until a targeted apply of the region's vultr_load_balancer re-attaches the new
-# id. reattach_lb() runs after every replace for exactly this reason.
+# until the new id is re-attached. reattach_lb() runs after every replace for
+# exactly this reason — via the Vultr API, NOT terraform (see its warning).
 #
 # Vultr fee-cap billing lag (validated live 2026-07-08/09): right after a
 # destroy, the destroyed instance still counts against the account's monthly
@@ -117,13 +117,42 @@ roll_one_instance() {
 # ─── LB RE-ATTACH (runs after every replace) ─────────────────────────────────
 # The Vultr LB references backends by instance id; the replace above changed the
 # id, so without this the LB serves 503 fleet-wide even though every instance is
-# healthy (observed live 2026-07-09). In-place update, ~2s, idempotent.
+# healthy (observed live 2026-07-09).
+#
+# ⚠️ MUST go through the Vultr API, NEVER `terraform apply -target=<LB>`: the
+# LB's attached_instances depends on EVERY instance, so targeting the LB pulls
+# all siblings into the graph — and any sibling whose user_data still carries
+# the OLD image tag gets REPLACED in the same apply, destroying the one healthy
+# instance mid-roll (observed live 2026-07-09, run #3: the LB target destroyed
+# the serving sibling and its re-create hit the fee cap → full outage).
+# Attaching by API leaves no lasting drift: attached_instances converges to the
+# same live ids once the roll finishes.
 reattach_lb() {
   local region="$1"
-  if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN terraform apply -target=module.loadbalancer[\"${region}\"].vultr_load_balancer.main"; return 0; fi
-  terraform apply -input=false -auto-approve \
-    -target="module.loadbalancer[\"${region}\"].vultr_load_balancer.main" \
-    -var "image_tag=${IMAGE_TAG}" "${TF_VARFILE_ARG[@]}"
+  if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN Vultr-API reattach LB (${region}) to live fleet ids"; return 0; fi
+  : "${VULTR_API_KEY:?VULTR_API_KEY is required (LB re-attach)}"
+
+  local lb_ip lb_id region_ips live_ids
+  lb_ip=$(terraform output -json region_lb_ipv4 | jq -r --arg r "$region" '.[$r]')
+  lb_id=$(curl -fsS -H "Authorization: Bearer ${VULTR_API_KEY}" \
+    "https://api.vultr.com/v2/load-balancers?per_page=500" \
+    | jq -r --arg ip "$lb_ip" '.load_balancers[] | select(.ipv4 == $ip) | .id')
+  [[ -n "$lb_id" && "$lb_id" != "null" ]] || { log "   ✖ no LB found with ipv4 ${lb_ip}"; return 1; }
+
+  # Live instance ids whose main_ip is one of this region's reserved IPs — the
+  # just-created replacement is present immediately; the LB's own health check
+  # gates it out of rotation until it actually boots.
+  region_ips=$(terraform output -json region_public_ips | jq --arg r "$region" '.[$r]')
+  live_ids=$(curl -fsS -H "Authorization: Bearer ${VULTR_API_KEY}" \
+    "https://api.vultr.com/v2/instances?per_page=500" \
+    | jq -c --argjson ips "$region_ips" '[.instances[] | select(.main_ip as $m | $ips | index($m)) | .id]')
+  [[ "$live_ids" != "[]" ]] || { log "   ✖ no live instances match region ${region} reserved IPs"; return 1; }
+
+  log "   ⇢ re-attaching LB ${lb_id} → ${live_ids}"
+  curl -fsS -X PATCH -H "Authorization: Bearer ${VULTR_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"instances\": ${live_ids}}" \
+    "https://api.vultr.com/v2/load-balancers/${lb_id}" >/dev/null
 }
 
 # ─── GATE: new instance healthy before we move on ────────────────────────────
