@@ -37,7 +37,10 @@ groups:
       # Safety net: if the scraper itself dies, the `up` series vanish and the
       # rule above can't fire. Alert when a whole region's series disappear.
       - alert: MSABRegionScrapeAbsent
-        expr: absent(up{region="bom"}) or absent(up{region="sgp"})
+        # 2026-07-10: sgp clause removed — sgp fleet torn down in the bom-only
+        # rebuild (2026-07-08); its absence is expected, not an incident.
+        # Re-add `or absent(up{region="sgp"})` when sgp is redeployed.
+        expr: absent(up{region="bom"})
         for: 5m
         labels:
           severity: warning
@@ -73,3 +76,30 @@ groups:
             in region {{ $labels.region }} failed delivery over 5m. Live
             balance/gift/slide updates are dropping — check the Laravel→MSAB
             bridge, Redis pub/sub, and socket registration.
+
+  - name: msab-audio-pipes
+    rules:
+      # 2026-07-10 audio review: a failed producer pipe (source→distribution
+      # router, edge speaker→origin reverse pipe, or origin→edge pipe) means
+      # some listeners silently can't hear a speaker while others can. All
+      # three paths now retry with backoff and count the POST-RETRY outcome,
+      # so ANY failure sample is a real, user-audible incident.
+      - alert: MSABAudioPipeSetupFailures
+        # __name__ regex: one union selector — per-metric `or`/`+` breaks when a
+        # counter has no samples yet (prom-client emits nothing until first inc).
+        expr: |
+          sum by (region) (
+            rate({__name__=~"flylive_(dist|reverse|edge)_pipe_setup_total", result="failure"}[5m])
+          ) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: msab
+        annotations:
+          summary: "MSAB audio pipe setup failing in {{ $labels.region }}"
+          description: >
+            Producer pipe setup (dist/reverse/edge) is failing post-retry in
+            region {{ $labels.region }} — speakers are partially inaudible.
+            Check worker health (MEDIASOUP_NUM_WORKERS >= 2), inter-instance
+            reachability on port 3030 + UDP 10000-59999, and `docker logs msab`
+            for "failed to pipe producer".

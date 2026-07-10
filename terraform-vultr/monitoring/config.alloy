@@ -42,8 +42,11 @@ prometheus.remote_write "grafana_cloud" {
 // keys in each target become labels on every scraped series.
 prometheus.scrape "bom" {
   targets = [
-    { __address__ = "65.20.69.175:3030", region = "bom", instance = "bom-0" },
-    { __address__ = "65.20.90.188:3030", region = "bom", instance = "bom-1" },
+    // Updated 2026-07-10: fleet was rebuilt 2026-07-08 (account wipe) — reserved
+    // IPs did NOT survive. Old targets 65.20.69.175/.90.188 were dead → constant
+    // MSABRegionZeroHealthyTargets alerts.
+    { __address__ = "65.20.75.43:3030", region = "bom", instance = "bom-0" },
+    { __address__ = "65.20.75.141:3030", region = "bom", instance = "bom-1" },
   ]
   metrics_path    = "/metrics/prometheus"
   scheme          = "http"
@@ -71,15 +74,21 @@ prometheus.scrape "bom" {
 //   forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
 // }
 
-prometheus.scrape "sgp" {
-  targets = [
-    { __address__ = "207.148.72.145:3030", region = "sgp", instance = "sgp-0" },
-    { __address__ = "149.28.135.197:3030", region = "sgp", instance = "sgp-1" },
-  ]
-  metrics_path    = "/metrics/prometheus"
-  scheme          = "http"
-  scrape_interval = "30s"
-  scrape_timeout  = "10s"
-  http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
-  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
-}
+// --- Singapore (sgp): DISABLED 2026-07-10 — the sgp fleet was torn down in the
+// 2026-07-08 bom-only rebuild (fee-cap sizing). These IPs are dead; scraping them
+// kept MSABRegionZeroHealthyTargets + MSABRegionScrapeAbsent firing. Re-enable
+// with fresh `terraform output region_public_ips` when sgp returns. NOTE: the
+// MSABRegionScrapeAbsent alert rule also references region="sgp" — update or
+// silence that rule too, or it fires on absence.
+// prometheus.scrape "sgp" {
+//   targets = [
+//     { __address__ = "207.148.72.145:3030", region = "sgp", instance = "sgp-0" },
+//     { __address__ = "149.28.135.197:3030", region = "sgp", instance = "sgp-1" },
+//   ]
+//   metrics_path    = "/metrics/prometheus"
+//   scheme          = "http"
+//   scrape_interval = "30s"
+//   scrape_timeout  = "10s"
+//   http_headers    = { "X-Internal-Key" = [sys.env("LARAVEL_INTERNAL_KEY")] }
+//   forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+// }

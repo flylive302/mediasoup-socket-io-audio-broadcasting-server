@@ -50,13 +50,17 @@ export const mediasoupConfig = {
       },
     ] as mediasoup.types.TransportListenInfo[],
 
-    // Bandwidth settings (Audio-only optimization)
-    initialAvailableOutgoingBitrate: 64000,
+    // Bandwidth settings (Audio-only optimization).
+    // 128k lets BWE start at full audio quality immediately instead of
+    // ramping up from a degraded first few seconds (64k start showed up as
+    // "weak audio" at speak start — 2026-07-10 audio review).
+    initialAvailableOutgoingBitrate: 128000,
   } as mediasoup.types.WebRtcTransportOptions,
 
   // Max incoming bitrate per transport (applied via setMaxIncomingBitrate after creation)
-  // 128kbps max incoming per stream is plenty for high quality Opus
-  maxIncomingBitrate: 128000,
+  // 192k = stereo music producer at 128k target + FEC/overhead headroom;
+  // voice mics are capped client-side at 64k mono via codecOptions.
+  maxIncomingBitrate: 192000,
 
   // Active Speaker settings
   activeSpeakerObserver: {

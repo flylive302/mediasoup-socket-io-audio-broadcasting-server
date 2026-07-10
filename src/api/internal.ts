@@ -21,6 +21,8 @@ import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinato
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
+import { retryAsync } from "@src/shared/retry.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 
@@ -725,25 +727,38 @@ export const createInternalRoutes = (
         const originProducerId = producerData.producerId;
         if (typeof originProducerId === "string") {
           try {
-            const edgeProducerId = await cascadeCoordinator.handleRemoteNewProducer(
-              roomId,
-              originProducerId,
+            // Retry with backoff: a one-shot failure here used to suppress
+            // the announcement permanently — this edge's listeners never
+            // learned the new speaker existed (2026-07-10 audio review).
+            const edgeProducerId = await retryAsync(
+              () =>
+                cascadeCoordinator.handleRemoteNewProducer(
+                  roomId,
+                  originProducerId,
+                ),
+              { attempts: 3, baseDelayMs: 500, accept: (r) => Boolean(r) },
             );
             if (!edgeProducerId) {
               logger.warn(
                 { roomId, originProducerId },
-                "Cascade relay: edge pipe setup failed; suppressing audio:newProducer broadcast",
+                "Cascade relay: edge pipe setup failed after retries; suppressing audio:newProducer broadcast",
               );
               // Skip the local broadcast — listeners would just fail to
               // consume — and skip the onward relay (F-42): we cannot vouch
               // for a producer we failed to pipe.
+              metrics.edgePipeSetup.inc({ result: "failure" });
               broadcastData = null;
               suppressRelay = true;
             } else {
+              metrics.edgePipeSetup.inc({ result: "success" });
               broadcastData = { ...producerData, producerId: edgeProducerId };
             }
           } catch (err) {
-            logger.error({ err, roomId, originProducerId }, "Failed to handle remote new producer");
+            logger.error(
+              { err, roomId, originProducerId },
+              "Failed to handle remote new producer after retries",
+            );
+            metrics.edgePipeSetup.inc({ result: "failure" });
             broadcastData = null;
             suppressRelay = true;
           }

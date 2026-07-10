@@ -19,6 +19,7 @@ import {
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { retryAsync } from "@src/shared/retry.js";
 import { Errors } from "@src/shared/errors.js";
 import { getIceServers } from "@src/config/iceServers.js";
 import type { Socket } from "socket.io";
@@ -118,9 +119,25 @@ const audioProduceHandler = createHandler(
     }
 
     // Register producer in cluster — auto-pipes to distribution routers
-    // MUST complete before notifying listeners so piped producers exist
+    // MUST complete before notifying listeners so piped producers exist.
+    // All-or-nothing: registerProducer throws when piping fails post-retry;
+    // close the producer and fail the ack so the client re-produces, instead
+    // of leaving a half-piped speaker some listeners can't hear.
     if (cluster) {
-      await cluster.registerProducer(producer);
+      try {
+        await cluster.registerProducer(producer);
+      } catch (err) {
+        logger.error(
+          { err, roomId, producerId: producer.id },
+          "audio:produce failed — could not pipe producer to distribution routers",
+        );
+        producer.close();
+        if (client) {
+          client.producers.delete(kind);
+          client.isSpeaker = false;
+        }
+        return { success: false, error: Errors.INTERNAL_ERROR };
+      }
     }
 
     // realtime-09: a new speaker changes the broadcast mix topology. No-op unless
@@ -145,22 +162,27 @@ const audioProduceHandler = createHandler(
       // reverse-pipe handshake to start consuming the local producer.
       socket.local.to(roomId).emit("audio:newProducer", newProducerEvent);
 
-      // Open the reverse pipe in the background. On failure we log and continue
-      // — local listeners can still hear; only cross-instance is silent.
-      void context.cascadeCoordinator
-        .setupReversePipe(roomId, producer, cluster, userId)
+      // Open the reverse pipe in the background, retrying with backoff —
+      // a one-shot failure used to leave this speaker permanently silent to
+      // every other instance (2026-07-10 audio review). Still fire-and-forget
+      // so local listeners never wait on the cross-instance handshake.
+      const coordinator = context.cascadeCoordinator;
+      void retryAsync(
+        () => coordinator.setupReversePipe(roomId, producer, cluster, userId),
+        { attempts: 3, baseDelayMs: 500, accept: (r) => Boolean(r) },
+      )
         .then((result) => {
           if (!result) {
             logger.warn(
               { roomId, edgeProducerId: producer.id, userId },
-              "Reverse pipe setup failed — cross-instance listeners will be silent for this speaker",
+              "Reverse pipe setup failed after retries — cross-instance listeners will be silent for this speaker",
             );
           }
         })
         .catch((err) => {
           logger.error(
             { err, roomId, edgeProducerId: producer.id, userId },
-            "Reverse pipe setup threw",
+            "Reverse pipe setup threw after retries",
           );
         });
     } else {
@@ -192,9 +214,11 @@ const audioConsumeHandler = createHandler(
       return { success: false, error: Errors.ROOM_NOT_FOUND };
     }
 
-    // Check if the source producer can be consumed
+    // Check if the source producer can be consumed on THIS listener's
+    // distribution router (not router[0] — piped sets can diverge on failure)
     if (
       !cluster.canConsume(
+        transportId,
         producerId,
         rtpCapabilities as mediasoup.types.RtpCapabilities,
       )

@@ -13,6 +13,8 @@ import * as mediasoup from "mediasoup";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { config } from "@src/config/index.js";
+import { metrics } from "@src/infrastructure/metrics.js";
+import { retryAsync } from "@src/shared/retry.js";
 import { RouterManager } from "./routerManager.js";
 
 interface DistributionRouter {
@@ -261,18 +263,20 @@ export class RoomMediaCluster {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Check if a listener can consume the given source producer.
-   * Checks against the first distribution router's piped producer.
+   * Check if a listener can consume the given source producer on the
+   * distribution router that owns the listener's transport.
+   *
+   * Checking router[0] as a proxy (old ARCH-LOW-001b assumption: "all routers
+   * have identical piped sets") gave false positives exactly when a pipe to
+   * ONE router had failed — canConsume said yes, consume() then threw
+   * "not piped" for that router's listeners only (asymmetric audibility).
    */
   canConsume(
+    transportId: string,
     sourceProducerId: string,
     rtpCapabilities: mediasoup.types.RtpCapabilities,
   ): boolean {
-    // ARCH-LOW-001b: All distribution routers have identical piped producer sets
-    // (each gets every source producer piped), so checking any one is sufficient.
-    if (this.distributionRouters.length === 0) return false;
-
-    const dist = this.distributionRouters[0];
+    const dist = this.findDistributionRouterForTransport(transportId);
     if (!dist) return false;
 
     const pipedId = dist.pipedProducerMap.get(sourceProducerId);
@@ -415,9 +419,18 @@ export class RoomMediaCluster {
       pipedProducerMap: new Map(),
     };
 
-    // Pipe all existing source producers to this new distribution router
-    for (const sourceProducerId of this.sourceProducerIds) {
-      await this.pipeProducerToDistributionRouter(sourceProducerId, dist);
+    // Pipe all existing source producers to this new distribution router.
+    // All-or-nothing: a router missing even one speaker gives its listeners
+    // a silently incomplete room, so on failure tear the router down and
+    // rethrow — the joining listener fails loudly and retries.
+    try {
+      for (const sourceProducerId of this.sourceProducerIds) {
+        await this.pipeProducerToDistributionRouter(sourceProducerId, dist);
+      }
+    } catch (err) {
+      await routerManager.close();
+      this.workerManager.decrementRouterCount(worker);
+      throw err;
     }
 
     this.distributionRouters.push(dist);
@@ -458,16 +471,23 @@ export class RoomMediaCluster {
     sourceProducerId: string,
     dist: DistributionRouter,
   ): Promise<void> {
-    if (!this.sourceRouter?.router || !dist.routerManager.router) {
+    const sourceRouter = this.sourceRouter?.router;
+    const distRouter = dist.routerManager.router;
+    if (!sourceRouter || !distRouter) {
       this.logger.warn("Cannot pipe: routers not ready");
       return;
     }
 
     try {
-      const { pipeProducer } = await this.sourceRouter.router.pipeToRouter({
-        producerId: sourceProducerId,
-        router: dist.routerManager.router,
-      });
+      // Transient pipe failures (worker churn, in-flight transport teardown)
+      // must not leave a speaker permanently inaudible on this router — retry
+      // before giving up (2026-07-10 audio review: asymmetric audibility).
+      const { pipeProducer } = await retryAsync(() =>
+        sourceRouter.pipeToRouter({
+          producerId: sourceProducerId,
+          router: distRouter,
+        }),
+      );
 
       if (pipeProducer) {
         dist.pipedProducerMap.set(sourceProducerId, pipeProducer.id);
@@ -486,6 +506,7 @@ export class RoomMediaCluster {
           "RoomMediaCluster: producer piped to distribution router",
         );
       }
+      metrics.distPipeSetup.inc({ result: "success" });
     } catch (err) {
       // Key MUST be `err` (not `error`) so Pino's Error serializer runs — otherwise
       // the Error serializes to `{}` and the real cause is lost (see the 2026-07-06
@@ -494,6 +515,12 @@ export class RoomMediaCluster {
         { err, sourceProducerId },
         "RoomMediaCluster: failed to pipe producer",
       );
+      metrics.distPipeSetup.inc({ result: "failure" });
+      // Rethrow: a producer missing from one distribution router means some
+      // listeners silently can't hear this speaker while others can. Callers
+      // treat pipe setup as all-or-nothing (close the producer / fail the
+      // join) so the client retries instead of half-working.
+      throw err;
     }
   }
 

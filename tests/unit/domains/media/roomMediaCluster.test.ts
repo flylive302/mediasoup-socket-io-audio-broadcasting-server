@@ -142,6 +142,141 @@ describe("RoomMediaCluster", () => {
 
 
 
+  describe("pipe failure handling (2026-07-10 audio review)", () => {
+    function setupClusterWithDistRouter() {
+      const sourceRM = createMockRouterManager();
+      const distRM = createMockRouterManager();
+      return { sourceRM, distRM };
+    }
+
+    it("retries a transiently failing pipe and succeeds", async () => {
+      const { RouterManager } = await import("@src/domains/media/routerManager.js");
+      const { sourceRM, distRM } = setupClusterWithDistRouter();
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (RouterManager as any).mockImplementation(() => {
+        return callCount++ === 0 ? sourceRM : distRM;
+      });
+
+      // First attempt fails, second succeeds
+      sourceRM.router.pipeToRouter = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("transient worker error"))
+        .mockResolvedValue({ pipeProducer: { id: "piped-1", on: vi.fn() } });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      await cluster.initialize();
+      await cluster.createWebRtcTransport(false); // creates distribution router
+
+      const producer = { id: "prod-1", on: vi.fn() };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await cluster.registerProducer(producer as any);
+
+      expect(sourceRM.router.pipeToRouter).toHaveBeenCalledTimes(2);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dist = (cluster as any).distributionRouters[0];
+      expect(dist.pipedProducerMap.get("prod-1")).toBe("piped-1");
+    });
+
+    it("throws from registerProducer when piping fails after all retries", async () => {
+      const { RouterManager } = await import("@src/domains/media/routerManager.js");
+      const { sourceRM, distRM } = setupClusterWithDistRouter();
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (RouterManager as any).mockImplementation(() => {
+        return callCount++ === 0 ? sourceRM : distRM;
+      });
+
+      sourceRM.router.pipeToRouter = vi
+        .fn()
+        .mockRejectedValue(new Error("persistent pipe failure"));
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      await cluster.initialize();
+      await cluster.createWebRtcTransport(false);
+
+      const producer = { id: "prod-1", on: vi.fn() };
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        cluster.registerProducer(producer as any),
+      ).rejects.toThrow("persistent pipe failure");
+      expect(sourceRM.router.pipeToRouter).toHaveBeenCalledTimes(3);
+    });
+
+    it("tears down a new distribution router when piping existing producers fails", async () => {
+      const { RouterManager } = await import("@src/domains/media/routerManager.js");
+      const { sourceRM, distRM } = setupClusterWithDistRouter();
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (RouterManager as any).mockImplementation(() => {
+        return callCount++ === 0 ? sourceRM : distRM;
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      await cluster.initialize();
+
+      // Register a producer BEFORE any distribution router exists
+      const producer = { id: "prod-1", on: vi.fn() };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await cluster.registerProducer(producer as any);
+
+      // New dist-router creation must pipe prod-1 — make that fail always
+      sourceRM.router.pipeToRouter = vi
+        .fn()
+        .mockRejectedValue(new Error("pipe failure"));
+
+      await expect(cluster.createWebRtcTransport(false)).rejects.toThrow(
+        "pipe failure",
+      );
+      expect(distRM.close).toHaveBeenCalled();
+      expect(workerManager.decrementRouterCount).toHaveBeenCalled();
+      // The broken router must NOT be visible to consumers
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((cluster as any).distributionRouters.length).toBe(0);
+    });
+
+    it("canConsume checks the router owning the given transport, not router[0]", async () => {
+      const { RouterManager } = await import("@src/domains/media/routerManager.js");
+      const sourceRM = createMockRouterManager();
+      const distRM = createMockRouterManager();
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (RouterManager as any).mockImplementation(() => {
+        return callCount++ === 0 ? sourceRM : distRM;
+      });
+
+      sourceRM.router.pipeToRouter = vi
+        .fn()
+        .mockResolvedValue({ pipeProducer: { id: "piped-1", on: vi.fn() } });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      await cluster.initialize();
+      const transport = await cluster.createWebRtcTransport(false);
+
+      const producer = { id: "prod-1", on: vi.fn() };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await cluster.registerProducer(producer as any);
+
+      // Known transport on a router with the producer piped → true
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(cluster.canConsume(transport.id, "prod-1", {} as any)).toBe(true);
+      // Unknown transport → false (no router[0] fallback false-positive)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(cluster.canConsume("no-such-transport", "prod-1", {} as any)).toBe(
+        false,
+      );
+      // Producer never piped → false
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(cluster.canConsume(transport.id, "prod-other", {} as any)).toBe(
+        false,
+      );
+    });
+  });
+
   describe("cleanup", () => {
     it("stops active speaker detector on close", async () => {
       const { RouterManager } = await import("@src/domains/media/routerManager.js");

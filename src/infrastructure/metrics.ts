@@ -156,6 +156,28 @@ export const metrics = {
     labelNames: ["result"] as const, // success | failure
     registers: [metricsRegistry],
   }),
+
+  // Source→distribution router piping inside one instance. A failure here
+  // means a speaker is inaudible to every listener on that distribution
+  // router while listeners on other routers hear him fine — the exact
+  // asymmetric-audibility bug from the 2026-07-10 audio review. failure is
+  // the post-retry outcome (setup now retries then throws), so alarm on ANY.
+  distPipeSetup: new Counter({
+    name: "flylive_dist_pipe_setup_total",
+    help: "Source→distribution router pipe attempts (post-retry outcome)",
+    labelNames: ["result"] as const, // success | failure
+    registers: [metricsRegistry],
+  }),
+
+  // Origin→edge piping when a relayed audio:newProducer reaches an edge.
+  // A failure suppresses the producer announcement on that edge — its
+  // listeners never learn the speaker exists. Alarm on ANY failure.
+  edgePipeSetup: new Counter({
+    name: "flylive_edge_pipe_setup_total",
+    help: "Origin→edge producer pipe attempts (post-retry outcome)",
+    labelNames: ["result"] as const, // success | failure
+    registers: [metricsRegistry],
+  }),
 };
 
 /**
