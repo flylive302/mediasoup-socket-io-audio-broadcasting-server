@@ -59,11 +59,21 @@ groups:
       # every inbound realtime event (event-router.ts). A sustained failed-share
       # >5% means live balance / gift-number / slide updates are not reaching
       # clients — the exact realtime-bridge canary CloudWatch used to guard.
+      # NoData-proof (2026-07-11): when ZERO failed events exist in the window
+      # the numerator series are absent → the division returns "No data" →
+      # Grafana-managed rules fire DatasourceNoData. `or denominator*0`
+      # substitutes an explicit 0 per region so healthy == 0%, not NoData.
+      # If managed in the Grafana Cloud UI, ALSO set "Alert state if no data"
+      # to OK — data absence is MSABRegionZeroHealthyTargets/ScrapeAbsent's job.
       - alert: MSABEventFanoutFailureRate
         expr: |
-          sum by (region) (rate(flylive_laravel_events_received_total{delivered=~"false|rejected"}[5m]))
+          (
+            sum by (region) (rate(flylive_laravel_events_received_total{delivered=~"false|rejected"}[5m]))
+              or
+            sum by (region) (rate(flylive_laravel_events_received_total[5m])) * 0
+          )
             /
-          sum by (region) (rate(flylive_laravel_events_received_total[5m]))
+          clamp_min(sum by (region) (rate(flylive_laravel_events_received_total[5m])), 0.0001)
             > 0.05
         for: 5m
         labels:
@@ -87,9 +97,18 @@ groups:
       - alert: MSABAudioPipeSetupFailures
         # __name__ regex: one union selector — per-metric `or`/`+` breaks when a
         # counter has no samples yet (prom-client emits nothing until first inc).
+        # NoData-proof: failure series don't exist until the FIRST failure, so
+        # `or success*0` keeps the rule evaluating 0 instead of NoData. If
+        # managed in the Grafana Cloud UI, also set "Alert state if no data" = OK.
         expr: |
-          sum by (region) (
-            rate({__name__=~"flylive_(dist|reverse|edge)_pipe_setup_total", result="failure"}[5m])
+          (
+            sum by (region) (
+              rate({__name__=~"flylive_(dist|reverse|edge)_pipe_setup_total", result="failure"}[5m])
+            )
+              or
+            sum by (region) (
+              rate({__name__=~"flylive_(dist|reverse|edge)_pipe_setup_total"}[5m])
+            ) * 0
           ) > 0
         for: 2m
         labels:
