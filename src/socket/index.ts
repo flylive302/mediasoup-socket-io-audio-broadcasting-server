@@ -132,6 +132,8 @@ export async function initializeSocket(
       roomManager.getRoom(roomId)
         ? roomManager.closeRoom(roomId, reason)
         : Promise.resolve(),
+    // room-seat-caps/02: shrink-eviction path (producer close + seat:cleared/seat:evicted).
+    roomManager,
   );
 
 

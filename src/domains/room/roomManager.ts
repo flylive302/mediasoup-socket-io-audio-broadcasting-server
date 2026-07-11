@@ -17,6 +17,8 @@ import type { PresenceTracker } from "./presence-tracker.js";
 import type { StatusCoalescer } from "./status-coalescer.js";
 import type { RoomModeService } from "./mode/room-mode.service.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import type { ClientManager } from "@src/client/clientManager.js";
+import { evictShrunkSeats } from "./seat-shrink-eviction.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -258,6 +260,29 @@ export class RoomManager {
         "Seat reservation expired — released via heartbeat sweep",
       );
     }
+  }
+
+  /**
+   * room-seat-caps/02: evict every occupied seat >= newSeatCount after a live
+   * shrink (room.updated sync). Delegates to seat-shrink-eviction.ts for the
+   * atomic clear + producer-close + broadcast/targeted-emit sequence; no-ops
+   * if seat persistence isn't wired (mirrors sweepExpiredSeatReservations).
+   */
+  async evictShrunkSeats(
+    roomId: string,
+    newSeatCount: number,
+    clientManager: ClientManager,
+  ): Promise<void> {
+    if (!this.seatRepository) return;
+    await evictShrunkSeats({
+      roomId,
+      newSeatCount,
+      io: this.io,
+      cascadeRelay: this.cascadeRelay,
+      seatRepository: this.seatRepository,
+      clientManager,
+      getRoom: (id) => this.getRoom(id),
+    });
   }
 
   /** Stop the ownership heartbeat — called during graceful shutdown. */

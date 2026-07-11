@@ -58,6 +58,11 @@ const configSchema = z.object({
   MEDIASOUP_RTC_MAX_PORT: z.coerce.number().default(59999),
 
   // Limits
+  // room-seat-caps/01: single source of truth for the maximum seats a room can
+  // grow to. Laravel validates seat-count changes against this same ceiling;
+  // MSAB trusts backend-validated values within it (Lua seat-index bounds key
+  // off RoomState.seatCount, kept in sync via syncRoomSettings in event-router).
+  MAX_SEAT_COUNT: z.coerce.number().int().positive().default(30),
   MAX_ROOMS_PER_WORKER: z.coerce.number().default(100),
   MAX_LISTENERS_PER_DISTRIBUTION_ROUTER: z.coerce.number().default(700),
   // realtime-12: presentation-only cap on how many Speakers are surfaced as

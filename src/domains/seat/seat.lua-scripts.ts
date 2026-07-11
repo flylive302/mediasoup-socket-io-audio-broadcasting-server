@@ -317,6 +317,44 @@ export const SWEEP_EXPIRED_SEATS_SCRIPT = `
 `;
 
 // ─────────────────────────────────────────────────────────────────
+// room-seat-caps/02: Seat Eviction (shrink)
+// ─────────────────────────────────────────────────────────────────
+
+// Atomically clear every occupied seat whose index is >= the room's new
+// (lowered) seatCount. Mirrors SWEEP_EXPIRED_SEATS_SCRIPT's shape: a bounded
+// HGETALL scan, HDEL the seat, DEL the user's reverse index, and return
+// {index,userId} pairs so the caller can close each displaced user's producer
+// and broadcast/target exactly once per evicted seat.
+//
+// NOTE — this script itself is atomic, but it is invoked as a SEPARATE
+// EVALSHA from the RoomState.seatCount save that precedes it (seatCount and
+// the seats hash live under different Redis keys). A take-seat that read the
+// stale (higher) seatCount just before the save can still land a HSET at an
+// index >= the new count AFTER this scan runs, leaving a ghost this pass
+// does not catch. See seat-shrink-eviction.ts for the full analysis.
+export const SHRINK_EVICT_SCRIPT = `
+  local seatsKey = KEYS[1]
+  local userSeatPrefix = ARGV[1]
+  local newSeatCount = tonumber(ARGV[2])
+
+  local evicted = {}
+  local all = redis.call('HGETALL', seatsKey)
+  for i = 1, #all, 2 do
+    local idx = all[i]
+    local idxNum = tonumber(idx)
+    if idxNum >= newSeatCount then
+      local ok, data = pcall(cjson.decode, all[i + 1])
+      if ok then
+        redis.call('HDEL', seatsKey, idx)
+        redis.call('DEL', userSeatPrefix .. tostring(data.userId))
+        table.insert(evicted, { idxNum, tonumber(data.userId) })
+      end
+    end
+  end
+  return cjson.encode(evicted)
+`;
+
+// ─────────────────────────────────────────────────────────────────
 // Registration
 // ─────────────────────────────────────────────────────────────────
 
@@ -363,6 +401,11 @@ export function registerSeatCommands(redis: Redis): void {
     numberOfKeys: 1,
     lua: SWEEP_EXPIRED_SEATS_SCRIPT,
   });
+  // room-seat-caps/02: Seat Eviction (shrink)
+  redis.defineCommand("seatEvictShrink", {
+    numberOfKeys: 1,
+    lua: SHRINK_EVICT_SCRIPT,
+  });
 }
 
 /**
@@ -380,4 +423,6 @@ export interface RedisWithSeatCommands {
   seatReserve(...args: string[]): Promise<string>;
   seatReclaim(...args: string[]): Promise<string>;
   seatSweepExpired(...args: string[]): Promise<string>;
+  // room-seat-caps/02: Seat Eviction (shrink)
+  seatEvictShrink(...args: string[]): Promise<string>;
 }

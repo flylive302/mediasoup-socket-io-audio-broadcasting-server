@@ -8,6 +8,7 @@ vi.mock("@src/config/index.js", () => ({
     PUBLIC_IP: "",
     PORT: 3030,
     LOG_LEVEL: "silent",
+    MAX_SEAT_COUNT: 30,
   },
   isDev: false,
 }));
@@ -33,7 +34,23 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
 
 import { EventRouter } from "@src/integrations/laravel/event-router.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { RELAY_EVENTS } from "@src/integrations/laravel/types.js";
 import type { LaravelEvent } from "@src/integrations/laravel/types.js";
+
+// Helper: create a mock RoomStateRepository
+function createMockRoomStateRepo(seatCount = 15) {
+  const state = { roomId: "99", seatCount };
+  return {
+    get: vi.fn().mockResolvedValue(state),
+    save: vi.fn().mockResolvedValue(undefined),
+  } as any;
+}
+
+// Flush the microtask queue so fire-and-forget promise chains (REACT-style,
+// not awaited by route()) settle before assertions run.
+function flushPromises() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 // Helper: create a mock Socket.IO server
 function createMockIO() {
@@ -323,6 +340,148 @@ describe("EventRouter", () => {
       const result = await router.route(event);
 
       expect(result.delivered).toBe(true);
+    });
+  });
+
+  // ─── room-seat-caps/01: syncRoomSettings maxSeats bound ────────
+
+  describe("syncRoomSettings maxSeats bound (room-seat-caps/01)", () => {
+    function routeRoomUpdated(
+      roomStateRepo: ReturnType<typeof createMockRoomStateRepo>,
+      maxSeats: unknown,
+    ) {
+      const localRouter = new EventRouter(
+        io,
+        repo,
+        clientManager,
+        logger,
+        undefined as any, // redis — unused by syncRoomSettings itself
+        roomStateRepo,
+      );
+      const event = createEvent({
+        event: RELAY_EVENTS.room.ROOM_UPDATED,
+        user_id: null,
+        room_id: 99,
+        payload: { room: { max_seats: maxSeats } },
+      });
+      return localRouter.route(event);
+    }
+
+    it.each([16, 20, 25, 30])(
+      "accepts a grown maxSeats of %i and syncs seatCount",
+      async (maxSeats) => {
+        const roomStateRepo = createMockRoomStateRepo(15);
+
+        await routeRoomUpdated(roomStateRepo, maxSeats);
+        await flushPromises();
+
+        expect(roomStateRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({ seatCount: maxSeats }),
+        );
+      },
+    );
+
+    it.each([31, 0, "20", null, undefined])(
+      "rejects an out-of-bounds/non-numeric maxSeats of %o",
+      async (maxSeats) => {
+        const roomStateRepo = createMockRoomStateRepo(15);
+
+        await routeRoomUpdated(roomStateRepo, maxSeats);
+        await flushPromises();
+
+        expect(roomStateRepo.save).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ roomId: "99", maxSeats }),
+          "Rejected out-of-bounds maxSeats from room.updated",
+        );
+      },
+    );
+  });
+
+  // ─── room-seat-caps/02: shrink eviction wiring ─────────────────
+  describe("syncRoomSettings shrink eviction (room-seat-caps/02)", () => {
+    function createMockRoomManager() {
+      return { evictShrunkSeats: vi.fn().mockResolvedValue(undefined) } as any;
+    }
+
+    function routeRoomUpdated(
+      roomStateRepo: ReturnType<typeof createMockRoomStateRepo>,
+      roomManager: ReturnType<typeof createMockRoomManager> | undefined,
+      maxSeats: number,
+    ) {
+      const localRouter = new EventRouter(
+        io,
+        repo,
+        clientManager,
+        logger,
+        undefined as any,
+        roomStateRepo,
+        undefined,
+        roomManager,
+      );
+      const event = createEvent({
+        event: RELAY_EVENTS.room.ROOM_UPDATED,
+        user_id: null,
+        room_id: 99,
+        payload: { room: { max_seats: maxSeats } },
+      });
+      return localRouter.route(event);
+    }
+
+    it("calls roomManager.evictShrunkSeats when maxSeats is LOWER than the current seatCount", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+      const roomManager = createMockRoomManager();
+
+      await routeRoomUpdated(roomStateRepo, roomManager, 10);
+      await flushPromises();
+
+      expect(roomManager.evictShrunkSeats).toHaveBeenCalledWith("99", 10, clientManager);
+    });
+
+    it("never calls evictShrunkSeats when maxSeats is HIGHER (grow path emits no eviction)", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+      const roomManager = createMockRoomManager();
+
+      await routeRoomUpdated(roomStateRepo, roomManager, 20);
+      await flushPromises();
+
+      expect(roomManager.evictShrunkSeats).not.toHaveBeenCalled();
+    });
+
+    it("never calls evictShrunkSeats when maxSeats is unchanged", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+      const roomManager = createMockRoomManager();
+
+      await routeRoomUpdated(roomStateRepo, roomManager, 15);
+      await flushPromises();
+
+      expect(roomManager.evictShrunkSeats).not.toHaveBeenCalled();
+    });
+
+    it("still saves the shrunk seatCount when roomManager is unset (no eviction, no throw)", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+
+      await routeRoomUpdated(roomStateRepo, undefined, 10);
+      await flushPromises();
+
+      expect(roomStateRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ seatCount: 10 }),
+      );
+    });
+
+    it("logs a warning (never throws) when eviction rejects", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+      const roomManager = {
+        evictShrunkSeats: vi.fn().mockRejectedValue(new Error("redis down")),
+      } as any;
+
+      await routeRoomUpdated(roomStateRepo, roomManager, 10);
+      await flushPromises();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ roomId: "99", newSeatCount: 10 }),
+        "Failed to evict shrunk seats",
+      );
     });
   });
 });

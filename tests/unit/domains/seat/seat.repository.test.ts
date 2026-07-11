@@ -70,7 +70,9 @@ describe("SeatRepository", () => {
       expect(redis.defineCommand).toHaveBeenCalledWith("seatReserve", expect.objectContaining({ numberOfKeys: 1 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatReclaim", expect.objectContaining({ numberOfKeys: 2 }));
       expect(redis.defineCommand).toHaveBeenCalledWith("seatSweepExpired", expect.objectContaining({ numberOfKeys: 1 }));
-      expect(redis.defineCommand).toHaveBeenCalledTimes(9);
+      // room-seat-caps/02: Seat Eviction (shrink)
+      expect(redis.defineCommand).toHaveBeenCalledWith("seatEvictShrink", expect.objectContaining({ numberOfKeys: 1 }));
+      expect(redis.defineCommand).toHaveBeenCalledTimes(10);
     });
   });
 

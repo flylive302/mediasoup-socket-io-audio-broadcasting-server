@@ -22,6 +22,7 @@ import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { config } from "@src/config/index.js";
+import type { RoomManager } from "@src/domains/room/roomManager.js";
 
 /** Payload for auth.force_disconnect relay event */
 interface ForceDisconnectPayload {
@@ -51,6 +52,13 @@ export class EventRouter {
       roomId: string,
       reason: string,
     ) => Promise<void>,
+    /**
+     * room-seat-caps/02: source of the shrink-eviction path (producer close +
+     * seat:cleared/seat:evicted). Optional so existing unit tests that
+     * construct EventRouter without it keep passing — syncRoomSettings simply
+     * skips eviction (still updates seatCount) when unset.
+     */
+    private readonly roomManager?: RoomManager,
   ) {
     this.activeAppSlides = new ActiveAppSlidesRepository(this.redis);
   }
@@ -408,26 +416,57 @@ export class EventRouter {
 
     const room = payload.room as { max_seats?: number } | undefined;
     const maxSeats = room?.max_seats;
-    if (typeof maxSeats !== "number" || maxSeats < 1 || maxSeats > 15) return;
+    if (
+      typeof maxSeats !== "number" ||
+      maxSeats < 1 ||
+      maxSeats > config.MAX_SEAT_COUNT
+    ) {
+      this.logger.warn(
+        { roomId, maxSeats, max: config.MAX_SEAT_COUNT },
+        "Rejected out-of-bounds maxSeats from room.updated",
+      );
+      return;
+    }
 
     this.roomStateRepo
       .get(roomId)
-      .then((state) => {
+      .then(async (state) => {
         if (!state || state.seatCount === maxSeats) return;
+        const previousSeatCount = state.seatCount;
         state.seatCount = maxSeats;
-        return this.roomStateRepo!.save(state);
-      })
-      .then(() => {
+        await this.roomStateRepo!.save(state);
+
         this.logger.info(
           { roomId, maxSeats },
           "Room seatCount synced from room.updated",
         );
+
+        // room-seat-caps/02: shrink only — evict displaced occupants. Grow
+        // (maxSeats > previousSeatCount) never evicts, never emits.
+        if (this.roomManager && maxSeats < previousSeatCount) {
+          this.evictShrunkSeats(roomId, maxSeats);
+        }
       })
       .catch((err) => {
         // Non-blocking — seatCount sync failure should not break event routing
         this.logger.warn(
           { err, roomId },
           "Failed to sync room seatCount from room.updated",
+        );
+      });
+  }
+
+  /**
+   * REACT: fire-and-forget shrink eviction, kept off the syncRoomSettings
+   * promise chain so a slow eviction never delays the room.updated ack.
+   */
+  private evictShrunkSeats(roomId: string, newSeatCount: number): void {
+    this.roomManager!
+      .evictShrunkSeats(roomId, newSeatCount, this.clientManager)
+      .catch((err) => {
+        this.logger.warn(
+          { err, roomId, newSeatCount },
+          "Failed to evict shrunk seats",
         );
       });
   }

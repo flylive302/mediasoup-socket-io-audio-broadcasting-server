@@ -308,6 +308,37 @@ export class SeatRepository {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // room-seat-caps/02: Seat Eviction (shrink)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Atomically clear every occupied seat at index >= newSeatCount (SHRINK_EVICT_SCRIPT).
+   * Returns the {seatIndex,userId} pairs so the caller can close each
+   * displaced user's producer and emit exactly once per evicted seat.
+   */
+  async evictSeatsAboveCount(
+    roomId: string,
+    newSeatCount: number,
+  ): Promise<{ seatIndex: number; userId: number }[]> {
+    try {
+      const result = (await (this.redis as never as RedisWithSeatCommands).seatEvictShrink(
+        SEATS_KEY(roomId),
+        `room:${roomId}:seat:user:`,
+        newSeatCount.toString(),
+      )) as string;
+      const parsed = JSON.parse(result) as unknown;
+      if (!Array.isArray(parsed)) return []; // cjson encodes an empty table as {}
+      return (parsed as [number, number][]).map(([seatIndex, userId]) => ({
+        seatIndex,
+        userId,
+      }));
+    } catch (err) {
+      logger.error({ err, roomId, newSeatCount }, "Failed to evict shrunk seats");
+      return [];
+    }
+  }
+
   /**
    * Get all seats for a room
    */
