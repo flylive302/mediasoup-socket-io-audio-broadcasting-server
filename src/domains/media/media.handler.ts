@@ -348,6 +348,33 @@ const selfUnmuteHandler = createHandler(
     // realtime-09: a resumed producer (re)enters the broadcast mix.
     context.broadcastController.onSpeakerChange(roomId);
 
+    // Reverse-pipe self-heal (long-mute audio loss): on an edge, the reverse
+    // pipe to origin is built once at audio:produce and has no liveness
+    // monitor. If it died or never finalized during a long mute, resume alone
+    // leaves cross-instance listeners silent. setupReversePipe is idempotent
+    // (healthy cached entry → no-op), so re-kick it fire-and-forget here.
+    const coordinator = context.cascadeCoordinator;
+    if (coordinator?.isEdgeRoom(roomId) && cluster) {
+      void retryAsync(
+        () => coordinator.setupReversePipe(roomId, producer, cluster, socket.data.user.id),
+        { attempts: 3, baseDelayMs: 500, accept: (r) => Boolean(r) },
+      )
+        .then((result) => {
+          if (!result) {
+            logger.warn(
+              { roomId, producerId, userId: socket.data.user.id },
+              "selfUnmute reverse-pipe self-heal failed after retries — cross-instance listeners may stay silent",
+            );
+          }
+        })
+        .catch((err) => {
+          logger.error(
+            { err, roomId, producerId },
+            "selfUnmute reverse-pipe self-heal threw after retries",
+          );
+        });
+    }
+
     return { success: true };
   },
 );
