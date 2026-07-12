@@ -23,6 +23,11 @@ import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { config } from "@src/config/index.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
+import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js";
+import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
+import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
+import type { UserRoomRepository } from "./user-room.repository.js";
+import { ejectRoomMember } from "@src/domains/room/ejectRoomMember.js";
 
 /** Payload for auth.force_disconnect relay event */
 interface ForceDisconnectPayload {
@@ -34,6 +39,8 @@ interface ForceDisconnectPayload {
 export class EventRouter {
   /** Records app-scope slides so late joiners can replay them (see room:join). */
   private readonly activeAppSlides: ActiveAppSlidesRepository;
+  /** ADR 0017 / room-blocks 03: Redis mirror of the Laravel block gate. */
+  private readonly roomBlockRepo: RoomBlockRepository;
 
   constructor(
     private readonly io: Server,
@@ -59,8 +66,19 @@ export class EventRouter {
      * skips eviction (still updates seatCount) when unset.
      */
     private readonly roomManager?: RoomManager,
+    /**
+     * room-blocks/02 (ADR 0017): ejection machinery deps, driven by the
+     * `room.member_removed` fanout instead of a direct client `room:kick`
+     * emit. Optional so existing unit tests that construct EventRouter
+     * without them keep passing — ejectMemberOnBlock simply no-ops (the
+     * client still self-ejects on room.member_removed) when unset.
+     */
+    private readonly seatRepository?: SeatRepository,
+    private readonly statusCoalescer?: StatusCoalescer,
+    private readonly userRoomRepository?: UserRoomRepository,
   ) {
     this.activeAppSlides = new ActiveAppSlidesRepository(this.redis);
+    this.roomBlockRepo = new RoomBlockRepository(this.redis, this.logger);
   }
 
   /**
@@ -249,6 +267,43 @@ export class EventRouter {
           .catch((err) =>
             this.logger.warn({ err }, "Failed to record active app slide"),
           );
+      }
+
+      // REACT: mirror a block into Redis so room:join's GATE can reject the
+      // direct-socket bypass without hitting Laravel. Fire-and-forget — a
+      // failed mirror write degrades to fail-open (Laravel's HTTP gate stays
+      // authoritative), never blocks event routing.
+      if (event.event === RELAY_EVENTS.room.ROOM_MEMBER_REMOVED) {
+        this.mirrorRoomBlock(event.payload);
+      }
+
+      // REACT: unified kick path (ADR 0017, room-blocks/02) — ejection
+      // machinery previously in the retired `room:kick` socket handler, now
+      // driven by this fanout ingest. Fire-and-forget: the client also
+      // self-ejects (leaveRoom + navigate) on room.member_removed, so a
+      // failed/slow ejection here degrades to eventual consistency, never
+      // blocks event routing.
+      // Laravel emits this event twice (user-targeted and room-broadcast),
+      // and each envelope carries only ONE of user_id/room_id — both ids
+      // live in the payload. Gate on the room-broadcast copy so the
+      // ejection runs exactly once per kick.
+      if (
+        event.event === RELAY_EVENTS.room.ROOM_MEMBER_REMOVED &&
+        event.room_id !== null
+      ) {
+        const removed = event.payload as {
+          room_id?: number | string;
+          user_id?: number;
+        };
+        if (removed.user_id != null) {
+          this.ejectMemberOnBlock(String(event.room_id), removed.user_id);
+        }
+      }
+
+      // REACT: mirror an unblock — delete the Redis key so a natural rejoin
+      // succeeds immediately with no residual friction.
+      if (event.event === RELAY_EVENTS.room.ROOM_USER_UNBLOCKED) {
+        this.mirrorRoomUnblock(event.payload);
       }
 
       return result;
@@ -493,6 +548,87 @@ export class EventRouter {
           "Failed to write user revocation key — user may reconnect with old JWT",
         );
       });
+  }
+
+  /**
+   * ADR 0017 / room-blocks 03: write the Redis block-gate mirror from a
+   * `room.member_removed` fanout payload. `remaining_seconds` null/absent
+   * (permanent flag set) writes with no TTL; otherwise `EX remaining_seconds`
+   * so the key self-expires with no cleanup action.
+   */
+  private mirrorRoomBlock(payload: Record<string, unknown>): void {
+    const roomId = payload.room_id;
+    const userId = payload.user_id;
+    if (typeof roomId !== "number" && typeof roomId !== "string") return;
+    if (typeof userId !== "number") return;
+
+    const permanent = payload.permanent === true;
+    const remainingSeconds =
+      typeof payload.remaining_seconds === "number"
+        ? payload.remaining_seconds
+        : null;
+
+    this.roomBlockRepo
+      .writeBlock(String(roomId), userId, permanent ? null : remainingSeconds)
+      .catch((err) =>
+        this.logger.warn(
+          { err, roomId, userId },
+          "Failed to mirror room block into Redis",
+        ),
+      );
+  }
+
+  /**
+   * ADR 0017 / room-blocks 03: delete the Redis block-gate mirror from a
+   * `room.user_unblocked` fanout payload.
+   */
+  private mirrorRoomUnblock(payload: Record<string, unknown>): void {
+    const roomId = payload.room_id;
+    const userId = payload.user_id;
+    if (typeof roomId !== "number" && typeof roomId !== "string") return;
+    if (typeof userId !== "number") return;
+
+    this.roomBlockRepo
+      .deleteBlock(String(roomId), userId)
+      .catch((err) =>
+        this.logger.warn(
+          { err, roomId, userId },
+          "Failed to delete room block Redis mirror",
+        ),
+      );
+  }
+
+  /**
+   * ADR 0017 / room-blocks 02: run the ejection machinery (seat clear,
+   * force socket.leave, participant count + Laravel status update) for a
+   * user just blocked via the unified kick path. No-ops when the optional
+   * ejection deps weren't supplied (e.g. unit tests constructing EventRouter
+   * without them) — the client's own self-eject on room.member_removed still
+   * covers ejection in that case.
+   */
+  private ejectMemberOnBlock(roomId: string, userId: number): void {
+    if (!this.seatRepository || !this.roomStateRepo || !this.statusCoalescer || !this.userRoomRepository) {
+      return;
+    }
+
+    ejectRoomMember(
+      {
+        io: this.io,
+        seatRepository: this.seatRepository,
+        clientManager: this.clientManager,
+        roomStateRepo: this.roomStateRepo,
+        statusCoalescer: this.statusCoalescer,
+        userRoomRepository: this.userRoomRepository,
+        logger: this.logger,
+      },
+      roomId,
+      userId,
+    ).catch((err) =>
+      this.logger.warn(
+        { err, roomId, userId },
+        "Failed to eject room member on block",
+      ),
+    );
   }
 
   /**

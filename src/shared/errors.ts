@@ -16,6 +16,12 @@ export const Errors = {
   ROOM_CLOSED: "Room is closed",
   MUSIC_ALREADY_PLAYING: "Music is already playing in this room",
   KICK_FAILED: "Failed to kick user",
+  /**
+   * Machine-readable code (not a display message) — ADR 0017 / room-blocks
+   * 03. FE maps this to the same "blocked for another X" feedback used by
+   * the HTTP join gate's `user_blocked` error code.
+   */
+  ROOM_BLOCKED: "room_blocked",
 
   // Seat
   SEAT_TAKEN: "Seat is already taken",

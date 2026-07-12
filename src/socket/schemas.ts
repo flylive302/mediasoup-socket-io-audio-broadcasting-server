@@ -169,10 +169,8 @@ export const leaveRoomSchema = z.object({
   roomId: roomIdSchema,
 });
 
-export const roomKickSchema = z.object({
-  roomId: roomIdSchema,
-  userId: z.number().int().positive(),
-});
+// room:kick retired (ADR 0017, unified kick path) — see roomBlockSchema-style
+// duration-based blocking on the Laravel HTTP side; roomKickSchema removed.
 
 // ─────────────────────────────────────────────────────────────────
 // Chat Schemas

@@ -17,12 +17,35 @@ import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { performRoomLeave } from "@src/domains/room/room-leave.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
+import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js";
+import { Errors } from "@src/shared/errors.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { z } from "zod";
 
 type JoinPayload = z.input<typeof joinRoomSchema>;
+
+// ── GATE ─────────────────────────────────────────────────────
+/**
+ * ADR 0017 / room-blocks 03: single Redis `TTL` read on the mirror written
+ * by the Laravel block/unblock fanout. Pure w.r.t. the caller (no mutation)
+ * — non-blocked joins pay exactly this one extra read; blocked joins are
+ * rejected before any cluster/seat work runs, carrying remaining-time
+ * feedback (the same read that proves existence also yields the TTL, so
+ * this stays a single round trip). A Redis failure fails OPEN
+ * (RoomBlockRepository.getStatus already degrades to "not blocked") so a
+ * mirror outage never locks a legitimate joiner out — Laravel's HTTP gate
+ * remains authoritative.
+ */
+async function getJoinBlockStatus(
+  roomId: string,
+  userId: number,
+  context: AppContext,
+): Promise<{ blocked: boolean; permanent: boolean; remainingSeconds: number | null }> {
+  const roomBlockRepo = new RoomBlockRepository(context.redis, logger);
+  return roomBlockRepo.getStatus(roomId, userId);
+}
 
 /**
  * Resolve the local mediasoup cluster that will serve this join — origin (CAS
@@ -568,6 +591,22 @@ export const joinRoomHandler = createHandler(
   "room:join",
   joinRoomSchema,
   async (payload, socket, context): Promise<HandlerResult> => {
+    // GATE
+    const userId = socket.data.user.id;
+    const blockStatus = await getJoinBlockStatus(payload.roomId, userId, context);
+    if (blockStatus.blocked) {
+      logger.info(
+        { roomId: payload.roomId, userId, ...blockStatus },
+        "room:join rejected — user blocked (Redis mirror)",
+      );
+      return {
+        success: false,
+        error: Errors.ROOM_BLOCKED,
+        permanent: blockStatus.permanent,
+        remaining_seconds: blockStatus.remainingSeconds,
+      } as HandlerResult;
+    }
+
     // EXECUTE
     const result = await processJoin(payload, socket, context);
 

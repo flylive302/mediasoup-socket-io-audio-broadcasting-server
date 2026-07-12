@@ -134,6 +134,11 @@ export async function initializeSocket(
         : Promise.resolve(),
     // room-seat-caps/02: shrink-eviction path (producer close + seat:cleared/seat:evicted).
     roomManager,
+    // room-blocks/02 (ADR 0017): ejection machinery deps for the unified kick
+    // path — driven by the room.member_removed fanout instead of room:kick.
+    seatRepository,
+    statusCoalescer,
+    userRoomRepository,
   );
 
 
