@@ -55,7 +55,7 @@ export const removeSeatHandler = createHandler(
         socket,
         roomId,
         "seat:cleared",
-        { seatIndex, userId: targetUserId },
+        { seatIndex, userId: targetUserId, reason: "removed" },
         context.cascadeRelay,
       );
     }
