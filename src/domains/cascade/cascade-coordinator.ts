@@ -81,7 +81,7 @@ export class CascadeCoordinator {
   async fetchAndPipeExistingProducers(
     roomId: string,
     cluster: RoomMediaCluster,
-  ): Promise<Array<{ producerId: string; userId: number }>> {
+  ): Promise<Array<{ producerId: string; userId: number; source: string }>> {
     if (!this.isEdgeRoom(roomId)) return [];
     return this.edgePipeLifecycle.fetchAndPipeExistingProducers(
       roomId,

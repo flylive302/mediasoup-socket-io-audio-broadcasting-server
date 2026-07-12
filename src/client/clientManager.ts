@@ -10,7 +10,10 @@ export interface ClientData {
   joinedAt: number;
   device?: object;
   // Mediasoup tracking
-  producers: Map<string, string>; // kind -> producerId
+  // dj-talk-over/01: keyed by `source` ("mic" | "music"), not mediasoup `kind`
+  // — both audio kinds are "audio", so keying by kind let a music producer
+  // silently overwrite the mic entry. Re-keyed so mic + music coexist.
+  producers: Map<string, string>; // source -> producerId
   consumers: Map<string, string>; // producerId -> consumerId
   transports: Map<string, string>; // transportId -> type
 }

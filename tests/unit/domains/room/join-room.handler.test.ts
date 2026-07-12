@@ -215,6 +215,74 @@ describe("joinRoomHandler", () => {
       expect(result.participants).toHaveLength(1);
       expect(result.participants[0]?.date_of_birth).toBe("1985-05-15");
     });
+
+    // dj-talk-over/01: existingProducers must list ALL of a client's
+    // producers (mic AND music), each tagged with `source` — not one per
+    // kind — so a joiner mid-music immediately hears both.
+    it("lists both mic and music producers for a client, each with source", async () => {
+      const remoteUser = makeUser({ id: 99 });
+      const ctx = createMockContext([
+        { id: "remote-1", data: { user: remoteUser } },
+      ]);
+      ctx.clientManager.getClientsInRoom = vi.fn().mockReturnValue([
+        {
+          socketId: "remote-1",
+          userId: 99,
+          isSpeaker: true,
+          producers: new Map([
+            ["mic", "prod-mic-99"],
+            ["music", "prod-music-99"],
+          ]),
+        },
+      ]);
+      ctx.io.sockets.sockets = new Map([["remote-1", { connected: true }]]);
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        existingProducers: Array<{ producerId: string; userId: number; source: string }>;
+      };
+      expect(result.existingProducers).toHaveLength(2);
+      expect(result.existingProducers).toEqual(
+        expect.arrayContaining([
+          { producerId: "prod-mic-99", userId: 99, source: "mic" },
+          { producerId: "prod-music-99", userId: 99, source: "music" },
+        ]),
+      );
+    });
+
+    // Compat: a producer tracked under a pre-feature key still surfaces —
+    // the registry itself defaults unset `source` to "mic" at produce time
+    // (schemas.test.ts), so any entry the join snapshot sees already carries
+    // a source key. This asserts the join-side plumbing doesn't drop it.
+    it("surfaces a single mic-only entry with source when no music is playing", async () => {
+      const remoteUser = makeUser({ id: 99 });
+      const ctx = createMockContext([
+        { id: "remote-1", data: { user: remoteUser } },
+      ]);
+      ctx.clientManager.getClientsInRoom = vi.fn().mockReturnValue([
+        {
+          socketId: "remote-1",
+          userId: 99,
+          isSpeaker: true,
+          producers: new Map([["mic", "prod-mic-99"]]),
+        },
+      ]);
+      ctx.io.sockets.sockets = new Map([["remote-1", { connected: true }]]);
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        existingProducers: Array<{ producerId: string; userId: number; source: string }>;
+      };
+      expect(result.existingProducers).toEqual([
+        { producerId: "prod-mic-99", userId: 99, source: "mic" },
+      ]);
+    });
   });
 
   // Ghost-cluster guard: a pre-existing local cluster must be backed by valid

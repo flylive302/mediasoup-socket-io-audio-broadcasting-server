@@ -143,6 +143,10 @@ export const audioProduceSchema = z.object({
   transportId: z.string().uuid(),
   kind: z.enum(["audio"]), // Only audio supported
   rtpParameters: rtpParametersSchema,
+  // dj-talk-over/01: purpose tag so mic + music coexist as separate producers
+  // per client. Compat: a produce without `source` (pre-feature clients)
+  // defaults to "mic" — matches all pre-feature traffic.
+  source: z.enum(["mic", "music"]).default("mic"),
 });
 
 export const audioConsumeSchema = z.object({

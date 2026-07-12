@@ -32,7 +32,7 @@ vi.mock("@src/domains/seat/seat.owner.js", () => ({
 
 import {
   audioPlayerHandler,
-  clearMusicPlayerOnDisconnect,
+  releaseMusicPlayerForUser,
 } from "@src/domains/audio-player/audio-player.handler.js";
 import { Errors } from "@src/shared/errors.js";
 
@@ -258,7 +258,7 @@ describe("audioPlayer:takeover — owner force-take", () => {
   });
 });
 
-describe("clearMusicPlayerOnDisconnect (unchanged)", () => {
+describe("releaseMusicPlayerForUser (renamed from clearMusicPlayerOnDisconnect — dj-talk-over/02, now shared by kick/seat-lock/shrink too)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -270,7 +270,7 @@ describe("clearMusicPlayerOnDisconnect (unchanged)", () => {
     } as any;
     const io = {} as any;
 
-    await clearMusicPlayerOnDisconnect(redis, io, "room-1", 10, null);
+    await releaseMusicPlayerForUser(redis, io, "room-1", 10, null);
 
     expect(redis.del).toHaveBeenCalledWith("room:room-1:musicPlayer");
     expect(redis.del).toHaveBeenCalledWith("room:room-1:musicState");
@@ -290,7 +290,7 @@ describe("clearMusicPlayerOnDisconnect (unchanged)", () => {
     } as any;
     const io = {} as any;
 
-    await clearMusicPlayerOnDisconnect(redis, io, "room-1", 10, null);
+    await releaseMusicPlayerForUser(redis, io, "room-1", 10, null);
 
     expect(redis.del).not.toHaveBeenCalled();
     expect(broadcastToRoomMock).not.toHaveBeenCalled();

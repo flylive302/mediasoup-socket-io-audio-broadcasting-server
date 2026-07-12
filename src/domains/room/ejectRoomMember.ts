@@ -11,13 +11,18 @@
  * update participant count/Laravel status, and notify remaining members.
  */
 import type { Server } from "socket.io";
+import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { UserRoomRepository } from "@src/integrations/laravel/user-room.repository.js";
+import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
+import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { config } from "@src/config/index.js";
+import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
+import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
 
 export interface EjectRoomMemberDeps {
   io: Server;
@@ -27,6 +32,15 @@ export interface EjectRoomMemberDeps {
   statusCoalescer: StatusCoalescer;
   userRoomRepository: UserRoomRepository;
   logger: Logger;
+  /**
+   * dj-talk-over/02: optional so existing callers/tests that construct these
+   * deps without media access keep passing — producer/music cleanup below
+   * simply no-ops when unset (the room's producers leak until the socket
+   * itself disconnects/leaves, same as before this slice).
+   */
+  redis?: Redis | undefined;
+  cascadeRelay?: CascadeRelay | null | undefined;
+  getRoom?: ((roomId: string) => RoomMediaCluster | undefined) | undefined;
 }
 
 export async function ejectRoomMember(
@@ -42,6 +56,9 @@ export async function ejectRoomMember(
     statusCoalescer,
     userRoomRepository,
     logger,
+    redis,
+    cascadeRelay,
+    getRoom,
   } = deps;
   const targetUserIdStr = String(targetUserId);
 
@@ -72,9 +89,25 @@ export async function ejectRoomMember(
 
     const localClient = clientManager.getClient(targetSocket.id);
     if (localClient) {
+      // dj-talk-over/02: close EVERY producer (mic + music) this ejected
+      // user holds BEFORE clearClientRoom wipes the tracking map — otherwise
+      // the underlying mediasoup producers keep flowing to the room after
+      // the user has been kicked. No-ops if media deps weren't supplied.
+      if (getRoom) {
+        closeAllUserProducers(localClient, targetUserId, roomId, getRoom(roomId), {
+          reason: "eject",
+        });
+      }
       clientManager.clearClientRoom(targetSocket.id);
       locallyEjected++;
     }
+  }
+
+  // dj-talk-over/02: a kicked DJ's music must not keep flowing — release the
+  // room's music mutex + broadcast stop if they held it (no-op otherwise).
+  // No-op if redis/cascadeRelay deps weren't supplied.
+  if (redis) {
+    await releaseMusicPlayerForUser(redis, io, roomId, targetUserId, cascadeRelay ?? null);
   }
 
   // 3. Update room state + Laravel status (coalesced) + clear cached room membership.

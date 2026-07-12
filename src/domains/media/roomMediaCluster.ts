@@ -242,9 +242,19 @@ export class RoomMediaCluster {
    * Used by /internal/room/:id/producers so an attaching edge can fetch the
    * speaker set on join and pipe each before serving listeners.
    */
-  getSourceProducers(): Array<{ producerId: string; userId: number; kind: mediasoup.types.MediaKind }> {
+  getSourceProducers(): Array<{
+    producerId: string;
+    userId: number;
+    kind: mediasoup.types.MediaKind;
+    source: string;
+  }> {
     if (!this.sourceRouter) return [];
-    const out: Array<{ producerId: string; userId: number; kind: mediasoup.types.MediaKind }> = [];
+    const out: Array<{
+      producerId: string;
+      userId: number;
+      kind: mediasoup.types.MediaKind;
+      source: string;
+    }> = [];
     for (const id of this.sourceProducerIds) {
       const p = this.sourceRouter.getProducer(id);
       if (p && !p.closed) {
@@ -252,6 +262,12 @@ export class RoomMediaCluster {
           producerId: p.id,
           userId: p.appData.userId as number,
           kind: p.kind,
+          // dj-talk-over/01: coerce to the two-value contract. appData.source
+          // is ALSO used pre-existing by the reverse-pipe path as a marker
+          // ("reverse-pipe", unrelated to mic/music) — anything that isn't
+          // explicitly "music" (undefined, "reverse-pipe", future markers)
+          // must read as "mic", never leak a third value to callers.
+          source: p.appData.source === "music" ? "music" : "mic",
         });
       }
     }

@@ -620,6 +620,11 @@ export class EventRouter {
         statusCoalescer: this.statusCoalescer,
         userRoomRepository: this.userRoomRepository,
         logger: this.logger,
+        // dj-talk-over/02: producer + music-mutex cleanup on kick — no-ops
+        // if roomManager wasn't supplied (mirrors the eviction-deps pattern).
+        redis: this.redis,
+        cascadeRelay: this.roomManager?.getCascadeRelay() ?? null,
+        getRoom: this.roomManager ? (id: string) => this.roomManager!.getRoom(id) : undefined,
       },
       roomId,
       userId,

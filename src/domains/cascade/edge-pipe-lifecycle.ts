@@ -39,7 +39,7 @@ export class EdgePipeLifecycle {
    */
   private readonly pendingBootstraps = new Map<
     string,
-    Promise<Array<{ producerId: string; userId: number }>>
+    Promise<Array<{ producerId: string; userId: number; source: string }>>
   >();
 
   private readonly originSnapshot: OriginSnapshot;
@@ -93,7 +93,7 @@ export class EdgePipeLifecycle {
   async fetchAndPipeExistingProducers(
     roomId: string,
     cluster: RoomMediaCluster,
-  ): Promise<Array<{ producerId: string; userId: number }>> {
+  ): Promise<Array<{ producerId: string; userId: number; source: string }>> {
     const existing = this.pendingBootstraps.get(roomId);
     if (existing) return existing;
 
@@ -325,7 +325,7 @@ export class EdgePipeLifecycle {
   private async runBootstrap(
     roomId: string,
     cluster: RoomMediaCluster,
-  ): Promise<Array<{ producerId: string; userId: number }>> {
+  ): Promise<Array<{ producerId: string; userId: number; source: string }>> {
     const originBaseUrl = this.originUrls.get(roomId);
     if (!originBaseUrl) return [];
 
@@ -335,12 +335,12 @@ export class EdgePipeLifecycle {
     const results = await Promise.all(
       list.map(async (entry) => {
         const edgeId = await this.requestPipeForProducer(roomId, entry.producerId, cluster);
-        return edgeId ? { producerId: edgeId, userId: entry.userId } : null;
+        return edgeId ? { producerId: edgeId, userId: entry.userId, source: entry.source } : null;
       }),
     );
 
     const successful = results.filter(
-      (r): r is { producerId: string; userId: number } => r !== null,
+      (r): r is { producerId: string; userId: number; source: string } => r !== null,
     );
 
     this.logger.info(

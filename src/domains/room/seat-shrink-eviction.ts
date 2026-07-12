@@ -26,17 +26,21 @@
  * Grow path never calls this module — no eviction, no events.
  */
 import type { Server as SocketServer } from "socket.io";
+import type { Redis } from "ioredis";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
+import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
 
 export interface EvictShrunkSeatsParams {
   roomId: string;
   newSeatCount: number;
   io: SocketServer;
+  redis: Redis;
   cascadeRelay: CascadeRelay | null;
   seatRepository: SeatRepository;
   clientManager: ClientManager;
@@ -45,18 +49,30 @@ export interface EvictShrunkSeatsParams {
 
 /**
  * EXECUTE + REACT: atomically clear seats >= newSeatCount, close each
- * displaced user's producer, and broadcast/target the resulting events.
- * Never throws — internal failures are logged and swallowed (REACT).
+ * displaced user's producers (mic + music), release the music mutex if they
+ * held it, and broadcast/target the resulting events. Never throws —
+ * internal failures are logged and swallowed (REACT).
  */
 export async function evictShrunkSeats(params: EvictShrunkSeatsParams): Promise<void> {
-  const { roomId, newSeatCount, io, cascadeRelay, seatRepository, clientManager, getRoom } =
+  const { roomId, newSeatCount, io, redis, cascadeRelay, seatRepository, clientManager, getRoom } =
     params;
 
   const evicted = await seatRepository.evictSeatsAboveCount(roomId, newSeatCount);
   if (evicted.length === 0) return;
 
   for (const { seatIndex, userId } of evicted) {
-    closeDisplacedProducer(roomId, userId, clientManager, getRoom);
+    const client = clientManager
+      .getClientsInRoom(roomId)
+      .find((c) => String(c.userId) === String(userId));
+    if (client) {
+      closeAllUserProducers(client, userId, roomId, getRoom(roomId), {
+        reason: "shrink-eviction",
+      });
+    }
+
+    // dj-talk-over/02: a shrink-evicted DJ's music must not keep flowing —
+    // release the mutex + broadcast stop if they held it (no-op otherwise).
+    await releaseMusicPlayerForUser(redis, io, roomId, userId, cascadeRelay);
 
     // Standard room-wide seat-cleared, tagged so the FE's own-seat toast/teardown
     // (which already fires on any seat:cleared for the current user) yields to
@@ -76,50 +92,4 @@ export async function evictShrunkSeats(params: EvictShrunkSeatsParams): Promise<
 
     logger.info({ roomId, seatIndex, userId, newSeatCount }, "Seat evicted on shrink");
   }
-}
-
-/**
- * Server-side producer close — mirrors seat:lock's kick path (lock-seat.handler.ts),
- * including the F-45 ownership guard: verify the producer still belongs to the
- * displaced user before closing (a rapid disconnect→reconnect→produce could
- * otherwise close a brand-new unrelated producer).
- */
-function closeDisplacedProducer(
-  roomId: string,
-  userId: number,
-  clientManager: ClientManager,
-  getRoom: (roomId: string) => RoomMediaCluster | undefined,
-): void {
-  const client = clientManager
-    .getClientsInRoom(roomId)
-    .find((c) => String(c.userId) === String(userId));
-  if (!client) return;
-
-  const audioProducerId = client.producers.get("audio");
-  if (!audioProducerId) return;
-
-  const room = getRoom(roomId);
-  const producer = room?.getProducer(audioProducerId);
-  if (producer && !producer.closed) {
-    if (producer.appData.userId === userId) {
-      producer.close();
-      logger.info(
-        { roomId, producerId: audioProducerId, userId },
-        "Producer closed (seat evicted on shrink)",
-      );
-    } else {
-      logger.warn(
-        {
-          roomId,
-          producerId: audioProducerId,
-          userId,
-          producerUserId: producer.appData.userId,
-        },
-        "Skipped producer close on shrink eviction — producer no longer owned by displaced user",
-      );
-    }
-  }
-
-  client.producers.delete("audio");
-  client.isSpeaker = client.producers.size > 0;
 }

@@ -132,16 +132,18 @@ describe("reactOnProducerClose", () => {
     expect(closeReversePipe).not.toHaveBeenCalled();
   });
 
-  it("removes the kind from client.producers and updates isSpeaker", () => {
+  it("removes the source from client.producers and updates isSpeaker", () => {
+    // dj-talk-over/01: registry is keyed by `source` ("mic" | "music"), not
+    // mediasoup `kind` — closing the mic producer must not touch music.
     const client = {
-      producers: new Map([["audio", "prod-1"], ["video", "prod-2"]]),
+      producers: new Map([["mic", "prod-1"], ["music", "prod-2"]]),
       isSpeaker: true,
     } as never;
 
     reactOnProducerClose(
       producer as unknown as import("mediasoup").types.Producer,
       client,
-      "audio",
+      "mic",
       false,
       createMockSocket(),
       "room-1",
@@ -150,21 +152,23 @@ describe("reactOnProducerClose", () => {
     producer._fire("transportclose");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((client as any).producers.has("audio")).toBe(false);
+    expect((client as any).producers.has("mic")).toBe(false);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((client as any).isSpeaker).toBe(true); // video producer still present
+    expect((client as any).producers.has("music")).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).isSpeaker).toBe(true); // music producer still present
   });
 
   it("sets isSpeaker=false when no producers remain", () => {
     const client = {
-      producers: new Map([["audio", "prod-1"]]),
+      producers: new Map([["mic", "prod-1"]]),
       isSpeaker: true,
     } as never;
 
     reactOnProducerClose(
       producer as unknown as import("mediasoup").types.Producer,
       client,
-      "audio",
+      "mic",
       false,
       createMockSocket(),
       "room-1",
@@ -174,5 +178,73 @@ describe("reactOnProducerClose", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((client as any).isSpeaker).toBe(false);
+  });
+});
+
+// ─── audioProduceHandler: source registry (dj-talk-over/01) ─────────
+
+describe("audio:produce — source registry", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function makeTransport() {
+    let n = 0;
+    return {
+      produce: vi.fn(async () => {
+        n += 1;
+        return createMockProducer(`prod-${n}`) as unknown as import("mediasoup").types.Producer;
+      }),
+    };
+  }
+
+  function makeContext(transport: ReturnType<typeof makeTransport>, client: {
+    producers: Map<string, string>;
+    isSpeaker: boolean;
+    userId: number;
+  }) {
+    const cluster = {
+      getTransport: vi.fn().mockReturnValue(transport),
+      audioObserver: null,
+      registerProducer: vi.fn().mockResolvedValue(undefined),
+    };
+    return {
+      roomManager: { getRoom: vi.fn().mockReturnValue(cluster) },
+      clientManager: { getClient: vi.fn().mockReturnValue(client) },
+      broadcastController: { onSpeakerChange: vi.fn(), isBroadcasting: () => false },
+      cascadeCoordinator: null,
+      cascadeRelay: null,
+    };
+  }
+
+  it("tracks mic then music as separate entries on the same client", async () => {
+    const { mediaHandler } = await import("@src/domains/media/media.handler.js");
+    const transport = makeTransport();
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client);
+    const socket = createMockSocket(7);
+
+    let produceHandler: ((payload: unknown) => Promise<unknown>) | undefined;
+    const socketWithOn = {
+      ...socket,
+      on: vi.fn((event: string, handler: (payload: unknown) => Promise<unknown>) => {
+        if (event === "audio:produce") produceHandler = handler;
+      }),
+    } as unknown as import("socket.io").Socket;
+
+    mediaHandler(socketWithOn, context as never);
+
+    const basePayload = {
+      roomId: "room-1",
+      transportId: "123e4567-e89b-12d3-a456-426614174001",
+      kind: "audio",
+      rtpParameters: { codecs: [] },
+    };
+
+    await produceHandler!({ ...basePayload, source: "mic" });
+    await produceHandler!({ ...basePayload, source: "music" });
+
+    expect(client.producers.size).toBe(2);
+    expect(client.producers.has("mic")).toBe(true);
+    expect(client.producers.has("music")).toBe(true);
+    expect(client.producers.get("mic")).not.toBe(client.producers.get("music"));
   });
 });

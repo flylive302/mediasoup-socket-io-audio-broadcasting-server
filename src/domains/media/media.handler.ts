@@ -89,6 +89,11 @@ const audioProduceHandler = createHandler(
   audioProduceSchema,
   async (payload, socket, context) => {
     const { roomId, transportId, kind, rtpParameters } = payload;
+    // dj-talk-over/01 compat: TS infers the schema's Input shape here (Zod's
+    // `.default()` widens Input to optional) even though `.default()`
+    // guarantees the parsed value is always populated at runtime — fall back
+    // explicitly so this stays type-safe without relying on that inference.
+    const source = payload.source ?? "mic";
     const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
 
@@ -99,16 +104,17 @@ const audioProduceHandler = createHandler(
     const producer = await transport.produce({
       kind,
       rtpParameters: rtpParameters as mediasoup.types.RtpParameters,
-      appData: { userId: socket.data.user.id },
+      appData: { userId: socket.data.user.id, source },
     });
 
-    // Track producer on client for discovery by new joiners
+    // Track producer on client, keyed by `source` (not `kind`) so mic + music
+    // coexist for discovery by new joiners — dj-talk-over/01.
     const client = context.clientManager.getClient(socket.id);
     if (client) {
-      client.producers.set(kind, producer.id);
+      client.producers.set(source, producer.id);
       client.isSpeaker = true;
       logger.debug(
-        { userId: client.userId, producerId: producer.id, kind },
+        { userId: client.userId, producerId: producer.id, kind, source },
         "Producer tracked on client",
       );
     }
@@ -133,8 +139,8 @@ const audioProduceHandler = createHandler(
         );
         producer.close();
         if (client) {
-          client.producers.delete(kind);
-          client.isSpeaker = false;
+          client.producers.delete(source);
+          client.isSpeaker = client.producers.size > 0;
         }
         return { success: false, error: Errors.INTERNAL_ERROR };
       }
@@ -145,7 +151,7 @@ const audioProduceHandler = createHandler(
     context.broadcastController.onSpeakerChange(roomId);
 
     const userId = socket.data.user.id;
-    const newProducerEvent = { producerId: producer.id, userId, kind: "audio" };
+    const newProducerEvent = { producerId: producer.id, userId, kind: "audio", source };
 
     // Reverse-pipe handling: if this socket is on an EDGE for this room, the
     // speaker's audio lives on this edge but origin & other edges hear silence
@@ -197,7 +203,7 @@ const audioProduceHandler = createHandler(
       );
     }
 
-    reactOnProducerClose(producer, client, kind, isEdgeRoom, socket, roomId, context);
+    reactOnProducerClose(producer, client, source, isEdgeRoom, socket, roomId, context);
 
     return { success: true, data: { id: producer.id } };
   },
@@ -386,7 +392,7 @@ const selfUnmuteHandler = createHandler(
 export function reactOnProducerClose(
   producer: mediasoup.types.Producer,
   client: ClientData | undefined,
-  kind: string,
+  source: string,
   isEdgeRoom: boolean,
   socket: Socket,
   roomId: string,
@@ -394,7 +400,7 @@ export function reactOnProducerClose(
 ): void {
   producer.on("transportclose", () => {
     if (client) {
-      client.producers.delete(kind);
+      client.producers.delete(source);
       client.isSpeaker = client.producers.size > 0;
     }
     // CQ-LOW-001: Guard against double-close

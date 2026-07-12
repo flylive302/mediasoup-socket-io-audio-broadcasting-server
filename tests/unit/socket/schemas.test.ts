@@ -85,6 +85,49 @@ describe("Audio Schemas", () => {
     const result = audioProduceSchema.safeParse(payload);
     expect(result.success).toBe(true);
   });
+
+  // dj-talk-over/01: a produce without `source` (pre-feature clients) must
+  // keep working and default to "mic".
+  it("defaults source to 'mic' when omitted (compat)", () => {
+    const payload = {
+      roomId: "123e4567-e89b-12d3-a456-426614174000",
+      transportId: "123e4567-e89b-12d3-a456-426614174001",
+      kind: "audio",
+      rtpParameters: { codecs: [] },
+    };
+    const result = audioProduceSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.source).toBe("mic");
+    }
+  });
+
+  it("accepts an explicit 'music' source", () => {
+    const payload = {
+      roomId: "123e4567-e89b-12d3-a456-426614174000",
+      transportId: "123e4567-e89b-12d3-a456-426614174001",
+      kind: "audio",
+      rtpParameters: { codecs: [] },
+      source: "music",
+    };
+    const result = audioProduceSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.source).toBe("music");
+    }
+  });
+
+  it("rejects an invalid source value", () => {
+    const payload = {
+      roomId: "123e4567-e89b-12d3-a456-426614174000",
+      transportId: "123e4567-e89b-12d3-a456-426614174001",
+      kind: "audio",
+      rtpParameters: { codecs: [] },
+      source: "video",
+    };
+    const result = audioProduceSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("Room Schemas", () => {

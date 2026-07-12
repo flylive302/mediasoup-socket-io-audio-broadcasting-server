@@ -7,7 +7,7 @@
  */
 import type { DomainLifecycle, DisconnectContext } from "@src/shared/lifecycle.js";
 import type { AppContext } from "@src/context.js";
-import { clearMusicPlayerOnDisconnect } from "./audio-player.handler.js";
+import { releaseMusicPlayerForUser } from "./audio-player.handler.js";
 
 export const audioPlayerLifecycle: DomainLifecycle = {
   name: "audio-player",
@@ -15,7 +15,7 @@ export const audioPlayerLifecycle: DomainLifecycle = {
   async onDisconnect(ctx: DisconnectContext, appCtx: AppContext): Promise<void> {
     if (!ctx.roomId) return;
 
-    await clearMusicPlayerOnDisconnect(
+    await releaseMusicPlayerForUser(
       appCtx.redis,
       appCtx.io,
       ctx.roomId,

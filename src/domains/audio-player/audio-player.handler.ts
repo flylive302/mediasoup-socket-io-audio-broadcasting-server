@@ -275,10 +275,16 @@ const stateUpdateHandler = createHandler(
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * Clear the music player mutex if the disconnecting user was playing music.
- * Called from the disconnect handler in socket/index.ts.
+ * Release the room's music mutex + broadcast stop, but ONLY if `userId` is
+ * the current music player — a no-op otherwise (dj-talk-over/02: kicking a
+ * non-DJ must never touch the room's music).
+ *
+ * Shared by every user-removal path that must make music die with its DJ:
+ * disconnect (via audioPlayerLifecycle), kick/eject (ejectRoomMember),
+ * seat:lock, and shrink-eviction. One release+broadcast implementation, no
+ * per-caller duplication.
  */
-export async function clearMusicPlayerOnDisconnect(
+export async function releaseMusicPlayerForUser(
   redis: import("ioredis").Redis,
   io: import("socket.io").Server,
   roomId: string,
@@ -307,7 +313,7 @@ export async function clearMusicPlayerOnDisconnect(
     cascadeRelay,
   );
 
-  logger.info({ roomId, userId }, "Audio player cleared on disconnect");
+  logger.info({ roomId, userId }, "Audio player cleared on user removal");
 }
 
 /**

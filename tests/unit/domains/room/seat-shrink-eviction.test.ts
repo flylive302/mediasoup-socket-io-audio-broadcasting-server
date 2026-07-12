@@ -1,10 +1,12 @@
 /**
- * Unit tests for evictShrunkSeats (room-seat-caps/02 — Seat Eviction (shrink)).
+ * Unit tests for evictShrunkSeats (room-seat-caps/02 — Seat Eviction (shrink);
+ * dj-talk-over/02 — close ALL producers + release the music mutex).
  *
- * Scope: the EXECUTE+REACT sequence (producer close, room broadcast, targeted
- * emit) given a set of {seatIndex,userId} pairs returned by the atomic Lua
- * clear. The Lua script's own structural invariants are asserted separately
- * below (prior art: seat-retention.test.ts's Lua invariant suite).
+ * Scope: the EXECUTE+REACT sequence (producer close, mutex release, room
+ * broadcast, targeted emit) given a set of {seatIndex,userId} pairs returned
+ * by the atomic Lua clear. The Lua script's own structural invariants are
+ * asserted separately below (prior art: seat-retention.test.ts's Lua
+ * invariant suite).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -42,6 +44,14 @@ function makeClientManager(overrides: {
   } as any;
 }
 
+/** Redis mock — musicPlayer mutex holder defaults to null (nobody playing). */
+function makeRedis(currentPlayer: string | null = null) {
+  return {
+    get: vi.fn().mockResolvedValue(currentPlayer),
+    del: vi.fn().mockResolvedValue(1),
+  } as any;
+}
+
 describe("evictShrunkSeats", () => {
   let io: ReturnType<typeof makeIo>;
 
@@ -53,11 +63,13 @@ describe("evictShrunkSeats", () => {
     const seatRepository = { evictSeatsAboveCount: vi.fn().mockResolvedValue([]) } as any;
     const clientManager = makeClientManager();
     const getRoom = vi.fn();
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,
@@ -66,32 +78,104 @@ describe("evictShrunkSeats", () => {
 
     expect(io.to).not.toHaveBeenCalled();
     expect(getRoom).not.toHaveBeenCalled();
+    expect(redis.get).not.toHaveBeenCalled();
   });
 
-  it("closes the displaced user's audio producer (ownership-verified, mirrors seat:lock kick)", async () => {
-    const producer = { closed: false, appData: { userId: 55 }, close: vi.fn() };
+  it("closes ALL of the displaced user's producers (mic + music), ownership-verified", async () => {
+    const micProducer = { closed: false, appData: { userId: 55 }, close: vi.fn() };
+    const musicProducer = { closed: false, appData: { userId: 55 }, close: vi.fn() };
     const seatRepository = {
       evictSeatsAboveCount: vi
         .fn()
         .mockResolvedValue([{ seatIndex: 12, userId: 55 }]),
     } as any;
-    const client = { userId: 55, producers: new Map([["audio", "prod-1"]]), isSpeaker: true };
+    const client = {
+      userId: 55,
+      producers: new Map([
+        ["mic", "prod-mic"],
+        ["music", "prod-music"],
+      ]),
+      isSpeaker: true,
+    };
     const clientManager = makeClientManager({ clientsInRoom: [client] });
-    const getRoom = vi.fn(() => ({ getProducer: vi.fn(() => producer) }) as any);
+    const getRoom = vi.fn(() => ({
+      getProducer: vi.fn((id: string) => (id === "prod-mic" ? micProducer : musicProducer)),
+    }) as any);
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,
       getRoom,
     });
 
-    expect(producer.close).toHaveBeenCalledTimes(1);
-    expect(client.producers.has("audio")).toBe(false);
+    expect(micProducer.close).toHaveBeenCalledTimes(1);
+    expect(musicProducer.close).toHaveBeenCalledTimes(1);
+    expect(client.producers.size).toBe(0);
     expect(client.isSpeaker).toBe(false);
+  });
+
+  it("releases the room's music mutex + broadcasts stop when the evicted user held it", async () => {
+    const seatRepository = {
+      evictSeatsAboveCount: vi
+        .fn()
+        .mockResolvedValue([{ seatIndex: 12, userId: 55 }]),
+    } as any;
+    const clientManager = makeClientManager();
+    const getRoom = vi.fn(() => undefined);
+    const redis = makeRedis("55"); // user 55 IS the current DJ
+
+    await evictShrunkSeats({
+      roomId: "r1",
+      newSeatCount: 10,
+      io,
+      redis,
+      cascadeRelay: null,
+      seatRepository,
+      clientManager,
+      getRoom,
+    });
+
+    expect(redis.del).toHaveBeenCalledWith("room:r1:musicPlayer");
+    expect(redis.del).toHaveBeenCalledWith("room:r1:musicState");
+    expect(io.roomEmit).toHaveBeenCalledWith(
+      "audioPlayer:stateChanged",
+      expect.objectContaining({ state: "stopped", userId: 55 }),
+    );
+  });
+
+  it("leaves the music mutex untouched when the evicted user did NOT hold it", async () => {
+    const seatRepository = {
+      evictSeatsAboveCount: vi
+        .fn()
+        .mockResolvedValue([{ seatIndex: 12, userId: 55 }]),
+    } as any;
+    const clientManager = makeClientManager();
+    const getRoom = vi.fn(() => undefined);
+    const redis = makeRedis("99"); // a different user is the current DJ
+
+    await evictShrunkSeats({
+      roomId: "r1",
+      newSeatCount: 10,
+      io,
+      redis,
+      cascadeRelay: null,
+      seatRepository,
+      clientManager,
+      getRoom,
+    });
+
+    expect(redis.del).not.toHaveBeenCalled();
+    // Only the standard seat:cleared broadcast fires — no stateChanged stop.
+    expect(io.roomEmit).not.toHaveBeenCalledWith(
+      "audioPlayer:stateChanged",
+      expect.anything(),
+    );
   });
 
   it("skips producer close when ownership no longer matches (F-45 guard)", async () => {
@@ -101,14 +185,16 @@ describe("evictShrunkSeats", () => {
         .fn()
         .mockResolvedValue([{ seatIndex: 12, userId: 55 }]),
     } as any;
-    const client = { userId: 55, producers: new Map([["audio", "prod-1"]]), isSpeaker: true };
+    const client = { userId: 55, producers: new Map([["mic", "prod-1"]]), isSpeaker: true };
     const clientManager = makeClientManager({ clientsInRoom: [client] });
     const getRoom = vi.fn(() => ({ getProducer: vi.fn(() => producer) }) as any);
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,
@@ -127,11 +213,13 @@ describe("evictShrunkSeats", () => {
     } as any;
     const clientManager = makeClientManager();
     const getRoom = vi.fn(() => undefined);
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,
@@ -161,11 +249,13 @@ describe("evictShrunkSeats", () => {
       socketIdsByUser: { 55: ["sock-a", "sock-b"] },
     });
     const getRoom = vi.fn(() => undefined);
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,
@@ -189,11 +279,13 @@ describe("evictShrunkSeats", () => {
     } as any;
     const clientManager = makeClientManager({ socketIdsByUser: {} });
     const getRoom = vi.fn(() => undefined);
+    const redis = makeRedis();
 
     await evictShrunkSeats({
       roomId: "r1",
       newSeatCount: 10,
       io,
+      redis,
       cascadeRelay: null,
       seatRepository,
       clientManager,

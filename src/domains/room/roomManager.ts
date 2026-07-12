@@ -46,7 +46,7 @@ export class RoomManager {
 
   constructor(
     private readonly workerManager: WorkerManager,
-    redis: Redis,
+    private readonly redis: Redis,
     private readonly io: SocketServer,
     private readonly laravelClient: LaravelClient,
     private readonly statusCoalescer: StatusCoalescer,
@@ -61,6 +61,16 @@ export class RoomManager {
   // Getter for state repo
   get state() {
     return this.stateRepo;
+  }
+
+  /**
+   * dj-talk-over/02: expose the late-bound cascade relay so callers outside
+   * RoomManager (e.g. EventRouter's ejectMemberOnBlock) can broadcast
+   * music-stop cascade-aware without RoomManager threading it through every
+   * dependent's constructor.
+   */
+  getCascadeRelay(): CascadeRelay | null {
+    return this.cascadeRelay;
   }
 
   /**
@@ -278,6 +288,7 @@ export class RoomManager {
       roomId,
       newSeatCount,
       io: this.io,
+      redis: this.redis,
       cascadeRelay: this.cascadeRelay,
       seatRepository: this.seatRepository,
       clientManager,

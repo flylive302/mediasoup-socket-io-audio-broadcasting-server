@@ -6,8 +6,8 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
-
-
+import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
+import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
 
 export const lockSeatHandler = createHandler(
   "seat:lock",
@@ -33,7 +33,7 @@ export const lockSeatHandler = createHandler(
 
     const kicked = lockResult.kicked;
 
-    // If someone was kicked, notify room and close their producer
+    // If someone was kicked, notify room and close ALL their producers
     if (kicked) {
       broadcastToRoom(
         socket.nsp,
@@ -43,43 +43,32 @@ export const lockSeatHandler = createHandler(
         context.cascadeRelay,
       );
 
-      // Server-side producer close — don't rely on frontend
+      const kickedUserId = Number(kicked);
+
+      // Server-side producer close — don't rely on frontend.
+      // dj-talk-over/02: close EVERY producer the kicked user holds (mic
+      // AND music) — a kicked-from-seat DJ's music must not keep flowing.
       const kickedClient = context.clientManager
         .getClientsInRoom(roomId)
         .find((c) => String(c.userId) === String(kicked));
 
       if (kickedClient) {
-        const audioProducerId = kickedClient.producers.get("audio");
-        if (audioProducerId) {
-          const room = context.roomManager.getRoom(roomId);
-          const producer = room?.getProducer(audioProducerId);
-          if (producer && !producer.closed) {
-            // F-45: verify the producer still belongs to the kicked user before
-            // closing. A rapid disconnect→reconnect→produce (or mute/unmute)
-            // can replace the tracked producer id; without this guard a brand
-            // new producer the user just created post-reconnect could be closed.
-            if (producer.appData.userId === Number(kicked)) {
-              producer.close();
-              logger.info(
-                { roomId, producerId: audioProducerId, kickedUserId: kicked },
-                "Producer closed (seat locked)",
-              );
-            } else {
-              logger.warn(
-                {
-                  roomId,
-                  producerId: audioProducerId,
-                  kickedUserId: kicked,
-                  producerUserId: producer.appData.userId,
-                },
-                "Skipped producer close on seat lock — producer no longer owned by kicked user (F-45)",
-              );
-            }
-          }
-          kickedClient.producers.delete("audio");
-          kickedClient.isSpeaker = kickedClient.producers.size > 0;
-        }
+        const room = context.roomManager.getRoom(roomId);
+        closeAllUserProducers(kickedClient, kickedUserId, roomId, room, {
+          reason: "seat-lock",
+        });
       }
+
+      // dj-talk-over/02: release the room's music mutex + broadcast stop if
+      // the kicked user held it — a no-op otherwise (kicking a non-DJ must
+      // never touch the room's music).
+      await releaseMusicPlayerForUser(
+        context.redis,
+        context.io,
+        roomId,
+        kickedUserId,
+        context.cascadeRelay,
+      );
 
       logger.info(
         { roomId, userId: kicked, seatIndex, lockedBy: userId },

@@ -302,7 +302,7 @@ async function processJoin(
       image_url: string | null;
     }[];
   }[] = [];
-  const existingProducers: { producerId: string; userId: number }[] = [];
+  const existingProducers: { producerId: string; userId: number; source: string }[] = [];
 
   // Deduplicate by userId (same user may have stale sockets across instances)
   const seenUserIds = new Set<number>();
@@ -359,9 +359,10 @@ async function processJoin(
       participant.isSpeaker = c.isSpeaker;
     }
 
-    const audioProducerId = c.producers.get("audio");
-    if (audioProducerId) {
-      existingProducers.push({ producerId: audioProducerId, userId: c.userId });
+    // dj-talk-over/01: hand new joiners ALL of this client's producers (mic
+    // AND music), each tagged with its `source` — not one per kind.
+    for (const [source, producerId] of c.producers) {
+      existingProducers.push({ producerId, userId: c.userId, source });
     }
   }
 

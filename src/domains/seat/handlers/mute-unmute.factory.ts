@@ -82,7 +82,10 @@ export function createMuteHandler(config: MuteConfig) {
         .find((c) => String(c.userId) === targetUserIdStr);
 
       if (targetClient) {
-        const audioProducerId = targetClient.producers.get("audio");
+        // dj-talk-over/01: admin mute/unmute targets the mic only — the
+        // registry is keyed by `source`, and "this user's voice" always
+        // means the "mic" entry, never "music".
+        const audioProducerId = targetClient.producers.get("mic");
         if (audioProducerId) {
           const room = context.roomManager.getRoom(roomId);
           const producer = room?.getProducer(audioProducerId);

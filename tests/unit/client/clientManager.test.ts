@@ -199,7 +199,7 @@ describe("ClientManager", () => {
     const client = cm.getClient("s1")!;
     client.transports.set("t1", "consumer");
     client.transports.set("t2", "producer");
-    client.producers.set("audio", "p1");
+    client.producers.set("mic", "p1");
     client.consumers.set("p1", "c1");
     client.isSpeaker = true;
 

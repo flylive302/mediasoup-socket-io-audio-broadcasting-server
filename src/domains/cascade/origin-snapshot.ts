@@ -31,7 +31,7 @@ export class OriginSnapshot {
   async fetchOriginProducers(
     originBaseUrl: string,
     roomId: string,
-  ): Promise<Array<{ producerId: string; userId: number; kind: string }> | null> {
+  ): Promise<Array<{ producerId: string; userId: number; kind: string; source: string }> | null> {
     const url = `${originBaseUrl}/internal/room/${encodeURIComponent(roomId)}/producers`;
     try {
       const controller = new AbortController();
@@ -50,9 +50,12 @@ export class OriginSnapshot {
           return null;
         }
         const body = (await response.json()) as {
-          producers: Array<{ producerId: string; userId: number; kind: string }>;
+          producers: Array<{ producerId: string; userId: number; kind: string; source?: string }>;
         };
-        return body.producers ?? [];
+        // dj-talk-over/01 compat: an origin running pre-feature code omits
+        // `source` — default to "mic" so a stale-origin/new-edge mix still
+        // works during rollout.
+        return (body.producers ?? []).map((p) => ({ ...p, source: p.source ?? "mic" }));
       } finally {
         clearTimeout(timeoutId);
       }
