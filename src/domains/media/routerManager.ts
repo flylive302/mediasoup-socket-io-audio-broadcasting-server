@@ -4,7 +4,7 @@ import { mediasoupConfig } from "@src/config/mediasoup.js";
 
 export class RouterManager {
   public router: mediasoup.types.Router | null = null;
-  public audioObserver: mediasoup.types.ActiveSpeakerObserver | null = null;
+  public audioObserver: mediasoup.types.AudioLevelObserver | null = null;
   public readonly worker: mediasoup.types.Worker;
   private readonly webRtcServer: mediasoup.types.WebRtcServer | null;
 
@@ -38,8 +38,8 @@ export class RouterManager {
       mediaCodecs: mediasoupConfig.router.mediaCodecs,
     });
 
-    this.audioObserver = await this.router.createActiveSpeakerObserver(
-      mediasoupConfig.activeSpeakerObserver,
+    this.audioObserver = await this.router.createAudioLevelObserver(
+      mediasoupConfig.audioLevelObserver,
     );
   }
 

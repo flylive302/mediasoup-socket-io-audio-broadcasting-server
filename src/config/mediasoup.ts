@@ -62,9 +62,11 @@ export const mediasoupConfig = {
   // voice mics are capped client-side at 64k mono via codecOptions.
   maxIncomingBitrate: 192000,
 
-  // Active Speaker settings
-  activeSpeakerObserver: {
-    interval: 200, // Check every 200ms
-    minVolume: -50, // dB threshold
+  // Speaking-indicator settings (AudioLevelObserver: reports ALL producers
+  // above threshold each interval — concurrent speakers, not one dominant).
+  audioLevelObserver: {
+    maxEntries: 16, // max concurrent speakers reported per tick (seat count ceiling)
+    threshold: -55, // dBvo — producers louder than this count as "speaking"
+    interval: 500, // ms between `volumes` reports; also keeps FE decay timer fresh
   },
 };

@@ -68,7 +68,7 @@ export class RoomMediaCluster {
   }
 
   /** Audio observer from source router */
-  get audioObserver(): mediasoup.types.ActiveSpeakerObserver | null {
+  get audioObserver(): mediasoup.types.AudioLevelObserver | null {
     return this.sourceRouter?.audioObserver ?? null;
   }
 

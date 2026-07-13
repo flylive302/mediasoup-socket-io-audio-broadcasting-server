@@ -11,7 +11,7 @@ vi.mock("@src/config/mediasoup.js", () => ({
       listenInfos: [{ protocol: "udp", ip: "0.0.0.0" }],
     },
     maxIncomingBitrate: 0,
-    activeSpeakerObserver: { interval: 200 },
+    audioLevelObserver: { maxEntries: 16, threshold: -55, interval: 500 },
   },
 }));
 
@@ -36,7 +36,7 @@ function createMockWebRtcTransport(id: string) {
 function createMockRouter() {
   return {
     createWebRtcTransport: vi.fn(),
-    createActiveSpeakerObserver: vi.fn().mockResolvedValue({ on: vi.fn(), close: vi.fn() }),
+    createAudioLevelObserver: vi.fn().mockResolvedValue({ on: vi.fn(), close: vi.fn() }),
     close: vi.fn(),
   };
 }

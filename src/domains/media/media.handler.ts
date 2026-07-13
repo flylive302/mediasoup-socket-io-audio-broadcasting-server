@@ -119,8 +119,9 @@ const audioProduceHandler = createHandler(
       );
     }
 
-    // Add to active speaker observer
-    if (cluster?.audioObserver) {
+    // Add to the audio-level observer — mic only: DJ music must not light up
+    // the speaking indicator.
+    if (source === "mic" && cluster?.audioObserver) {
       await cluster.audioObserver.addProducer({ producerId: producer.id });
     }
 

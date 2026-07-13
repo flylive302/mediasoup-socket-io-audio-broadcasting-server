@@ -1,12 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock config
-vi.mock("@src/config/index.js", () => ({
-  config: {
-    UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT: 3,
-  },
-}));
-
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -18,17 +11,18 @@ function createMockObserver() {
       handlers.set(event, handler);
     }),
     removeAllListeners: vi.fn(),
-    // Test helper: fire the dominantspeaker event
-    _fire: (producerId: string, userId: string) => {
-      const handler = handlers.get("dominantspeaker");
-      if (handler) {
-        handler({
-          producer: {
-            id: producerId,
-            appData: { userId },
-          },
-        });
-      }
+    // Test helper: fire a volumes tick with the given speakers
+    _volumes: (entries: Array<{ producerId: string; userId: string }>) => {
+      handlers.get("volumes")?.(
+        entries.map((e) => ({
+          producer: { id: e.producerId, appData: { userId: e.userId } },
+          volume: -40,
+        })),
+      );
+    },
+    // Test helper: fire the silence event
+    _silence: () => {
+      handlers.get("silence")?.();
     },
   };
 }
@@ -40,14 +34,6 @@ function createMockIO() {
     _emit: emitFn,
   };
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockLogger: any = {
-  info: vi.fn(),
-  debug: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
@@ -61,105 +47,76 @@ describe("ActiveSpeakerDetector", () => {
     io = createMockIO();
   });
 
-  describe("start()", () => {
-    it("registers a dominantspeaker listener on the observer", () => {
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
+  function makeDetector(): ActiveSpeakerDetector {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
+    detector.start();
+    return detector;
+  }
 
-      expect(observer.on).toHaveBeenCalledWith("dominantspeaker", expect.any(Function));
+  describe("start()", () => {
+    it("registers volumes and silence listeners on the observer", () => {
+      makeDetector();
+
+      expect(observer.on).toHaveBeenCalledWith("volumes", expect.any(Function));
+      expect(observer.on).toHaveBeenCalledWith("silence", expect.any(Function));
     });
 
-    it("emits speaker:active to the room on first dominant speaker", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
+    it("emits speaker:active with all concurrent speakers on a volumes tick", () => {
+      makeDetector();
 
-      observer._fire("prod-1", "user-1");
+      observer._volumes([
+        { producerId: "prod-1", userId: "user-1" },
+        { producerId: "prod-2", userId: "user-2" },
+      ]);
 
       expect(io.to).toHaveBeenCalledWith("room-1");
       expect(io._emit).toHaveBeenCalledWith(
         "speaker:active",
         expect.objectContaining({
-          userId: "user-1",
-          activeSpeakers: expect.arrayContaining(["user-1"]),
+          activeSpeakers: ["user-1", "user-2"],
         }),
       );
     });
-  });
 
-  describe("computeTopN()", () => {
-    it("returns at most UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT speakers", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
+    it("dedupes multiple producers of the same user", () => {
+      makeDetector();
 
-      // Fire 5 different speakers (config max is 3)
-      observer._fire("prod-1", "user-1");
-      observer._fire("prod-2", "user-2");
-      observer._fire("prod-3", "user-3");
-      observer._fire("prod-4", "user-4");
-      observer._fire("prod-5", "user-5");
+      observer._volumes([
+        { producerId: "prod-1", userId: "user-1" },
+        { producerId: "prod-1b", userId: "user-1" },
+      ]);
 
-      // Access currentActiveSpeakers via the last emitted event
-      const lastCall = io._emit.mock.calls[io._emit.mock.calls.length - 1];
-      const payload = lastCall?.[1];
-      expect(payload.activeSpeakers.length).toBeLessThanOrEqual(3);
+      const payload = io._emit.mock.calls.at(-1)?.[1];
+      expect(payload.activeSpeakers).toEqual(["user-1"]);
     });
 
-    it("evicts speakers older than 10 seconds", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
+    it("re-emits on every tick even when the set is unchanged (keeps FE decay fresh)", () => {
+      makeDetector();
 
-      // Fire a speaker, then advance time past 10s stale cutoff
-      const now = Date.now();
-      vi.spyOn(Date, "now").mockReturnValue(now);
-      observer._fire("prod-1", "user-1");
+      observer._volumes([{ producerId: "prod-1", userId: "user-1" }]);
+      observer._volumes([{ producerId: "prod-1", userId: "user-1" }]);
 
-      // Advance to 11 seconds later
-      vi.spyOn(Date, "now").mockReturnValue(now + 11_000);
-      observer._fire("prod-2", "user-2");
+      expect(io._emit).toHaveBeenCalledTimes(2);
+    });
 
-      // prod-1 should be evicted (stale), only prod-2 active
-      const lastCall = io._emit.mock.calls[io._emit.mock.calls.length - 1];
-      const payload = lastCall?.[1];
-      expect(payload.activeSpeakers).toContain("user-2");
-      expect(payload.activeSpeakers).not.toContain("user-1");
+    it("emits an empty set on silence", () => {
+      makeDetector();
+
+      observer._volumes([{ producerId: "prod-1", userId: "user-1" }]);
+      observer._silence();
+
+      const payload = io._emit.mock.calls.at(-1)?.[1];
+      expect(payload.activeSpeakers).toEqual([]);
     });
   });
-
-  describe("PERF-003: no-emit on unchanged set", () => {
-    it("does not emit when the same speaker fires twice consecutively", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
-
-      observer._fire("prod-1", "user-1");
-      const emitCountAfterFirst = io._emit.mock.calls.length;
-
-      // Same speaker fires again — set shouldn't change
-      observer._fire("prod-1", "user-1");
-      expect(io._emit.mock.calls.length).toBe(emitCountAfterFirst);
-    });
-  });
-
-
 
   describe("stop()", () => {
-    it("removes all listeners and clears state", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detector = new ActiveSpeakerDetector(observer as any, "room-1", io as any);
-      detector.start();
-
-      observer._fire("prod-1", "user-1");
+    it("removes all listeners", () => {
+      const detector = makeDetector();
       detector.stop();
 
       expect(observer.removeAllListeners).toHaveBeenCalled();
-      // After stop, internal state should be cleared
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((detector as any).recentSpeakers.size).toBe(0);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((detector as any).currentActiveSpeakers.length).toBe(0);
     });
   });
 });
