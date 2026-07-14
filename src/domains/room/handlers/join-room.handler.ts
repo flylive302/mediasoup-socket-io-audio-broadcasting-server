@@ -242,16 +242,17 @@ async function processJoin(
   // Update client room index
   clientManager.setClientRoom(socket.id, roomId);
 
-  // realtime-22: re-claim a seat held through the reconnect grace window. If this
-  // user's slot still carries a live disconnectedAt marker (set by finalizeLeave on
-  // a genuine disconnect), clear it now so the ownership-heartbeat sweep won't
-  // expire it — the seat is already carried in the snapshot below (it was never
-  // released), so the reclaimer lands back in their exact slot with no flicker. A
-  // slot reassigned during the outage no longer matches this user, so reclaim
-  // yields and they join as a listener (no double-occupancy). Runs BEFORE the edge
-  // snapshot fetch so the origin's HTTP snapshot (same-region shared Redis) already
-  // reflects the cleared marker; a no-op for cross-region edges whose seats live in
-  // the origin's Redis (those users were never retained — see finalizeLeave).
+  // realtime-22 (reworked): re-claim a seat RESERVED through the reconnect grace
+  // window. If this user's slot still carries a live disconnectedAt marker (set
+  // by finalizeLeave on a genuine disconnect), clear it now — the seat then
+  // reappears as occupied in this joiner's own snapshot (built below, after the
+  // marker clears), and afterJoin broadcasts a seat:updated so everyone else
+  // re-fills the seat they saw cleared at disconnect time. A slot swept or
+  // reassigned during the outage no longer matches this user, so reclaim yields
+  // and they join as a listener. Runs BEFORE the edge snapshot fetch so the
+  // origin's HTTP snapshot (same-region shared Redis) already reflects the
+  // cleared marker; a no-op for cross-region edges whose seats live in the
+  // origin's Redis (those users are never reserved — see finalizeLeave).
   const reclaim = await seatRepository.reclaimSeat(
     roomId,
     String(userId),
@@ -264,13 +265,10 @@ async function processJoin(
       "Seat re-claimed on rejoin within grace window",
     );
   }
-  // NOTE: room:userJoined is broadcast normally on reclaim (below), NOT suppressed.
-  // It serves two populations at once: clients that retained the user (userLeft was
-  // suppressed) already have them — they de-dupe the upsert and skip the entry
-  // animation via the FE "already-present" guard; clients that joined DURING the
-  // grace window never saw the user (built from live sockets) yet see their held
-  // seat, so they NEED this event to resolve that seat's placeholder. Suppressing
-  // it would strand those late joiners with a permanent nameless seat.
+  // room:userJoined is broadcast normally on reclaim (below): every client saw
+  // the disconnect as a real leave, so the rejoin is a real (re)join — the
+  // roster entry returns via userJoined and the seat via afterJoin's
+  // seat:updated. No client population needs special-casing anymore.
 
   // BUG-1 FIX: Use fetchSockets() to discover participants across ALL instances
   // sharing the same Redis adapter, not just the local process.
@@ -465,7 +463,10 @@ async function processJoin(
     lockedSeats = roomSeatsData.filter((s) => s.locked).map((s) => s.index);
     seats = [];
     for (const seatData of roomSeatsData) {
-      if (seatData.userId) {
+      // Reserved (grace-held) seats render EMPTY: the occupant's leave was
+      // already broadcast, so listing them here would recreate the ghost-seat
+      // roster/seat skew. Their slot is still protected by seat:take.
+      if (seatData.userId && !seatData.reserved) {
         seats.push({
           seatIndex: seatData.index,
           userId: Number(seatData.userId),
@@ -518,6 +519,9 @@ async function processJoin(
     activeAppSlides,
     newCount,
     userId,
+    reclaimedSeat: reclaim.reclaimed
+      ? { seatIndex: reclaim.seatIndex ?? -1, isMuted: reclaim.isMuted ?? false }
+      : null,
   };
 }
 
@@ -573,6 +577,24 @@ function afterJoin(
     },
     context.cascadeRelay,
   );
+
+  // Reclaim re-sync: every client rendered the disconnect as a real leave
+  // (seat cleared), so on a successful within-grace reclaim the seat must be
+  // explicitly re-filled for the whole room — room:userJoined alone only
+  // restores the roster entry.
+  if (result.reclaimedSeat && result.reclaimedSeat.seatIndex >= 0) {
+    emitToRoom(
+      socket,
+      roomId,
+      "seat:updated",
+      {
+        seatIndex: result.reclaimedSeat.seatIndex,
+        userId: u.id,
+        isMuted: result.reclaimedSeat.isMuted,
+      },
+      context.cascadeRelay,
+    );
+  }
 
   logger.info(
     {

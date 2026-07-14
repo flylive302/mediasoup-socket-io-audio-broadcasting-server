@@ -7,16 +7,24 @@ export interface SeatData {
   userId: string | null;
   muted: boolean;
   locked: boolean;
+  /**
+   * Seat is held for a disconnected occupant inside the reconnect grace
+   * window (live `disconnectedAt` marker): seat:take by others still rejects,
+   * but the leave was already broadcast — snapshots must NOT list it as
+   * occupied, and clients render it empty.
+   */
+  reserved: boolean;
 }
 
 export interface SeatAssignment {
   userId: string;
   muted: boolean;
-  // realtime-22: epoch ms when the occupant's socket was declared dead. Present
-  // ONLY while the seat is being held through a reconnect grace window (set by
-  // seatReserve, cleared by seatReclaim, swept when older than the grace window).
-  // A seat with this field is still OCCUPIED for all other purposes (take/assign
-  // by others returns SEAT_TAKEN) — occupancy readers ignore the field.
+  // realtime-22 (reworked): epoch ms when the occupant's socket was declared
+  // dead. Present ONLY while the seat is reserved through the reconnect grace
+  // window (set by seatReserve, cleared by seatReclaim, swept when older than
+  // the grace window). Take/assign by others returns SEAT_TAKEN, but clients
+  // already saw the seat cleared at disconnect — snapshot builders must treat
+  // the seat as empty (see SeatData.reserved).
   disconnectedAt?: number;
 }
 

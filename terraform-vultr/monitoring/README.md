@@ -66,8 +66,25 @@ instance replace. Re-sync them only when the fleet size changes:
   `flylive_laravel_events_received_total` share > 5% for 5m).
 - **AC4** operator receives it → contact point + notification policy (step 5).
 
-## Live verification (blocked on Vultr account verification)
+## Where Alloy runs (production)
 
-Steps 2–5 need the fleet reachable. The bom fleet is already live
-(`65.20.69.175`, `65.20.90.188`); fra/sgp targets go green once slice 06's apply
-finishes. Tracked in `docs/issues/vultr-migration/PENDING-vultr-verification.md`.
+Since 2026-07-14 the agent runs on a dedicated always-on ops box — **NOT** on a
+laptop (a WSL host sleeps and its clock skews, which stamps samples into the
+past and blanks every now-anchored dashboard):
+
+- Instance: `flylive-ops-monitoring`, Vultr bom, `vc2-1c-1gb` ($5/mo),
+  `65.20.70.100`, id `543fe2b8-dcb3-4a7d-b8ab-3e82dfeb7c92`.
+- Created API-direct (deliberately outside the Terraform stack, same
+  decoupling rationale as central-Alloy itself). Cloud-init installs Docker and
+  brings up this directory's compose file at `/opt/msab-monitoring/` with the
+  Alloy UI bound to localhost only.
+- SSH: `ssh -i ~/.ssh/flylive_deploy root@65.20.70.100`.
+- Target-list changes: edit `config.alloy` here, then
+  `scp config.alloy root@65.20.70.100:/opt/msab-monitoring/ && ssh … 'cd /opt/msab-monitoring && docker compose restart'`.
+- The old laptop container is stopped with `--restart=no`; never run two Alloy
+  writers at once (duplicate series → out-of-order rejections).
+
+## Live verification (historical — fleet now live)
+
+The bom fleet is live; fra/sgp scrape blocks in `config.alloy` stay commented
+until those regions return.

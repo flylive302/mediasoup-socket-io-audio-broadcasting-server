@@ -281,7 +281,8 @@ export const createInternalRoutes = (
         const seats: { seatIndex: number; userId: number; isMuted: boolean }[] = [];
         const lockedSeats: number[] = [];
         for (const s of seatsRaw) {
-          if (s.userId) {
+          // Reserved (grace-held) seats render empty — see join-room snapshot.
+          if (s.userId && !s.reserved) {
             seats.push({ seatIndex: s.index, userId: Number(s.userId), isMuted: s.muted });
           }
           if (s.locked) {

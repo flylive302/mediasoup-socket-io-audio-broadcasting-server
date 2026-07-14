@@ -8,7 +8,6 @@ import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
-import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { config } from "@src/config/index.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
@@ -239,12 +238,12 @@ export class RoomManager {
   }
 
   /**
-   * realtime-22: release seats whose reconnect grace window has expired. The
-   * disconnected occupant never re-claimed within SEAT_RETENTION_GRACE_MS, so we
-   * drop the held slot AND the ghost participant that was kept for seat rendering:
-   * seat:cleared frees the slot, room:userLeft removes the avatar. Cascade-aware
-   * (broadcastToRoom relays cross-region). Called from the ownership heartbeat on
-   * the CAS origin only, so the emits fire exactly once.
+   * realtime-22 (reworked): release seat RESERVATIONS whose reconnect grace
+   * window has expired — the disconnected occupant never re-claimed within
+   * SEAT_RETENTION_GRACE_MS. Redis-only: clients already rendered the leave at
+   * disconnect time (leave-finalizer always emits seat:cleared/room:userLeft),
+   * so there is nothing to broadcast here — the seat simply becomes takeable
+   * again. Called from the ownership heartbeat on the CAS origin only.
    */
   private async sweepExpiredSeatReservations(roomId: string): Promise<void> {
     if (!this.seatRepository) return;
@@ -254,17 +253,6 @@ export class RoomManager {
       config.SEAT_RETENTION_GRACE_MS,
     );
     for (const { seatIndex, userId } of cleared) {
-      broadcastToRoom(
-        this.io,
-        roomId,
-        "seat:cleared",
-        // reason:"grace" marks this DELAYED sweep release so clients can tell
-        // it apart from an explicit leave/kick — the FE self-retake guard
-        // (F-24) must only ever swallow grace clears, never a real leave.
-        { seatIndex, userId, reason: "grace" },
-        this.cascadeRelay,
-      );
-      broadcastToRoom(this.io, roomId, "room:userLeft", { userId }, this.cascadeRelay);
       logger.info(
         { roomId, seatIndex, userId },
         "Seat reservation expired — released via heartbeat sweep",

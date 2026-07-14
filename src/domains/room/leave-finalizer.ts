@@ -60,28 +60,29 @@ export async function finalizeLeave(
     }
   }
 
-  // realtime-22: on a genuine socket death (viaDisconnect) HOLD a seated user's
-  // slot through a reconnect grace window instead of releasing it — the seat stays
-  // occupied and NO seat:cleared / room:userLeft is emitted, so the room sees no
-  // flicker (the seat resolves its avatar from the participant list, so the
-  // occupant must keep rendering until they reclaim or the grace sweep expires
-  // them). Gated to rooms this instance serves from its own authoritative Redis
-  // (origin / single-instance): a cross-region edge's local Redis is not the seat's
-  // source of truth, and its cascade-relayed seat:cleared is what clears the
-  // origin — so edges keep today's immediate-release path (no cross-region
-  // mid-session kick, no regression). An explicit room:leave is always immediate.
-  const retainEligible =
+  // realtime-22 (reworked, seat-desync-self-heal): on a genuine socket death
+  // (viaDisconnect) a seated user's slot is RESERVED in Redis for the reconnect
+  // grace window — nobody else can take it, and a rejoin within grace re-seats
+  // them — but to every client this is a normal, fully visible leave. No event
+  // is ever suppressed: the roster (live sockets) and the rendered seats stay
+  // consistent by construction, which is what the old "retain in place +
+  // suppress seat:cleared/room:userLeft" design broke (ghost seats, roster/seat
+  // snapshot skew). Reservation is gated to rooms this instance serves from its
+  // own authoritative Redis (origin / single-instance): a cross-region edge's
+  // local Redis is not the seat's source of truth. An explicit room:leave never
+  // reserves.
+  const reserveEligible =
     options.viaDisconnect &&
     !(context.cascadeCoordinator?.isEdgeRoom(roomId) ?? false);
-  const reservedIndices = retainEligible
+  const reservedIndices = reserveEligible
     ? await seatRepository.reserveSeat(roomId, String(userId), Date.now())
     : [];
-  const retained = reservedIndices.length > 0;
+  const reserved = reservedIndices.length > 0;
 
   // EXECUTE — seat + client/user room teardown + activity (symmetric on both paths).
-  // When retaining we leave the seat in place (marked disconnectedAt) rather than
-  // releasing it; presence/count still reconcile below since the socket IS gone.
-  const seatResult = retained
+  // A reserved seat keeps its Redis entry (marked disconnectedAt) so seat:take
+  // rejects others during grace; a non-reserved leave releases it outright.
+  const seatResult = reserved
     ? ({ success: false, error: "" } as const)
     : await seatRepository.leaveSeat(roomId, String(userId));
   clientManager.clearClientRoom(socket.id);
@@ -90,24 +91,25 @@ export async function finalizeLeave(
     autoCloseService.recordActivity(roomId),
   ]);
 
-  // REACT — emit BEFORE socket.leave so members still receive these. Suppressed
-  // entirely when the seat is retained (see above).
+  // REACT — emit BEFORE socket.leave so members still receive these. Always
+  // emitted: clients render the leave immediately whether or not the seat is
+  // silently reserved server-side.
   // F-41: leaveSeat clears EVERY seat the user held; clear them all on clients.
-  if (!retained) {
-    if (seatResult.success) {
-      const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
-      for (const seatIndex of cleared) {
-        emitToRoom(
-          socket,
-          roomId,
-          "seat:cleared",
-          { seatIndex, userId: Number(userId) },
-          cascadeRelay,
-        );
-      }
-    }
-    emitToRoom(socket, roomId, "room:userLeft", { userId }, cascadeRelay);
+  const clearedIndices = reserved
+    ? reservedIndices
+    : seatResult.success
+      ? (seatResult.clearedSeatIndices ?? [seatResult.seatIndex])
+      : [];
+  for (const seatIndex of clearedIndices) {
+    emitToRoom(
+      socket,
+      roomId,
+      "seat:cleared",
+      { seatIndex, userId: Number(userId) },
+      cascadeRelay,
+    );
   }
+  emitToRoom(socket, roomId, "room:userLeft", { userId }, cascadeRelay);
 
   // On disconnect the socket is already out of its rooms; this is a harmless
   // no-op there and the authoritative leave on the explicit path.
@@ -137,10 +139,11 @@ export async function finalizeLeave(
       userId,
       viaDisconnect: options.viaDisconnect,
       newCount,
-      seatCleared: seatResult.success,
-      // realtime-22: seat held through the reconnect grace window (not released).
-      seatRetained: retained,
-      reservedSeatIndices: retained ? reservedIndices : undefined,
+      seatCleared: seatResult.success || reserved,
+      // realtime-22 (reworked): seat reserved in Redis for the grace window
+      // (clients already saw it cleared; only seat:take is blocked).
+      seatReserved: reserved,
+      reservedSeatIndices: reserved ? reservedIndices : undefined,
     },
     "Room leave finalized",
   );

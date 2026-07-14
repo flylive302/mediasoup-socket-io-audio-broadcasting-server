@@ -361,6 +361,7 @@ export class SeatRepository {
             userId: data.userId,
             muted: data.muted,
             locked: lockedSet.has(i.toString()),
+            reserved: data.disconnectedAt !== undefined,
           });
         } else {
           seats.push({
@@ -368,6 +369,7 @@ export class SeatRepository {
             userId: null,
             muted: false,
             locked: lockedSet.has(i.toString()),
+            reserved: false,
           });
         }
       }

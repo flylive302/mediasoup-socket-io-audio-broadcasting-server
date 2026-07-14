@@ -156,22 +156,24 @@ describe("finalizeLeave — symmetric leave/disconnect (Cause A / H3)", () => {
   });
 });
 
-describe("finalizeLeave — seat retention across reconnect (realtime-22)", () => {
+describe("finalizeLeave — seat reservation across reconnect (realtime-22 reworked)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("holds a SEATED user's slot on disconnect: reserves, emits nothing, skips leaveSeat", async () => {
+  it("reserves a SEATED user's slot on disconnect but STILL emits the visible leave (seat:cleared + room:userLeft), skipping leaveSeat", async () => {
     // Others remain so the room stays live; the leaver held seat 3.
     const { h } = await captureStatus(new Set(["sock-other"]), true, {
       reservedIndices: [3],
     });
     expect(h.reserveSeat).toHaveBeenCalledWith(ROOM, String(LEAVER_ID), expect.any(Number));
     expect(h.leaveSeat).not.toHaveBeenCalled();
-    // No seat:cleared and no room:userLeft — the room sees no flicker.
-    expect(emittedEvents(h.emit)).not.toContain("seat:cleared");
-    expect(emittedEvents(h.emit)).not.toContain("room:userLeft");
+    // Reservation is Redis-only: every client renders a normal leave — no
+    // event is suppressed (suppression was the ghost-seat root cause).
+    expect(emittedEvents(h.emit)).toEqual(
+      expect.arrayContaining(["seat:cleared", "room:userLeft"]),
+    );
   });
 
-  it("still reconciles presence/count while a seat is retained (socket IS gone)", async () => {
+  it("still reconciles presence/count while a seat is reserved (socket IS gone)", async () => {
     const { count, status } = await captureStatus(new Set(["sock-other"]), true, {
       reservedIndices: [3],
     });
@@ -187,7 +189,18 @@ describe("finalizeLeave — seat retention across reconnect (realtime-22)", () =
     expect(emittedEvents(h.emit)).toContain("room:userLeft");
   });
 
-  it("an EXPLICIT leave never retains, even when seated (they meant to leave)", async () => {
+  it("emits one seat:cleared per reserved index on disconnect", async () => {
+    const { h } = await captureStatus(new Set(["sock-other"]), true, {
+      reservedIndices: [3],
+    });
+    const clearedCalls = (h.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => c[0] === "seat:cleared",
+    );
+    expect(clearedCalls).toHaveLength(1);
+    expect(clearedCalls[0]![1]).toEqual({ seatIndex: 3, userId: LEAVER_ID });
+  });
+
+  it("an EXPLICIT leave never reserves, even when seated (they meant to leave)", async () => {
     const { h } = await captureStatus(new Set([LEAVER, "sock-other"]), false, {
       reservedIndices: [3],
       leaveResult: { success: true, seatIndex: 3, clearedSeatIndices: [3] },

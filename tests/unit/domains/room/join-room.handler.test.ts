@@ -180,15 +180,24 @@ describe("joinRoomHandler", () => {
       );
     });
 
-    it("STILL broadcasts room:userJoined on reclaim (late joiners need it; existing clients skip FX via the FE already-present guard)", async () => {
+    it("broadcasts room:userJoined AND a seat:updated re-sync on reclaim (roster for late joiners, seat re-fill for clients that cleared it during the outage)", async () => {
       context.seatRepository.reclaimSeat = vi
         .fn()
-        .mockResolvedValue({ reclaimed: true, seatIndex: 3, isMuted: false });
+        .mockResolvedValue({ reclaimed: true, seatIndex: 3, isMuted: true });
       const h = joinRoomHandler(socket, context);
 
       await h({ roomId: "room-1" }, vi.fn());
 
-      expect(emitToRoomMock).toHaveBeenCalledOnce();
+      expect(emitToRoomMock).toHaveBeenCalledTimes(2);
+      const events = emitToRoomMock.mock.calls.map((c) => c[2]);
+      expect(events).toContain("room:userJoined");
+      expect(events).toContain("seat:updated");
+      const seatCall = emitToRoomMock.mock.calls.find((c) => c[2] === "seat:updated")!;
+      expect(seatCall[3]).toEqual({
+        seatIndex: 3,
+        userId: expect.any(Number),
+        isMuted: true,
+      });
     });
 
     it("a fresh join (no held seat) broadcasts room:userJoined", async () => {
