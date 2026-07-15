@@ -89,6 +89,9 @@ export const RELAY_EVENTS = {
     // it (real teardown + is_live:false/ended_at flush). Laravel reconciles the
     // DB independently, so a non-hosting instance safely no-ops.
     ROOM_FORCE_CLOSE: "room.force_close",
+    // Targeted at the owner (user_id envelope) when a room level-up raises
+    // the seat cap — pure pass-through.
+    ROOM_SEAT_CAP_UNLOCKED: "room.seat_cap_unlocked",
   },
 
   /** Income Targets: achievement tracking */
@@ -107,6 +110,12 @@ export const RELAY_EVENTS = {
     AGENCY_MEMBER_JOINED: "agency.member_joined",
     AGENCY_MEMBER_LEFT: "agency.member_left",
     AGENCY_DISSOLVED: "agency.dissolved",
+    // Agency-XP run progression (economy rework): per-gift XP tick to the
+    // member, milestone crossings to member + owner. All user-targeted
+    // pass-throughs (user_id envelope).
+    AGENCY_XP_PROGRESS: "agency_xp.progress",
+    AGENCY_MILESTONE_CROSSED: "agency_milestone.crossed",
+    AGENCY_MILESTONE_MEMBER_CROSSED: "agency_milestone.member_crossed",
   },
 
   /** VIP: status changes, gifting */

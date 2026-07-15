@@ -568,4 +568,109 @@ describe("Internal API", () => {
       await localApp.close();
     });
   });
+
+  describe("POST /internal/pipe/reverse-finalize", () => {
+    // dj-talk-over/07: the mic/music tag must survive the reverse pipe so an
+    // edge-hosted DJ's mic + music stay distinct on origin.
+    async function buildReverseFinalizeApp() {
+      const producer = {
+        id: "origin-producer-1",
+        closed: false,
+        on: vi.fn(),
+        close: vi.fn(),
+      };
+      const finalizeReverseInbound = vi.fn().mockResolvedValue({ producer });
+      const registerProducer = vi.fn().mockResolvedValue(undefined);
+      const ioLocalEmit = vi.fn();
+      const localApp = Fastify();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await localApp.register(
+        createInternalRoutes({
+          roomManager: {
+            getRoomCount: vi.fn().mockReturnValue(1),
+            getRoom: vi.fn().mockReturnValue({ registerProducer }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          roomRegistry: createMockRoomRegistry() as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pipeManager: { ...createMockPipeManager(), finalizeReverseInbound } as any,
+          cascadeRelay: null,
+          cascadeCoordinator: null,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          io: { local: { to: vi.fn().mockReturnValue({ emit: ioLocalEmit }) } } as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          seatRepository: createMockSeatRepository() as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          redis: createMockRedis() as any,
+        }),
+      );
+      await localApp.ready();
+      return { localApp, finalizeReverseInbound, ioLocalEmit };
+    }
+
+    const basePayload = {
+      roomId: "room-1",
+      edgeProducerId: "edge-prod-A",
+      transportId: "transport-1",
+      kind: "audio",
+      rtpParameters: { codecs: [], encodings: [] },
+      userId: 42,
+      edgeInstanceId: "10.99.99.99",
+    };
+
+    it("threads mediaSource=music into appData.source and the newProducer broadcast", async () => {
+      const { localApp, finalizeReverseInbound, ioLocalEmit } =
+        await buildReverseFinalizeApp();
+
+      const res = await localApp.inject({
+        method: "POST",
+        url: "/internal/pipe/reverse-finalize",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: { ...basePayload, mediaSource: "music" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(finalizeReverseInbound).toHaveBeenCalledWith(
+        "transport-1",
+        "edge-prod-A",
+        "audio",
+        expect.anything(),
+        expect.objectContaining({ source: "music", viaReversePipe: true }),
+        "room-1",
+      );
+      expect(ioLocalEmit).toHaveBeenCalledWith(
+        "audio:newProducer",
+        expect.objectContaining({ source: "music", userId: 42 }),
+      );
+      await localApp.close();
+    });
+
+    it("defaults to mic when mediaSource is omitted (older edge, rolling deploy)", async () => {
+      const { localApp, finalizeReverseInbound, ioLocalEmit } =
+        await buildReverseFinalizeApp();
+
+      const res = await localApp.inject({
+        method: "POST",
+        url: "/internal/pipe/reverse-finalize",
+        headers: { "x-internal-key": "test-internal-key-12345678" },
+        payload: basePayload,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(finalizeReverseInbound).toHaveBeenCalledWith(
+        "transport-1",
+        "edge-prod-A",
+        "audio",
+        expect.anything(),
+        expect.objectContaining({ source: "mic", viaReversePipe: true }),
+        "room-1",
+      );
+      expect(ioLocalEmit).toHaveBeenCalledWith(
+        "audio:newProducer",
+        expect.objectContaining({ source: "mic" }),
+      );
+      await localApp.close();
+    });
+  });
 });

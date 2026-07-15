@@ -262,11 +262,11 @@ export class RoomMediaCluster {
           producerId: p.id,
           userId: p.appData.userId as number,
           kind: p.kind,
-          // dj-talk-over/01: coerce to the two-value contract. appData.source
-          // is ALSO used pre-existing by the reverse-pipe path as a marker
-          // ("reverse-pipe", unrelated to mic/music) — anything that isn't
-          // explicitly "music" (undefined, "reverse-pipe", future markers)
-          // must read as "mic", never leak a third value to callers.
+          // dj-talk-over/01+07: coerce to the two-value contract. Reverse-pipe
+          // producers now carry real mic/music in appData.source too (their
+          // "reverse-pipe" marker moved to viaReversePipe) — anything that
+          // isn't explicitly "music" (undefined, future markers) must read as
+          // "mic", never leak a third value to callers.
           source: p.appData.source === "music" ? "music" : "mic",
         });
       }

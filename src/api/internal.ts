@@ -59,6 +59,9 @@ interface ReverseFinalizeBody {
   /** Originating edge's INSTANCE_ID — origin includes it in the audio:newProducer
    *  broadcast so the originating edge can filter the bounce-back relay event. */
   edgeInstanceId: string;
+  /** dj-talk-over/07: mic/music purpose tag of the edge-local producer.
+   *  Optional for rolling-deploy compat — an older edge omits it → "mic". */
+  mediaSource?: "mic" | "music";
 }
 
 interface ReverseCloseBody {
@@ -553,6 +556,13 @@ export const createInternalRoutes = (
         });
       }
 
+      // dj-talk-over/07: appData.source now carries the real mic/music tag
+      // (so an edge-hosted DJ's mic + music stay distinct on origin); the old
+      // "reverse-pipe" marker moved to its own viaReversePipe flag. Coerce so
+      // an older edge that omits mediaSource still reads as "mic".
+      const mediaSource: "mic" | "music" =
+        body.mediaSource === "music" ? "music" : "mic";
+
       try {
         const { producer } = await pipeManager.finalizeReverseInbound(
           transportId,
@@ -561,7 +571,8 @@ export const createInternalRoutes = (
           rtpParameters,
           {
             userId,
-            source: "reverse-pipe",
+            source: mediaSource,
+            viaReversePipe: true,
             originatingEdgeProducerId: edgeProducerId,
             originatingEdgeInstanceId: edgeInstanceId,
           },
@@ -606,6 +617,7 @@ export const createInternalRoutes = (
           producerId: producer.id,
           userId,
           kind: "audio",
+          source: mediaSource,
           originatingEdgeId: edgeInstanceId,
         };
         if (io) {
@@ -618,7 +630,7 @@ export const createInternalRoutes = (
         }
 
         logger.info(
-          { roomId, edgeProducerId, originProducerId: producer.id, userId, edgeInstanceId },
+          { roomId, edgeProducerId, originProducerId: producer.id, userId, edgeInstanceId, mediaSource },
           "Reverse-finalize complete; producer registered + broadcast",
         );
 

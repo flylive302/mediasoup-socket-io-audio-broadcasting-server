@@ -139,6 +139,13 @@ export class ReversePipeLifecycle {
         roomId,
       );
 
+      // dj-talk-over/07: carry the mic/music purpose tag across the reverse
+      // pipe so an edge-hosted DJ's music doesn't collide with their mic on
+      // origin. Coerce to the two-value contract (pre-feature producers have
+      // no source in appData).
+      const mediaSource: "mic" | "music" =
+        edgeProducer.appData.source === "music" ? "music" : "mic";
+
       const finalizeResponse = await this.requestReverseFinalize(
         originBaseUrl,
         roomId,
@@ -147,6 +154,7 @@ export class ReversePipeLifecycle {
         consumeResult.consumerKind,
         consumeResult.consumerRtpParameters,
         userId,
+        mediaSource,
       );
       if (!finalizeResponse) {
         await this.closeReversePipe(roomId, edgeProducer.id);
@@ -283,6 +291,7 @@ export class ReversePipeLifecycle {
     kind: import("mediasoup").types.MediaKind,
     rtpParameters: import("mediasoup").types.RtpParameters,
     userId: number,
+    mediaSource: "mic" | "music",
   ): Promise<ReverseFinalizeResponse | null> {
     const url = `${originBaseUrl}/internal/pipe/reverse-finalize`;
     try {
@@ -303,6 +312,7 @@ export class ReversePipeLifecycle {
             rtpParameters,
             userId,
             edgeInstanceId: config.INSTANCE_ID,
+            mediaSource,
           }),
           signal: controller.signal,
         });
