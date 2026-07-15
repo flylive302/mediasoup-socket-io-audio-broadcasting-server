@@ -21,8 +21,12 @@ echo "=== Starting MSAB Vultr bootstrap ==="
 echo "Announced public IP (Terraform-known): ${announced_ip}"
 
 # --- System updates ---
+# DEBIAN_FRONTEND + force-confold: package updates (e.g. openssh-server) can
+# raise an interactive conffile prompt that hangs cloud-init forever on a
+# console nobody is watching — this froze two consecutive bom-01 bootstraps.
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get upgrade -y -qq
+apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y -qq
 
 # --- Disable ufw early: Vultr's cloud firewall is the single intended perimeter ---
 # Ubuntu images may ship ufw active (only 22/tcp allowed), which would block the
