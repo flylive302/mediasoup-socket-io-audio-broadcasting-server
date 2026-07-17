@@ -376,10 +376,29 @@ describe("EventRouter", () => {
         await flushPromises();
 
         expect(roomStateRepo.save).toHaveBeenCalledWith(
-          expect.objectContaining({ seatCount: maxSeats }),
+          expect.objectContaining({
+            seatCount: maxSeats,
+            // room-battery-perf/05: the relay stamps itself as the seat-count
+            // authority so a joiner's payload can never overwrite it.
+            seatCountSource: "laravel",
+          }),
         );
       },
     );
+
+    // room-battery-perf/05: an unchanged value still stamps the source so a
+    // pending "default" (room created, no join yet) is locked once Laravel
+    // has spoken.
+    it("stamps seatCountSource 'laravel' even when the value is unchanged", async () => {
+      const roomStateRepo = createMockRoomStateRepo(15);
+
+      await routeRoomUpdated(roomStateRepo, 15);
+      await flushPromises();
+
+      expect(roomStateRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ seatCount: 15, seatCountSource: "laravel" }),
+      );
+    });
 
     it.each([31, 0, "20", null, undefined])(
       "rejects an out-of-bounds/non-numeric maxSeats of %o",

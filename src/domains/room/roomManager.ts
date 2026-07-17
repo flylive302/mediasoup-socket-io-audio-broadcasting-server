@@ -369,15 +369,25 @@ export class RoomManager {
     // down and release the CAS claim so the next join re-creates cleanly.
     try {
       // 3. Initialize State (source of truth for auto-close + participant count)
-      await this.stateRepo.save({
-        id: roomId,
-        status: "ACTIVE",
-        participantCount: 0,
-        seatCount: 15, // BL-008: Default; updated when first joiner sends seatCount
-        mode: "interactive", // realtime-08: every Room starts interactive; flips at the Listener threshold
-        createdAt: Date.now(),
-        lastActivityAt: Date.now(),
-      });
+      // room-battery-perf/05: create-if-absent ONLY. room:state lives in the
+      // per-REGION shared Redis, so a second instance in the region creating
+      // its local cluster for the same room (same-region cascade edge, B-1)
+      // must never clobber the origin's live state — an unconditional save
+      // here reset participantCount/seatCount to defaults and reopened the
+      // "default" seat-count claim window for the next joiner.
+      const existingState = await this.stateRepo.get(roomId);
+      if (!existingState) {
+        await this.stateRepo.save({
+          id: roomId,
+          status: "ACTIVE",
+          participantCount: 0,
+          seatCount: 15, // BL-008: Default; replaced ONLY by the room-establishing first join
+          seatCountSource: "default", // room-battery-perf/05: first join may claim; then locked
+          mode: "interactive", // realtime-08: every Room starts interactive; flips at the Listener threshold
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+        });
+      }
 
       // 4. Notify Laravel Live (including hosting info for cross-region cascade)
       await this.laravelClient.updateRoomStatus(roomId, {

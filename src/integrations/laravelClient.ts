@@ -192,9 +192,12 @@ export class LaravelClient {
   }
 
   /**
-   * Fetch room metadata (including owner_id)
+   * Fetch room metadata (including owner_id and, when the backend exposes it,
+   * the owner-configured max_seats — room-battery-perf/05 authoritative refetch).
    */
-  async getRoomData(roomId: string): Promise<{ owner_id: number }> {
+  async getRoomData(
+    roomId: string,
+  ): Promise<{ owner_id: number; max_seats: number | null }> {
     const response = await this.get(`/api/v1/internal/rooms/${roomId}`);
 
     if (!response.ok) {
@@ -238,7 +241,15 @@ export class LaravelClient {
       );
     }
 
-    return { owner_id: ownerId };
+    // Tolerant read: an older backend without max_seats yields null (callers
+    // must treat null as "unknown", never as a seat count).
+    const maxSeatsRaw = (parsed as { max_seats?: unknown }).max_seats;
+    const maxSeats =
+      typeof maxSeatsRaw === "number" && Number.isFinite(maxSeatsRaw)
+        ? maxSeatsRaw
+        : null;
+
+    return { owner_id: ownerId, max_seats: maxSeats };
   }
 
   /**

@@ -19,15 +19,38 @@ export const takeSeatHandler = createHandler(
 
     // SEAT-009: Use actual per-room seatCount from state
     const roomState = await context.roomManager.state.get(roomId);
-    const seatCount = roomState?.seatCount ?? config.DEFAULT_SEAT_COUNT;
+    let seatCount = roomState?.seatCount ?? config.DEFAULT_SEAT_COUNT;
 
     // Use atomic Redis operation for horizontal scaling safety
-    const result = await context.seatRepository.takeSeat(
+    let result = await context.seatRepository.takeSeat(
       roomId,
       userId,
       seatIndex,
       seatCount,
     );
+
+    // room-battery-perf/05: cross-region gap. The room.updated relay only
+    // reaches regions it was delivered to, so a locally-stale seatCount can
+    // reject a seat the owner legitimately configured. On an out-of-range
+    // rejection, refetch the authoritative count from Laravel and retry ONCE
+    // when it proves the local count stale (larger). Invariant: any seat
+    // within the owner-configured count is takeable on every region.
+    if (!result.success && result.error === Errors.SEAT_INVALID) {
+      const refreshed = await refetchAuthoritativeSeatCount(
+        roomId,
+        seatCount,
+        context,
+      );
+      if (refreshed !== null && seatIndex < refreshed) {
+        seatCount = refreshed;
+        result = await context.seatRepository.takeSeat(
+          roomId,
+          userId,
+          seatIndex,
+          seatCount,
+        );
+      }
+    }
 
     if (!result.success) {
       if (result.error === Errors.SEAT_TAKEN) {
@@ -75,6 +98,51 @@ export const takeSeatHandler = createHandler(
 );
 
 // ── Stage helpers ────────────────────────────────────────────
+
+/**
+ * room-battery-perf/05: authoritative seat-count refetch for the cross-region
+ * gap. Returns the owner-configured count from Laravel when it's larger than
+ * the local (possibly stale) count — and persists it to RoomState (source
+ * "laravel") so the region self-heals for every later action. Returns null
+ * when the fetch fails, the backend doesn't expose max_seats, or the fetched
+ * count is out of bounds / not larger (a smaller count must never bypass the
+ * shrink-eviction path owned by the room.updated relay).
+ */
+async function refetchAuthoritativeSeatCount(
+  roomId: string,
+  localSeatCount: number,
+  context: AppContext,
+): Promise<number | null> {
+  try {
+    const { max_seats } = await context.laravelClient.getRoomData(roomId);
+    if (
+      max_seats === null ||
+      max_seats <= localSeatCount ||
+      max_seats > config.MAX_SEAT_COUNT
+    ) {
+      return null;
+    }
+
+    const state = await context.roomManager.state.get(roomId);
+    if (state) {
+      state.seatCount = max_seats;
+      state.seatCountSource = "laravel";
+      await context.roomManager.state.save(state);
+    }
+
+    logger.info(
+      { roomId, localSeatCount, authoritativeSeatCount: max_seats },
+      "Seat-take out-of-range — healed stale seatCount from Laravel",
+    );
+    return max_seats;
+  } catch (err) {
+    logger.warn(
+      { err, roomId, localSeatCount },
+      "Authoritative seatCount refetch failed — keeping local count",
+    );
+    return null;
+  }
+}
 
 /**
  * Resolve the authoritative occupant of a contested seat for the SEAT_TAKEN

@@ -11,11 +11,25 @@ export type RoomStatus = "ACTIVE";
  */
 export type RoomMode = "interactive" | "broadcast";
 
+/**
+ * Who last established `seatCount` (room-battery-perf/05).
+ *
+ *  - `default` — placeholder from room creation; the FIRST join may replace it.
+ *  - `client`  — set by the room-establishing first join. Locked to later joins.
+ *  - `laravel` — set by the `room.updated` relay (or the seat-take authoritative
+ *    refetch). The only post-creation writer.
+ *
+ * Legacy state keys written before this field existed deserialize as
+ * `undefined` and are treated as LOCKED (their count was already established).
+ */
+export type SeatCountSource = "default" | "client" | "laravel";
+
 export interface RoomState {
   id: string;
   status: RoomStatus;
   participantCount: number;
   seatCount: number; // BL-008: Per-room seat count (default 15)
+  seatCountSource?: SeatCountSource; // room-battery-perf/05: seat-count write authority
   mode: RoomMode; // realtime-08: interactive↔broadcast tier (default "interactive")
   createdAt: number;
   lastActivityAt: number;

@@ -191,7 +191,7 @@ async function processJoin(
   context: AppContext,
 ) {
   const { roomId, ownerId } = payload;
-  const seatCount = payload.seatCount ?? 15;
+  const requestedSeatCount = payload.seatCount ?? config.DEFAULT_SEAT_COUNT;
   const {
     io,
     roomManager,
@@ -205,6 +205,19 @@ async function processJoin(
   const selfId = config.INSTANCE_ID;
 
   let cluster = await resolveClusterForJoin(roomId, context);
+
+  // room-battery-perf/05: seat-count authority. The joiner's payload seatCount
+  // is applied ONLY when it establishes the room (state fresh from creation,
+  // source "default"). After that the sole writer is the Laravel room.updated
+  // relay — a stale client's join can no longer shrink the room's seat layout.
+  // Resolved BEFORE any seat reads below so the whole join (edge snapshot,
+  // getSeats, response) uses the authoritative count, and BEFORE
+  // adjustParticipantCount so the get→save here can't lose its update.
+  const seatCount = await resolveAuthoritativeSeatCount(
+    roomId,
+    requestedSeatCount,
+    context,
+  );
 
   // Refresh ownership TTL on every join so long-running celebrity broadcasts
   // don't hit the 24h orphan window. No-op (via Lua check) if we're not the owner.
@@ -479,16 +492,6 @@ async function processJoin(
   // Join socket room
   socket.join(roomId);
 
-  // Sync seatCount from frontend to Redis state
-  // NOTE: Must run BEFORE adjustParticipantCount since both operate on the same
-  // room:state key. Running in parallel would cause save() to overwrite the
-  // adjusted participant count (lost-update race).
-  const state = await roomManager.state.get(roomId);
-  if (state && state.seatCount !== seatCount) {
-    state.seatCount = seatCount;
-    await roomManager.state.save(state);
-  }
-
   // Parallel Redis operations (safe — these use different Redis keys)
   const [newCount, , , localMusicPlayer] = await Promise.all([
     roomManager.state.adjustParticipantCount(roomId, 1),
@@ -523,6 +526,47 @@ async function processJoin(
       ? { seatIndex: reclaim.seatIndex ?? -1, isMuted: reclaim.isMuted ?? false }
       : null,
   };
+}
+
+/**
+ * room-battery-perf/05: resolve the seat count this join must use.
+ *
+ * Rules:
+ *  - No room state (degraded/racing create): the payload is the only signal.
+ *  - Source "default" (state fresh from doCreateRoom, no join has established
+ *    it yet): this IS the room-establishing join — apply the payload count and
+ *    lock it as "client".
+ *  - Anything else ("client", "laravel", or a legacy key without the field):
+ *    room state is authoritative; a mismatching payload is logged for
+ *    stale-client observability and NEVER applied.
+ */
+async function resolveAuthoritativeSeatCount(
+  roomId: string,
+  requestedSeatCount: number,
+  context: AppContext,
+): Promise<number> {
+  const state = await context.roomManager.state.get(roomId);
+  if (!state) return requestedSeatCount;
+
+  if (state.seatCountSource === "default") {
+    state.seatCount = requestedSeatCount;
+    state.seatCountSource = "client";
+    await context.roomManager.state.save(state);
+    return requestedSeatCount;
+  }
+
+  if (state.seatCount !== requestedSeatCount) {
+    logger.warn(
+      {
+        roomId,
+        requestedSeatCount,
+        authoritativeSeatCount: state.seatCount,
+        seatCountSource: state.seatCountSource ?? "legacy",
+      },
+      "Joiner seatCount mismatch ignored — room state is authoritative",
+    );
+  }
+  return state.seatCount;
 }
 
 // ── REACT ───────────────────────────────────────────────────

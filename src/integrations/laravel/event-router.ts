@@ -486,9 +486,13 @@ export class EventRouter {
     this.roomStateRepo
       .get(roomId)
       .then(async (state) => {
-        if (!state || state.seatCount === maxSeats) return;
+        // room-battery-perf/05: even when the value is unchanged, stamp the
+        // source so a pending "default" (no join yet) can no longer be
+        // claimed by a joiner's payload once Laravel has spoken.
+        if (!state || (state.seatCount === maxSeats && state.seatCountSource === "laravel")) return;
         const previousSeatCount = state.seatCount;
         state.seatCount = maxSeats;
+        state.seatCountSource = "laravel";
         await this.roomStateRepo!.save(state);
 
         this.logger.info(
