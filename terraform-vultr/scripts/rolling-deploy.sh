@@ -46,6 +46,9 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-480}"    # seconds to wait for a fresh instanc
 POLL_INTERVAL="${POLL_INTERVAL:-10}"
 TFVARS_FILE="${TFVARS_FILE:-}"             # local runs pass a *.tfvars; CI passes TF_VAR_* env instead
 DRY_RUN="${DRY_RUN:-}"                      # any non-empty value = print actions, skip drain/replace
+ROLL_ONLY="${ROLL_ONLY:-}"                  # optional "region:index[,region:index]" allowlist — roll ONLY these
+                                            # instances (recovery: recreate a dead box without draining and
+                                            # re-replacing siblings that are already healthy on the target image)
 
 TF_VARFILE_ARG=()
 [[ -n "${TFVARS_FILE}" ]] && TF_VARFILE_ARG=(-var-file="${TFVARS_FILE}")
@@ -58,7 +61,7 @@ drain_instance() {
   if [[ -n "${DRY_RUN}" ]]; then log "   DRY_RUN drain ${ip}"; return 0; fi
 
   log "   ⇢ draining ${ip} (rooms close, ≤${DRAIN_TIMEOUT}s)"
-  if ! curl -fsS -X POST "http://${ip}:${APP_PORT}/admin/drain?timeout=${DRAIN_TIMEOUT}" \
+  if ! curl -fsS -m 15 -X POST "http://${ip}:${APP_PORT}/admin/drain?timeout=${DRAIN_TIMEOUT}" \
     -H "X-Internal-Key: ${LARAVEL_INTERNAL_KEY}" >/dev/null; then
     # Unreachable instance — the usual cause is a previously halted roll that
     # destroyed it (fee-cap rejection). Nothing to drain; the replace step
@@ -69,7 +72,7 @@ drain_instance() {
 
   local elapsed=0 deadline=$((DRAIN_TIMEOUT + 60)) status
   while (( elapsed < deadline )); do
-    status=$(curl -fsS "http://${ip}:${APP_PORT}/admin/status" \
+    status=$(curl -fsS -m 10 "http://${ip}:${APP_PORT}/admin/status" \
       -H "X-Internal-Key: ${LARAVEL_INTERNAL_KEY}" 2>/dev/null || echo '{}')
     if [[ "$(jq -r '.drained // false' <<<"$status")" == "true" ]]; then
       log "   ⇢ drained (rooms=$(jq -r '.rooms // "?"' <<<"$status"))"
@@ -163,7 +166,10 @@ wait_health() {
   log "   ⇢ waiting for ${ip}/health=200 (≤${HEALTH_TIMEOUT}s — fresh instance runs full cloud-init: docker install + image pull, several minutes; not a hang)"
   local elapsed=0 code
   while (( elapsed < HEALTH_TIMEOUT )); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://${ip}:${APP_PORT}/health" 2>/dev/null || echo 000)
+    # -m 10: a black-holing IP (dead/never-provisioned box) otherwise blocks
+    # each probe on TCP connect for minutes while `elapsed` only counts 15s,
+    # stretching the ${HEALTH_TIMEOUT}s gate into an hour of real time.
+    code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://${ip}:${APP_PORT}/health" 2>/dev/null || echo 000)
     [[ "$code" == "200" ]] && { log "   ✅ ${ip} healthy"; return 0; }
     sleep 15; elapsed=$((elapsed + 15))
   done
@@ -186,6 +192,10 @@ main() {
     for (( i = 0; i < count; i++ )); do
       ip=$(jq -r --arg r "$region" --argjson i "$i" '.[$r][$i]' <<<"$ips_json")
       addr="module.compute[\"${region}\"].vultr_instance.main[${i}]"
+      if [[ -n "${ROLL_ONLY}" ]] && [[ ",${ROLL_ONLY}," != *",${region}:${i},"* ]]; then
+        log "── ${region}[${i}]  ${ip}  →  skipped (ROLL_ONLY=${ROLL_ONLY})"
+        continue
+      fi
       log "── ${region}[${i}]  ${ip}  →  ${addr}"
       drain_instance "$ip"       # halts roll on stall
       roll_one_instance "$addr"  # halts roll on terraform error (after create-only retries)

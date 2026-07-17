@@ -28,6 +28,11 @@ on:
         description: "ghcr image tag to roll to (sha-<commit8>)."
         required: true
         type: string
+      roll_only:
+        description: "Optional 'region:index[,region:index]' allowlist — roll only these instances (recovery of a dead box without touching healthy siblings)."
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   # One deploy per environment at a time (a roll must never overlap another).
@@ -60,6 +65,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
           TFVARS_FILE: ${{ inputs.tfvars_file }}
+          ROLL_ONLY: ${{ inputs.roll_only }}
           # /admin/* auth == the laravel_internal_key TF var.
           LARAVEL_INTERNAL_KEY: ${{ secrets.TF_VAR_laravel_internal_key }}
           # Secrets the scoped -replace apply needs (non-secret vars come from TFVARS_FILE).

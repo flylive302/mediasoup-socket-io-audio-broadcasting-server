@@ -17,6 +17,12 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      roll_only:
+        description: "Optional 'region:index[,region:index]' allowlist — roll only these instances (e.g. 'bom:1' to recreate one dead box without draining healthy siblings)."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -33,4 +39,5 @@ jobs:
       tf_workspace: msab-vultr-production
       tfvars_file: ci/production.tfvars
       image_tag: ${{ needs.build.outputs.image_tag }}
+      roll_only: ${{ inputs.roll_only || '' }}
     secrets: inherit
