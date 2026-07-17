@@ -82,6 +82,7 @@ export const RELAY_EVENTS = {
     ROOM_UPDATED: "room.updated",
     ROOM_INVITATION_CREATED: "room.invitation_created",
     ROOM_INVITATION_CANCELLED: "room.invitation_cancelled",
+    ROOM_INVITATION_DECLINED: "room.invitation_declined",
     ROOM_JOIN_REQUEST_CANCELLED: "room.join_request_cancelled",
     ROOM_USER_UNBLOCKED: "room.user_unblocked",
     // realtime-13 (L2): admin "End Live". NOT pure pass-through — EventRouter
