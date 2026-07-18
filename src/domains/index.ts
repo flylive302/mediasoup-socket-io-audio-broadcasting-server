@@ -17,6 +17,8 @@ import { mediaHandler } from "./media/media.handler.js";
 import { chatHandler } from "./chat/index.js";
 import { userHandler } from "./user/user.handler.js";
 import { audioPlayerHandler } from "./audio-player/index.js";
+import { inboxTypingHandler } from "./inbox-typing/index.js";
+import { presenceHandler } from "./presence/index.js";
 
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { registerLifecycle } from "@src/shared/lifecycle.js";
@@ -32,6 +34,8 @@ export const domains: DomainRegistration[] = [
   chatHandler,
   userHandler,
   audioPlayerHandler,
+  inboxTypingHandler,
+  presenceHandler,
 ] as const;
 
 /**

@@ -22,6 +22,7 @@ import type { EventRouter } from "./integrations/laravel/event-router.js";
 import type { CascadeCoordinator } from "./domains/cascade/cascade-coordinator.js";
 import type { CascadeRelay } from "./domains/cascade/cascade-relay.js";
 import type { RoomRegistry } from "./domains/room/room-registry.js";
+import type { PresenceService } from "./domains/presence/index.js";
 
 
 export interface AppContext {
@@ -42,6 +43,7 @@ export interface AppContext {
   seatRepository: SeatRepository;
   userSocketRepository: UserSocketRepository;
   userRoomRepository: UserRoomRepository;
+  presenceService: PresenceService;
 
   eventRouter: EventRouter;
   cascadeCoordinator: CascadeCoordinator | null;

@@ -162,10 +162,40 @@ export const RELAY_EVENTS = {
     SLIDE_PLAY: "slide:play",
   },
 
-  /** Mission: Recharge Activity winner announcement + finale snapshot signal */
+  /** Mission: Recharge Activity progress push, winner announcement + finale snapshot signal */
   mission: {
+    MISSION_PROGRESS_UPDATED: "mission.progress.updated",
     MISSION_WINNER: "mission.winner",
     MISSION_FINALE_READY: "mission.finale.ready",
+  },
+
+  /**
+   * Inbox: DM/thread realtime hints (dm-realtime-platform/02). All four DM
+   * events are user-targeted (user_id envelope, recipient's private inbox).
+   * These are Realtime Hints only (ADR 0021) — the FE still fetches/reconciles
+   * via REST; MSAB is pure pass-through, no processing.
+   */
+  inbox: {
+    DM_MESSAGE_RECEIVED: "dm.message.received",
+    DM_MESSAGE_UNSENT: "dm.message.unsent",
+    DM_THREAD_REQUEST: "dm.thread.request",
+    DM_THREAD_ACCEPTED: "dm.thread.accepted",
+    /**
+     * Read receipts (dm-realtime-platform/08): thread-level seen watermark
+     * advanced. User_id-targeted at the peer (not the reader). Realtime
+     * Hint only — thread/message fetch payloads carry the watermark too.
+     */
+    DM_THREAD_SEEN: "dm.thread.seen",
+    /**
+     * Broadcast-style: Laravel dispatches this per-recipient today (fan-out
+     * loop over targeted/filtered/all users), so it is normally routed
+     * user_id-targeted like the DM events above. When Laravel instead
+     * publishes it with both user_id and room_id null (true "all users"
+     * broadcast), the existing generic EventRouter.determineTarget() already
+     * falls through to the `broadcast` case (emitToAll / io.emit) — no
+     * per-event routing code needed here.
+     */
+    OFFICIAL_MESSAGE_RECEIVED: "official.message.received",
   },
 } as const;
 

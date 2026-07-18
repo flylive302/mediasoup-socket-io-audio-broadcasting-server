@@ -27,6 +27,7 @@ import { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import { RoomModeService } from "@src/domains/room/mode/room-mode.service.js";
 import { createBroadcastController } from "@src/domains/broadcast/index.js";
 import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
+import { PresenceService } from "@src/domains/presence/index.js";
 
 // Events module (Laravel pub/sub integration)
 import {
@@ -105,6 +106,12 @@ export async function initializeSocket(
     broadcastController.onRoomClosed(roomId),
   );
 
+  // dm-realtime-platform/07: DM presence (connection-count, per-user, TTL'd).
+  // Started here (sweep timer) and stopped in the graceful-shutdown sequence
+  // (src/index.ts), mirroring autoCloseJob/statusCoalescer.
+  const presenceService = new PresenceService(redis, io, clientManager);
+  presenceService.start();
+
   // Initialize auto-close system (presence-gated, not integer-gated)
   const autoCloseService = new AutoCloseService(redis, presenceTracker);
   const autoCloseJob = new AutoCloseJob(
@@ -164,6 +171,7 @@ export async function initializeSocket(
     seatRepository,
     userSocketRepository,
     userRoomRepository,
+    presenceService,
 
     eventRouter,
     cascadeCoordinator: null, // Wired in server.ts after bootstrap
@@ -185,6 +193,12 @@ export async function initializeSocket(
     // RL-013 FIX: Register socket with retry (Redis-backed for cross-instance)
     if (userId) {
       registerWithRetry(userSocketRepository, userId, socket.id, logger);
+    }
+
+    // dm-realtime-platform/07: presence INCR (0→1 emits online). Fire-and-forget
+    // (REACT) — a presence hiccup must never block the connection.
+    if (userId) {
+      void presenceService.onConnect(userId);
     }
 
 
@@ -210,6 +224,7 @@ export async function initializeSocket(
         logger,
         cascadeRelay: appContext.cascadeRelay,
         appContext,
+        presenceService,
       });
       activeDisconnects.add(p);
       void p.finally(() => activeDisconnects.delete(p));
@@ -233,6 +248,7 @@ interface DisconnectDeps {
   logger: typeof logger;
   cascadeRelay: CascadeRelay | null;
   appContext: AppContext;
+  presenceService: PresenceService;
 }
 
 async function handleDisconnect(
@@ -240,11 +256,17 @@ async function handleDisconnect(
   reason: string,
   deps: DisconnectDeps,
 ): Promise<void> {
-  const { clientManager, userSocketRepository, userRoomRepository, logger: log, appContext } = deps;
+  const { clientManager, userSocketRepository, userRoomRepository, logger: log, appContext, presenceService } = deps;
 
   log.info({ socketId: socket.id, reason }, "Socket disconnected");
 
   const client = clientManager.getClient(socket.id);
+
+  // dm-realtime-platform/07: presence DECR (<=0 emits offline). Fire-and-forget
+  // (REACT). Must run for every disconnected socket regardless of room state.
+  if (client?.userId) {
+    void presenceService.onDisconnect(client.userId);
+  }
   // Capture the room BEFORE finalizeLeave (which clears client.roomId) so the
   // lifecycle-hook context below still carries it.
   const disconnectRoomId = client?.roomId ?? null;

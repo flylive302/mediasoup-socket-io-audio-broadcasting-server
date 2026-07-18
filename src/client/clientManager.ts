@@ -69,6 +69,20 @@ export class ClientManager {
   }
 
   /**
+   * Distinct user ids with at least one socket connected to THIS instance.
+   * dm-realtime-platform/07: drives the presence sweep's per-instance
+   * re-EXPIRE — ClientManager tracking is instance-local by design, so each
+   * MSAB instance only refreshes TTLs for users it actually holds sockets for.
+   */
+  getConnectedUserIds(): number[] {
+    const userIds = new Set<number>();
+    for (const client of this.clients.values()) {
+      userIds.add(client.userId);
+    }
+    return [...userIds];
+  }
+
+  /**
    * Update client's room and maintain the room index.
    * PERF-006: Must be called instead of directly setting client.roomId
    */

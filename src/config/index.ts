@@ -75,6 +75,9 @@ const configSchema = z.object({
   // Seat Reactions: ~1 per 1.5s per sender (ADR 0015 / seat-reactions slice 01)
   RATE_LIMIT_SEAT_REACTIONS_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_SEAT_REACTIONS_WINDOW_SECONDS: z.coerce.number().default(1.5),
+  // DM Typing indicator: ~1 per 2s per (sender, thread) — dm-realtime-platform/04
+  RATE_LIMIT_TYPING_PER_WINDOW: z.coerce.number().default(1),
+  RATE_LIMIT_TYPING_WINDOW_SECONDS: z.coerce.number().default(2),
   // F-44: deliberate fail-policy for the rate limiter on a Redis error.
   // Default false = fail-closed (preserves prior production behavior: deny on
   // Redis blip). Set true to fail-open (allow), matching jwtValidator's
@@ -130,6 +133,18 @@ const configSchema = z.object({
 
   // Seats
   DEFAULT_SEAT_COUNT: z.coerce.number().default(15),
+
+  // DM Presence (dm-realtime-platform/07): connection-count presence keyed
+  // per-user in shared Redis, no client heartbeat. TTL must comfortably
+  // exceed the sweep interval so a single missed sweep tick can't lapse a
+  // live connection's key; default 75s TTL / 30s sweep gives 2 full retries
+  // of margin before expiry.
+  PRESENCE_TTL_SECONDS: z.coerce.number().int().positive().default(75),
+  PRESENCE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  // Cap on ids per presence:subscribe/unsubscribe call — bounds a single
+  // socket's inbox-scoped room-join fan-out (open inbox list + open thread
+  // is well under this in normal use).
+  PRESENCE_SUBSCRIBE_MAX: z.coerce.number().int().positive().default(50),
 
 
 
@@ -205,6 +220,14 @@ const configSchema = z.object({
       message:
         "BROADCAST_HLS_ENABLED=true requires HLS_R2_ENDPOINT, HLS_R2_ACCESS_KEY_ID, HLS_R2_SECRET_ACCESS_KEY, HLS_R2_BUCKET, and HLS_PUBLIC_BASE_URL.",
       path: ["BROADCAST_HLS_ENABLED"],
+    },
+  )
+  .refine(
+    (c) => c.PRESENCE_TTL_SECONDS * 1000 > c.PRESENCE_SWEEP_INTERVAL_MS,
+    {
+      message:
+        "PRESENCE_TTL_SECONDS must be greater than PRESENCE_SWEEP_INTERVAL_MS (in seconds) — otherwise a single sweep tick can't outrun expiry.",
+      path: ["PRESENCE_TTL_SECONDS"],
     },
   );
 

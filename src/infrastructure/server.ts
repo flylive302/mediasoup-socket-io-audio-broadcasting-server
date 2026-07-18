@@ -22,6 +22,7 @@ import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { WorkerManager } from "./worker.manager.js";
 import type { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import type { AutoCloseJob } from "@src/domains/room/auto-close/index.js";
+import type { PresenceService } from "@src/domains/presence/index.js";
 import { RoomRegistry } from "@src/domains/room/room-registry.js";
 import { PipeManager } from "@src/domains/media/pipe-manager.js";
 import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
@@ -40,6 +41,7 @@ export interface BootstrapResult {
   pipeManager: PipeManager;
   revocationPoller: RevocationBackfillPoller;
   statusCoalescer: StatusCoalescer;
+  presenceService: PresenceService;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -190,6 +192,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     pipeManager,
     revocationPoller,
     statusCoalescer,
+    presenceService: appContext.presenceService,
   };
 }
 

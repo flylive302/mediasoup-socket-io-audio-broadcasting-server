@@ -340,3 +340,45 @@ export const audioPlayerStateUpdateSchema = z.object({
   isPaused: z.boolean(),
 });
 
+// ─────────────────────────────────────────────────────────────────
+// DM Typing Indicator Schemas (dm-realtime-platform/04)
+// Ephemeral client→MSAB→peer relay; no persistence, no backend involvement.
+// ─────────────────────────────────────────────────────────────────
+
+const threadIdSchema = z.string().min(1);
+
+// Socket joins/leaves a per-(thread,self) room so the peer's typing relay
+// can be scoped to sockets that currently have this thread open.
+export const dmThreadOpenSchema = z.object({
+  threadId: threadIdSchema,
+});
+
+export const dmThreadCloseSchema = z.object({
+  threadId: threadIdSchema,
+});
+
+export const dmTypingSchema = z.object({
+  threadId: threadIdSchema,
+  peerUserId: z.number().int().positive(),
+});
+
+// ─────────────────────────────────────────────────────────────────
+// DM Presence Schemas (dm-realtime-platform/07)
+// Inbox-scoped online/offline subscription — never global (ADR 0021).
+// Cap enforced again inside the handler (config.PRESENCE_SUBSCRIBE_MAX) since
+// the numeric cap is runtime-configurable; the schema bounds array shape only.
+// ─────────────────────────────────────────────────────────────────
+
+const presenceUserIdsSchema = z
+  .array(z.number().int().positive())
+  .min(1)
+  .max(50);
+
+export const presenceSubscribeSchema = z.object({
+  userIds: presenceUserIdsSchema,
+});
+
+export const presenceUnsubscribeSchema = z.object({
+  userIds: presenceUserIdsSchema,
+});
+

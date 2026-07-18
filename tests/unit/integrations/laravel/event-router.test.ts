@@ -341,6 +341,86 @@ describe("EventRouter", () => {
 
       expect(result.delivered).toBe(true);
     });
+
+    it("allows mission.progress.updated to pass through and routes to the user's sockets", async () => {
+      repo.getSocketIds.mockResolvedValue(["socket-1", "socket-2"]);
+
+      const event = createEvent({
+        event: "mission.progress.updated",
+        user_id: 42,
+        room_id: null,
+        payload: { milestone_id: 7, timeframe: "daily", instance_key: "daily:2026-06-15" },
+      });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(repo.getSocketIds).toHaveBeenCalledWith(42);
+      expect(io.to).toHaveBeenCalledWith("socket-1");
+      expect(io._toReturnValue.to).toHaveBeenCalledWith("socket-2");
+      expect(io._toReturnValue.emit).toHaveBeenCalledWith("mission.progress.updated", event.payload);
+    });
+  });
+
+  // ─── dm-realtime-platform/02: Inbox DM/thread + official events ───
+
+  describe("inbox relay events (dm-realtime-platform/02)", () => {
+    it.each([
+      "dm.message.received",
+      "dm.message.unsent",
+      "dm.thread.request",
+      "dm.thread.accepted",
+      "dm.thread.seen",
+      "official.message.received",
+    ])("allows %s to pass through and routes to the target user's sockets", async (eventName) => {
+      repo.getSocketIds.mockResolvedValue(["socket-1"]);
+
+      const event = createEvent({
+        event: eventName,
+        user_id: 7,
+        room_id: null,
+        payload: { threadId: 3 },
+      });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(repo.getSocketIds).toHaveBeenCalledWith(7);
+      expect(io.to).toHaveBeenCalledWith("socket-1");
+      expect(io._toReturnValue.emit).toHaveBeenCalledWith(eventName, event.payload);
+    });
+
+    it("routes official.message.received to nobody when the target user has no active sockets", async () => {
+      repo.getSocketIds.mockResolvedValue([]);
+
+      const event = createEvent({
+        event: "official.message.received",
+        user_id: 99,
+        room_id: null,
+        payload: { id: 1, content: "hi", isTargeted: false, isFiltered: false, sentAt: "2026-07-18T00:00:00Z" },
+      });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(false);
+      expect(result.targetCount).toBe(0);
+    });
+
+    it("broadcasts official.message.received to every connected socket when user_id and room_id are both null", async () => {
+      io.sockets.sockets = new Map([
+        ["s1", {}],
+        ["s2", {}],
+      ]);
+
+      const event = createEvent({
+        event: "official.message.received",
+        user_id: null,
+        room_id: null,
+        payload: { id: 5, content: "app-wide announcement", isTargeted: false, isFiltered: false, sentAt: "2026-07-18T00:00:00Z" },
+      });
+      const result = await router.route(event);
+
+      expect(io.emit).toHaveBeenCalledWith("official.message.received", event.payload);
+      expect(result.delivered).toBe(true);
+      expect(result.targetCount).toBe(2);
+    });
   });
 
   // ─── room-seat-caps/01: syncRoomSettings maxSeats bound ────────
