@@ -17,6 +17,7 @@ import {
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom, emitToRoom } from "@src/shared/room-emit.js";
+import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { Errors } from "@src/shared/errors.js";
 import { verifyRoomManager, verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 
@@ -29,6 +30,34 @@ const musicStateKey = (roomId: string) => `room:${roomId}:musicState`;
 
 // B-5 FIX: TTL for music player keys — safety net if server crashes without cleanup
 const MUSIC_PLAYER_TTL_SECONDS = 7200; // 2 hours
+
+/**
+ * music-dj-queue/01: Stale-proof slot acquisition (atomic).
+ *
+ * Always returns the RESULTING holder id, so the caller's success test is
+ * simply `result === myId`. One script covers three cases:
+ *   - free slot (GET null)        → acquire
+ *   - reuse-if-mine (GET == myId) → re-SET (refreshes TTL, never MUSIC_ALREADY_PLAYING on track change)
+ *   - CAS steal (GET == stealHolder, passed only after a JS liveness check
+ *                proved that holder has zero live sockets in the room)
+ * Otherwise the current (live, different) holder id is returned unchanged →
+ * denial. Passing stealHolder="" disables the steal branch (phase-1 call).
+ *
+ * Race safety: the steal is a compare-and-set — two admins who both observe the
+ * same dead holder cannot both win. The first CAS overwrites the key with its
+ * own id; the second sees `cur` = the winner's id (≠ stealHolder, ≠ its own id)
+ * and is denied. No check-then-set window exists because the compare and the
+ * set are one Redis round-trip inside the script.
+ */
+const ACQUIRE_MUSIC_SLOT_LUA = `
+local cur = redis.call('GET', KEYS[1])
+if (not cur) or (cur == ARGV[1]) or (ARGV[2] ~= '' and cur == ARGV[2]) then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+  return ARGV[1]
+else
+  return cur
+end
+`;
 
 // ─────────────────────────────────────────────────────────────────
 // Handlers
@@ -56,16 +85,11 @@ const playHandler = createHandler(
       return { success: false, error: authorization.error };
     }
 
-    // Acquire mutex — only one music player per room
-    // B-5 FIX: Added EX TTL so mutex auto-expires if server crashes without cleanup
-    const acquired = await context.redis.set(
-      musicPlayerKey(roomId),
-      String(userId),
-      "EX",
-      MUSIC_PLAYER_TTL_SECONDS,
-      "NX",
-    );
-
+    // Acquire mutex — stale-proof (music-dj-queue/01): free slot, reuse-if-mine
+    // (refreshes TTL so track changes never self-deny), or steal a dead holder's
+    // slot (holder with zero live sockets in this room). Only a live, different
+    // holder denies.
+    const acquired = await acquireMusicSlot(context, roomId, userId);
     if (!acquired) {
       return { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
     }
@@ -269,6 +293,84 @@ const stateUpdateHandler = createHandler(
     return { success: true };
   },
 );
+
+// ─────────────────────────────────────────────────────────────────
+// Stage helpers
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * music-dj-queue/01: fleet-wide liveness — does `userId` still have a live
+ * socket in `roomId` (optionally excluding one socket id)?
+ *
+ * clientManager is instance-local, so a local hit is authoritative ("live") but
+ * a local miss is not — the user may hold a socket on another MSAB instance
+ * (this room's members can be spread across the fleet via @socket.io/redis-adapter).
+ * Local fast-path avoids a round trip; on a miss we consult the adapter through
+ * `fetchSocketsSafe`, which is bounded and degrades to LOCAL-ONLY on cross-node
+ * failure (accepted residual: a SIGKILLed ghost node's DJ can read as dead).
+ */
+export async function userHasLiveSocketInRoom(
+  context: AppContext,
+  userId: number,
+  roomId: string,
+  excludeSocketId?: string,
+): Promise<boolean> {
+  // Local fast-path — authoritative on a hit, no round trip.
+  const local = context.clientManager.getSocketIdsByUserInRoom(userId, roomId);
+  if (local.some((id) => id !== excludeSocketId)) return true;
+
+  // Cross-instance — bounded + ghost-tolerant; empty on cross-node failure.
+  const sockets = await fetchSocketsSafe(context.io, roomId, logger);
+  return sockets.some(
+    (s) => s.id !== excludeSocketId && Number(s.data?.user?.id) === userId,
+  );
+}
+
+/**
+ * music-dj-queue/01: acquire the room's music slot, stale-proof.
+ *
+ * Phase 1 (atomic): free-slot OR reuse-if-mine. Returns the resulting holder.
+ * Phase 2 (only when denied by a DIFFERENT holder): check fleet-wide liveness
+ * via `userHasLiveSocketInRoom` (local clientManager fast-path, then the
+ * Socket.IO adapter cross-instance). If the holder has no live socket in the
+ * room anywhere, CAS-steal the slot. A live different holder is the only denial.
+ */
+async function acquireMusicSlot(
+  context: AppContext,
+  roomId: string,
+  userId: number,
+): Promise<boolean> {
+  const key = musicPlayerKey(roomId);
+  const me = String(userId);
+  const ttl = String(MUSIC_PLAYER_TTL_SECONDS);
+
+  // Phase 1 — free slot or reuse-if-mine (steal branch disabled with "").
+  const holder = (await context.redis.eval(
+    ACQUIRE_MUSIC_SLOT_LUA,
+    1,
+    key,
+    me,
+    "",
+    ttl,
+  )) as string;
+  if (holder === me) return true;
+
+  // Denied by a different holder — steal only if they have no live socket in the
+  // room ANYWHERE in the fleet (this room's users can sit on other MSAB
+  // instances behind the LB). Local check first, then cross-instance.
+  if (await userHasLiveSocketInRoom(context, Number(holder), roomId)) return false;
+
+  // Phase 2 — CAS steal: succeeds only if `holder` is STILL the dead holder.
+  const stolen = (await context.redis.eval(
+    ACQUIRE_MUSIC_SLOT_LUA,
+    1,
+    key,
+    me,
+    holder,
+    ttl,
+  )) as string;
+  return stolen === me;
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Cleanup on disconnect/leave — exported for use in socket/index.ts

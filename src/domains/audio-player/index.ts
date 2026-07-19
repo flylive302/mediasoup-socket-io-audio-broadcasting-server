@@ -5,4 +5,8 @@
  * The audio stream itself flows through existing mediasoup producers.
  */
 export { audioPlayerHandler } from "./audio-player.handler.js";
-export { releaseMusicPlayerForUser, getMusicPlayerState } from "./audio-player.handler.js";
+export {
+  releaseMusicPlayerForUser,
+  getMusicPlayerState,
+  userHasLiveSocketInRoom,
+} from "./audio-player.handler.js";
