@@ -5,6 +5,9 @@
  * The actual audio stream flows through the existing mediasoup producer
  * pipeline (client produces via Web Audio API → distribution routers).
  * These handlers coordinate metadata and UI state only.
+ *
+ * The waiting-queue machinery (FIFO enqueue, atomic release+grant, promote,
+ * ghost-skip grant chain, grace timer) lives in ./audio-player.queue.ts.
  */
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
@@ -14,22 +17,23 @@ import {
   audioPlayerTakeoverSchema,
   audioPlayerStopSchema,
   audioPlayerStateUpdateSchema,
+  audioPlayerLeaveQueueSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom, emitToRoom } from "@src/shared/room-emit.js";
-import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { Errors } from "@src/shared/errors.js";
 import { verifyRoomManager, verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
-
-// ─────────────────────────────────────────────────────────────────
-// Redis key helpers
-// ─────────────────────────────────────────────────────────────────
-
-const musicPlayerKey = (roomId: string) => `room:${roomId}:musicPlayer`;
-const musicStateKey = (roomId: string) => `room:${roomId}:musicState`;
-
-// B-5 FIX: TTL for music player keys — safety net if server crashes without cleanup
-const MUSIC_PLAYER_TTL_SECONDS = 7200; // 2 hours
+import {
+  musicPlayerKey,
+  musicStateKey,
+  musicQueueKey,
+  MUSIC_PLAYER_TTL_SECONDS,
+  enqueueMusicWaiter,
+  promoteIfFree,
+  releaseAndGrant,
+  grantChain,
+  hasLiveSocketInRoom,
+} from "./audio-player.queue.js";
 
 /**
  * music-dj-queue/01: Stale-proof slot acquisition (atomic).
@@ -71,7 +75,7 @@ const playHandler = createHandler(
   "audioPlayer:play",
   audioPlayerPlaySchema,
   async (payload, socket, context) => {
-    const { roomId, title, duration } = payload;
+    const { roomId, title, duration, enqueue } = payload;
     const userId = socket.data.user.id;
 
     const client = context.clientManager.getClient(socket.id);
@@ -89,9 +93,39 @@ const playHandler = createHandler(
     // (refreshes TTL so track changes never self-deny), or steal a dead holder's
     // slot (holder with zero live sockets in this room). Only a live, different
     // holder denies.
-    const acquired = await acquireMusicSlot(context, roomId, userId);
+    let acquired = await acquireMusicSlot(context, roomId, userId);
     if (!acquired) {
-      return { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
+      // music-dj-queue/04: OTA compat — bundles that don't opt in get today's
+      // exact behavior (no queue write, plain MUSIC_ALREADY_PLAYING).
+      if (!enqueue) {
+        return { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
+      }
+
+      // EXECUTE — enqueue behind the live DJ (idempotent), then close the
+      // release-between-denial-and-enqueue race: if the slot went free, promote
+      // the head. If that head is me I actually got the slot; if it is a
+      // different waiter, grant them; otherwise return my queued ack.
+      const position = await enqueueMusicWaiter(context.redis, roomId, userId);
+      const promoted = await promoteIfFree(context.redis, roomId);
+      if (promoted === String(userId)) {
+        // Won the freed slot — the promote SET only the provisional grace TTL, so
+        // refresh to the full crash-backstop TTL (reuse-if-mine) before falling
+        // through to the normal success path. The reacquire can still lose to an
+        // owner takeover landing between the two calls (takeover force-overwrites
+        // the key), so a false here MUST deny — falling through would broadcast
+        // "playing" for a user who no longer holds the mutex.
+        acquired = await acquireMusicSlot(context, roomId, userId);
+        if (!acquired) {
+          return { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
+        }
+      } else {
+        // music-dj-queue/05: a different head was promoted in the race window —
+        // grant it through the ghost-skip chain (the head may itself be dead).
+        if (promoted && promoted !== String(userId)) {
+          await grantChain(context.io, context.redis, roomId, promoted, context.clientManager);
+        }
+        return { success: false, error: Errors.MUSIC_ALREADY_PLAYING, queued: true, position };
+      }
     }
 
     // Store music state in Redis for new joiners
@@ -136,8 +170,8 @@ const playHandler = createHandler(
  * DJ keeps playing. On success the mutex is force-reassigned to the owner, a
  * **targeted** `audioPlayer:revoked` is emitted to the displaced DJ's socket(s)
  * in this room only (so the Room never hears two tracks), and the normal
- * `audioPlayer:stateChanged` is broadcast. The displaced DJ's queue is local and
- * untouched — they resume via the normal acquire path when the slot frees.
+ * `audioPlayer:stateChanged` is broadcast. The waiting queue is preserved behind
+ * the owner (never popped here) — waiters are granted when the owner releases.
  */
 const takeoverHandler = createHandler(
   "audioPlayer:takeover",
@@ -224,17 +258,13 @@ const stopHandler = createHandler(
     const { roomId } = payload;
     const userId = socket.data.user.id;
 
-    // Verify this user is the current music player
-    const currentPlayer = await context.redis.get(musicPlayerKey(roomId));
-    if (currentPlayer !== String(userId)) {
+    // music-dj-queue/04: release + grant the queue head atomically. A non-holder
+    // is denied (strict no-op, exactly today's NOT_AUTHORIZED). On release the
+    // freed slot is handed to the queue head (provisional grace TTL) inside Lua.
+    const [status, head] = await releaseAndGrant(context.redis, roomId, String(userId));
+    if (status === "denied") {
       return { success: false, error: Errors.NOT_AUTHORIZED };
     }
-
-    // Release mutex and clear state
-    await Promise.all([
-      context.redis.del(musicPlayerKey(roomId)),
-      context.redis.del(musicStateKey(roomId)),
-    ]);
 
     // Broadcast stop to all room members
     broadcastToRoom(
@@ -251,7 +281,13 @@ const stopHandler = createHandler(
       context.cascadeRelay,
     );
 
-    logger.info({ roomId, userId }, "Audio player stopped");
+    // EXECUTE (release contract, not fire-and-forget): grant the head their turn.
+    // music-dj-queue/05: grantChain skips ghost heads and arms the grace timer.
+    if (head) {
+      await grantChain(context.io, context.redis, roomId, head, context.clientManager);
+    }
+
+    logger.info({ roomId, userId, granted: head || null }, "Audio player stopped");
 
     return { success: true };
   },
@@ -294,20 +330,47 @@ const stateUpdateHandler = createHandler(
   },
 );
 
+/**
+ * audioPlayer:leaveQueue — Cancel a waiting-queue spot (music-dj-queue/05).
+ *
+ * Removing yourself is always allowed, so there is no GATE beyond the schema and
+ * the standard in-room check (matches playHandler). EXECUTE is a single LREM —
+ * single-command atomicity suffices, no Lua. Idempotent: a not-queued user acks
+ * `removed: false`. Emitted by the client when it presses stop/close or leaves
+ * the room while waiting; a disconnect while waiting is handled in the lifecycle.
+ */
+const leaveQueueHandler = createHandler(
+  "audioPlayer:leaveQueue",
+  audioPlayerLeaveQueueSchema,
+  async (payload, socket, context) => {
+    const { roomId } = payload;
+    const userId = socket.data.user.id;
+
+    const client = context.clientManager.getClient(socket.id);
+    if (!client?.roomId || client.roomId !== roomId) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
+    const removed = await context.redis.lrem(musicQueueKey(roomId), 0, String(userId));
+
+    return { success: true, removed: removed > 0 };
+  },
+);
+
 // ─────────────────────────────────────────────────────────────────
 // Stage helpers
 // ─────────────────────────────────────────────────────────────────
 
 /**
  * music-dj-queue/01: fleet-wide liveness — does `userId` still have a live
- * socket in `roomId` (optionally excluding one socket id)?
+ * socket in `roomId` (optionally excluding one socket id)? Thin AppContext-shaped
+ * wrapper over {@link hasLiveSocketInRoom} (queue module) so ticket-01 call sites
+ * (acquireMusicSlot, the disconnect lifecycle guard) keep their signature.
  *
  * clientManager is instance-local, so a local hit is authoritative ("live") but
  * a local miss is not — the user may hold a socket on another MSAB instance
  * (this room's members can be spread across the fleet via @socket.io/redis-adapter).
- * Local fast-path avoids a round trip; on a miss we consult the adapter through
- * `fetchSocketsSafe`, which is bounded and degrades to LOCAL-ONLY on cross-node
- * failure (accepted residual: a SIGKILLed ghost node's DJ can read as dead).
+ * The wrapped helper consults the adapter through `fetchSocketsSafe` on a miss.
  */
 export async function userHasLiveSocketInRoom(
   context: AppContext,
@@ -315,15 +378,7 @@ export async function userHasLiveSocketInRoom(
   roomId: string,
   excludeSocketId?: string,
 ): Promise<boolean> {
-  // Local fast-path — authoritative on a hit, no round trip.
-  const local = context.clientManager.getSocketIdsByUserInRoom(userId, roomId);
-  if (local.some((id) => id !== excludeSocketId)) return true;
-
-  // Cross-instance — bounded + ghost-tolerant; empty on cross-node failure.
-  const sockets = await fetchSocketsSafe(context.io, roomId, logger);
-  return sockets.some(
-    (s) => s.id !== excludeSocketId && Number(s.data?.user?.id) === userId,
-  );
+  return hasLiveSocketInRoom(context.io, context.clientManager, userId, roomId, excludeSocketId);
 }
 
 /**
@@ -393,13 +448,11 @@ export async function releaseMusicPlayerForUser(
   userId: number,
   cascadeRelay: import("@src/domains/cascade/cascade-relay.js").CascadeRelay | null,
 ): Promise<void> {
-  const currentPlayer = await redis.get(musicPlayerKey(roomId));
-  if (currentPlayer !== String(userId)) return;
-
-  await Promise.all([
-    redis.del(musicPlayerKey(roomId)),
-    redis.del(musicStateKey(roomId)),
-  ]);
+  // music-dj-queue/04: same atomic release+grant as stopHandler. A non-holder
+  // stays a strict no-op ('denied' → return), so kicking/evicting a non-DJ never
+  // touches the room's music (dj-talk-over/02). On release the head is granted.
+  const [status, head] = await releaseAndGrant(redis, roomId, String(userId));
+  if (status === "denied") return;
 
   broadcastToRoom(
     io,
@@ -415,7 +468,15 @@ export async function releaseMusicPlayerForUser(
     cascadeRelay,
   );
 
-  logger.info({ roomId, userId }, "Audio player cleared on user removal");
+  // Grant the head their turn. No clientManager in this helper's signature, so
+  // targeting is fetchSocketsSafe-only (fleet-wide via the redis adapter) — see
+  // grantChain / hasLiveSocketInRoom. Part of the release EXECUTE contract, so it
+  // is awaited. music-dj-queue/05: the chain skips ghost heads and arms the timer.
+  if (head) {
+    await grantChain(io, redis, roomId, head);
+  }
+
+  logger.info({ roomId, userId, granted: head || null }, "Audio player cleared on user removal");
 }
 
 /**
@@ -465,4 +526,5 @@ export const audioPlayerHandler = (socket: Socket, context: AppContext) => {
   socket.on("audioPlayer:takeover", takeoverHandler(socket, context));
   socket.on("audioPlayer:stop", stopHandler(socket, context));
   socket.on("audioPlayer:stateUpdate", stateUpdateHandler(socket, context));
+  socket.on("audioPlayer:leaveQueue", leaveQueueHandler(socket, context));
 };

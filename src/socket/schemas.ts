@@ -320,6 +320,11 @@ export const audioPlayerPlaySchema = z.object({
   roomId: roomIdSchema,
   title: z.string().min(1).max(200),
   duration: z.number().positive(), // Duration in seconds
+  // music-dj-queue/04: OTA-compatibility gate. Old FE bundles (Capacitor shells
+  // lag behind web OTA) omit this flag → they MUST get today's exact behavior
+  // (plain MUSIC_ALREADY_PLAYING on a live-holder denial, never enqueued). Only
+  // a bundle that opts in (enqueue:true) is placed in the waiting queue.
+  enqueue: z.boolean().optional().default(false),
 });
 
 // Owner force-take: same metadata shape as play; authorization (owner-only)
@@ -331,6 +336,12 @@ export const audioPlayerTakeoverSchema = z.object({
 });
 
 export const audioPlayerStopSchema = z.object({
+  roomId: roomIdSchema,
+});
+
+// music-dj-queue/05: cancel a waiting-queue spot. Removing yourself is always
+// allowed, so the handler adds no GATE beyond this schema + the in-room check.
+export const audioPlayerLeaveQueueSchema = z.object({
   roomId: roomIdSchema,
 });
 

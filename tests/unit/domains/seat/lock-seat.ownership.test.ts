@@ -41,6 +41,24 @@ function makeProducer(userId: number) {
   };
 }
 
+/**
+ * music-dj-queue/04: release runs RELEASE_AND_GRANT_LUA (get+del → eval).
+ * Emulate its contract against a single mutex holder (queue empty → head '').
+ */
+function makeMusicRedis(currentPlayer: string | null) {
+  return {
+    get: vi.fn().mockResolvedValue(currentPlayer),
+    del: vi.fn().mockResolvedValue(1),
+    eval: vi.fn(async (_script: string, numKeys: number, ...rest: string[]) => {
+      const releasing = rest[numKeys]; // first ARGV after the KEYS
+      if (currentPlayer !== null && String(currentPlayer) === String(releasing)) {
+        return ["released", ""];
+      }
+      return ["denied", currentPlayer ?? ""];
+    }),
+  };
+}
+
 function makeContext(
   kickedUserId: number,
   producerUserId: number,
@@ -53,10 +71,7 @@ function makeContext(
     producers: new Map<string, string>([["mic", producer.id]]),
     isSpeaker: true,
   };
-  const redis = {
-    get: vi.fn().mockResolvedValue(opts.currentMusicPlayer ?? null),
-    del: vi.fn().mockResolvedValue(1),
-  };
+  const redis = makeMusicRedis(opts.currentMusicPlayer ?? null);
   const io = { to: vi.fn(), on: vi.fn() };
   const context = {
     seatRepository: {
@@ -115,7 +130,7 @@ describe("seat:lock — producer ownership (F-45)", () => {
       ]),
       isSpeaker: true,
     };
-    const redis = { get: vi.fn().mockResolvedValue(null), del: vi.fn() };
+    const redis = makeMusicRedis(null);
     const io = { to: vi.fn(), on: vi.fn() };
     const context = {
       seatRepository: {
@@ -148,8 +163,16 @@ describe("seat:lock — producer ownership (F-45)", () => {
     const fn = lockSeatHandler(socket as any, context as any);
     await fn({ roomId: "room-1", seatIndex: 0 });
 
-    expect(redis.del).toHaveBeenCalledWith("room:room-1:musicPlayer");
-    expect(redis.del).toHaveBeenCalledWith("room:room-1:musicState");
+    // music-dj-queue/04: release runs RELEASE_AND_GRANT_LUA (the DELs are in Lua).
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      3,
+      "room:room-1:musicPlayer",
+      "room:room-1:musicState",
+      "room:room-1:musicQueue",
+      "7",
+      "15",
+    );
   });
 
   it("leaves the music mutex untouched when the kicked user did NOT hold it", async () => {

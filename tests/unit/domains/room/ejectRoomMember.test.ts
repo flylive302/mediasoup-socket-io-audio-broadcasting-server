@@ -38,6 +38,24 @@ function makeIo(targetSocket: any) {
   } as any;
 }
 
+/**
+ * music-dj-queue/04: release runs RELEASE_AND_GRANT_LUA (get+del → eval).
+ * Emulate its contract against a single mutex holder (queue empty here → head '').
+ */
+function makeMusicRedis(currentPlayer: string | null) {
+  return {
+    get: vi.fn().mockResolvedValue(currentPlayer),
+    del: vi.fn().mockResolvedValue(1),
+    eval: vi.fn(async (_script: string, numKeys: number, ...rest: string[]) => {
+      const releasing = rest[numKeys]; // first ARGV after the KEYS
+      if (currentPlayer !== null && String(currentPlayer) === String(releasing)) {
+        return ["released", ""];
+      }
+      return ["denied", currentPlayer ?? ""];
+    }),
+  } as any;
+}
+
 function makeTargetSocket(userId: number) {
   return {
     id: "sock-target",
@@ -78,7 +96,7 @@ describe("ejectRoomMember — producer + music cleanup (dj-talk-over/02)", () =>
       statusCoalescer: { submit: vi.fn() },
       userRoomRepository: { clearUserRoom: vi.fn().mockResolvedValue(undefined) },
       logger: makeLogger(),
-      redis: { get: vi.fn().mockResolvedValue(null), del: vi.fn() },
+      redis: makeMusicRedis(null),
       cascadeRelay: null,
       getRoom: vi.fn().mockReturnValue(room),
     };
@@ -94,7 +112,7 @@ describe("ejectRoomMember — producer + music cleanup (dj-talk-over/02)", () =>
     const userId = 42;
     const targetSocket = makeTargetSocket(userId);
     const io = makeIo(targetSocket);
-    const redis = { get: vi.fn().mockResolvedValue(String(userId)), del: vi.fn() };
+    const redis = makeMusicRedis(String(userId));
 
     const deps = {
       io,
@@ -111,8 +129,16 @@ describe("ejectRoomMember — producer + music cleanup (dj-talk-over/02)", () =>
 
     await ejectRoomMember(deps as any, "room-1", userId);
 
-    expect(redis.del).toHaveBeenCalledWith("room:room-1:musicPlayer");
-    expect(redis.del).toHaveBeenCalledWith("room:room-1:musicState");
+    // music-dj-queue/04: release runs RELEASE_AND_GRANT_LUA (the DELs are in Lua).
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      3,
+      "room:room-1:musicPlayer",
+      "room:room-1:musicState",
+      "room:room-1:musicQueue",
+      String(userId),
+      "15",
+    );
     expect(io.roomEmit).toHaveBeenCalledWith(
       "audioPlayer:stateChanged",
       expect.objectContaining({ state: "stopped", userId }),
@@ -123,7 +149,7 @@ describe("ejectRoomMember — producer + music cleanup (dj-talk-over/02)", () =>
     const userId = 42;
     const targetSocket = makeTargetSocket(userId);
     const io = makeIo(targetSocket);
-    const redis = { get: vi.fn().mockResolvedValue("999"), del: vi.fn() };
+    const redis = makeMusicRedis("999");
 
     const deps = {
       io,

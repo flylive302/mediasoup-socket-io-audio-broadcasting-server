@@ -49,6 +49,16 @@ function makeRedis(currentPlayer: string | null = null) {
   return {
     get: vi.fn().mockResolvedValue(currentPlayer),
     del: vi.fn().mockResolvedValue(1),
+    // music-dj-queue/04: release runs RELEASE_AND_GRANT_LUA (get+del → eval).
+    // Emulate its contract against the single mutex holder; queue is empty in
+    // these unit tests so a release always grants nothing (head '').
+    eval: vi.fn(async (_script: string, numKeys: number, ...rest: string[]) => {
+      const releasing = rest[numKeys]; // first ARGV after the KEYS
+      if (currentPlayer !== null && String(currentPlayer) === String(releasing)) {
+        return ["released", ""];
+      }
+      return ["denied", currentPlayer ?? ""];
+    }),
   } as any;
 }
 
@@ -141,8 +151,15 @@ describe("evictShrunkSeats", () => {
       getRoom,
     });
 
-    expect(redis.del).toHaveBeenCalledWith("room:r1:musicPlayer");
-    expect(redis.del).toHaveBeenCalledWith("room:r1:musicState");
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      3,
+      "room:r1:musicPlayer",
+      "room:r1:musicState",
+      "room:r1:musicQueue",
+      "55",
+      "15",
+    );
     expect(io.roomEmit).toHaveBeenCalledWith(
       "audioPlayer:stateChanged",
       expect.objectContaining({ state: "stopped", userId: 55 }),

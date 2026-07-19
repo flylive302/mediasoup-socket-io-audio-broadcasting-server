@@ -11,6 +11,7 @@ import {
   releaseMusicPlayerForUser,
   userHasLiveSocketInRoom,
 } from "./audio-player.handler.js";
+import { musicQueueKey } from "./audio-player.queue.js";
 
 export const audioPlayerLifecycle: DomainLifecycle = {
   name: "audio-player",
@@ -29,6 +30,12 @@ export const audioPlayerLifecycle: DomainLifecycle = {
     if (await userHasLiveSocketInRoom(appCtx, ctx.userId, ctx.roomId, ctx.socket.id)) {
       return;
     }
+
+    // music-dj-queue/05: the user is truly gone from the room — dequeue any
+    // waiting spot (a queued admin who closed the tab must not stay in line) and
+    // do it BEFORE the release, so a dead DJ who was somehow also queued can't be
+    // granted the slot to themselves.
+    await appCtx.redis.lrem(musicQueueKey(ctx.roomId), 0, String(ctx.userId));
 
     await releaseMusicPlayerForUser(
       appCtx.redis,
