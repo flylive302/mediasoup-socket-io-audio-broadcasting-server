@@ -77,6 +77,25 @@ jobs:
           TF_VAR_lb_ssl_private_key: ${{ secrets.TF_VAR_lb_ssl_private_key }}
           TF_VAR_cloudflare_turn_api_key: ${{ secrets.TF_VAR_cloudflare_turn_api_key }}
           TF_VAR_cloudflare_turn_key_id: ${{ secrets.TF_VAR_cloudflare_turn_key_id }}
+          # msab-sentry §5: vultr-production ENVIRONMENT secret. Empty is
+          # tolerated (cloud-init warns, never aborts) — telemetry never blocks a deploy.
+          TF_VAR_sentry_dsn: ${{ secrets.TF_VAR_sentry_dsn }}
           TF_VAR_hls_r2_access_key_id: ${{ secrets.TF_VAR_hls_r2_access_key_id }}
           TF_VAR_hls_r2_secret_access_key: ${{ secrets.TF_VAR_hls_r2_secret_access_key }}
         run: ./scripts/rolling-deploy.sh
+
+      # msab-sentry §10: record the deploy against the release so Sentry shows
+      # "deployed to production at <time>" and release-health can attribute
+      # regressions to this roll. continue-on-error — a Sentry outage must NEVER
+      # block or fail a fleet deploy that already succeeded above.
+      - name: Sentry deploy marker
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: flylive
+          SENTRY_PROJECT: node-msab
+          SHA_TAG: ${{ inputs.image_tag }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          npm install -g @sentry/cli@3.6.1
+          sentry-cli releases deploys "$SHA_TAG" new -e "$DEPLOY_ENV"

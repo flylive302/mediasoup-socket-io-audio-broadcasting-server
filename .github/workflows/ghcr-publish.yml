@@ -91,6 +91,14 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.full_image }}:latest
             ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+          # msab-sentry §10: SENTRY_RELEASE (build time) MUST be byte-identical to
+          # the runtime SENTRY_RELEASE cloud-init writes — both are this one
+          # `image_tag` (= sha-<commit8>) threaded through, so maps never drift.
+          # The auth token is a BuildKit secret: mounted into one RUN, never a layer.
+          build-args: |
+            SENTRY_RELEASE=${{ steps.meta.outputs.image_tag }}
+          secrets: |
+            sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # amd64 only: Vultr's High Frequency plans (the Phase 1 fleet target)
@@ -98,6 +106,31 @@ jobs:
           # for that arch — no config change; dropping the arm64 leg (which
           # needed slow QEMU emulation) since nothing on Vultr pulls it.
           platforms: linux/amd64
+
+      # msab-sentry §10: formalise the release the build's sourcemaps were
+      # uploaded under. HARD FAIL — without a finalised release the maps are
+      # unreadable, and nothing is serving traffic at build time so being loud
+      # is free. This is also the compensating gate for a missing auth token:
+      # the Dockerfile skips upload when the token is absent, but `releases new`
+      # here errors on an empty token, so a genuinely-misconfigured pipeline
+      # fails visibly rather than silently shipping unreadable maps.
+      # SENTRY_ORG/SENTRY_PROJECT are required by the lifecycle subcommands
+      # (unlike `sourcemaps upload`, they take no --org/--project flag here).
+      - name: Sentry release lifecycle
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: flylive
+          SENTRY_PROJECT: node-msab
+          SHA_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          npm install -g @sentry/cli@3.6.1
+          sentry-cli releases new "$SHA_TAG"
+          sentry-cli releases finalize "$SHA_TAG"
+          # WARN ONLY — suspect-commit attribution needs this repo linked in the
+          # flylive org's GitHub integration (a console setting outside this
+          # repo). An unlinked repo must not break image publishing.
+          sentry-cli releases set-commits "$SHA_TAG" --auto \
+            || echo "::warning::set-commits failed — is mediasoup-socket-io-audio-broadcasting-server linked in the flylive GitHub integration?"
 
       - name: Summary
         run: |

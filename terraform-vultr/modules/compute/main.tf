@@ -85,11 +85,17 @@ resource "vultr_instance" "main" {
     # and skips a doomed metadata call. Human-readable → AC#3 split-brain
     # ownership is verifiable in logs (`flylive-audio-bom-1` owns the room, not a
     # random container id).
-    instance_id_override    = "${var.project_name}-${var.region}-${count.index + 1}"
-    app_port                = var.app_port
-    rtc_min_port            = var.rtc_min_port
-    rtc_max_port            = var.rtc_max_port
-    image_ref               = "${var.ghcr_image}:${var.image_tag}"
+    instance_id_override = "${var.project_name}-${var.region}-${count.index + 1}"
+    app_port             = var.app_port
+    rtc_min_port         = var.rtc_min_port
+    rtc_max_port         = var.rtc_max_port
+    image_ref            = "${var.ghcr_image}:${var.image_tag}"
+    # msab-sentry §5: image_tag doubles as SENTRY_RELEASE, environment as
+    # SENTRY_ENVIRONMENT, in the .env heredoc. image_tag MUST match the
+    # sha-<commit8> the image was built + sourcemap-uploaded under.
+    image_tag               = var.image_tag
+    environment             = var.environment
+    sentry_dsn              = var.sentry_dsn
     ghcr_pull_token         = var.ghcr_pull_token
     laravel_internal_key    = var.laravel_internal_key
     jwt_secret              = var.jwt_secret

@@ -88,6 +88,7 @@ module "compute" {
   cors_origins            = var.cors_origins
   cloudflare_turn_api_key = var.cloudflare_turn_api_key
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
+  sentry_dsn              = var.sentry_dsn
   mediasoup_num_workers   = var.mediasoup_num_workers
 
   redis_host     = module.valkey[each.key].host

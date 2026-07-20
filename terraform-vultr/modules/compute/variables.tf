@@ -122,6 +122,16 @@ variable "cloudflare_turn_key_id" {
   default = ""
 }
 
+# msab-sentry §5. Optional by design: an empty DSN disables error reporting
+# (cloud-init warns, never aborts) so telemetry can never take audio down.
+# sensitive so it is redacted from plan output. Sourced from the
+# TF_VAR_sentry_dsn vultr-production environment secret.
+variable "sentry_dsn" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
 variable "cascade_enabled" {
   type    = bool
   default = true

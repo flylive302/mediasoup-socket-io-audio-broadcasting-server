@@ -269,3 +269,10 @@ variable "cloudflare_turn_key_id" {
   type        = string
   default     = ""
 }
+
+variable "sentry_dsn" {
+  description = "Sentry DSN for the node-msab project (msab-sentry §5). Optional by design — an empty value disables error reporting (cloud-init warns, never aborts) so telemetry can never take audio down. Sourced from the TF_VAR_sentry_dsn vultr-production environment secret."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

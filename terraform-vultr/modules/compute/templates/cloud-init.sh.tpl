@@ -102,6 +102,21 @@ if [ "$MISSING_SECRETS" -eq 1 ]; then
   exit 1
 fi
 
+# --- Sentry DSN: WARN, never abort (deliberate divergence from spec §5). ---
+# SENTRY_DSN is optional by design — the app's config schema keeps it optional
+# precisely so telemetry can never take audio down (a missing DSN disables
+# reporting with one warning; it does not crash the process). A rolling deploy
+# is `terraform apply -replace` per node, so provision-time IS live-fleet-time:
+# a hard abort here on an empty DSN would brick the recreated instance and halt
+# the roll (health-gate never passes) — telemetry taking audio down, the exact
+# thing the schema forbids. So warn only. This boot log is not seen by a human
+# during an automated roll; the real blind-fleet safety nets are the §12
+# rollout test (deliberate throw → event appears) and instrument.ts's own
+# "SENTRY_DSN not set" warning at startup.
+if [ -z "${sentry_dsn}" ]; then
+  echo "WARNING: SENTRY_DSN is empty — this instance will run BLIND (no error reporting). Check the TF_VAR_sentry_dsn environment secret."
+fi
+
 # --- Valkey TLS: Vultr's managed Valkey presents a PUBLICLY-rooted certificate
 # (verified: it chains to a root already in Node's built-in trust store). Do NOT
 # pass a custom CA — setting `ca:` makes Node REPLACE its default roots with only
@@ -144,6 +159,16 @@ MEDIASOUP_NUM_WORKERS=${mediasoup_num_workers}
 # Metrics — Vultr has no AWS CloudWatch, so the publisher only spams
 # "Region is missing" / "Failed to publish CloudWatch metrics". Keep it off here.
 CLOUDWATCH_ENABLED=false
+
+# Sentry (msab-sentry epic). DSN is non-secret enough for the chmod-600 .env
+# (it is a write-only ingest key, embedded publicly in browser SDKs); no need
+# for the docker -e isolation the real secrets below use. SENTRY_RELEASE MUST
+# be the byte-identical sha-<commit8> the image was built and sourcemap-uploaded
+# under (${image_tag} is that exact tag, threaded from `-var image_tag=` → the
+# pulled image_ref above → this line), or maps silently stop applying.
+SENTRY_DSN=${sentry_dsn}
+SENTRY_RELEASE=${image_tag}
+SENTRY_ENVIRONMENT=${environment}
 
 # Security
 CORS_ORIGINS=${cors_origins}
