@@ -11,6 +11,7 @@ import { Errors } from "@src/shared/errors.js";
 import type { AppContext } from "@src/context.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { config } from "@src/config/index.js";
+import { reactError } from "@src/shared/react-error.js";
 
 
 export class GiftHandler {
@@ -90,7 +91,7 @@ export class GiftHandler {
         // BL-001 FIX: Record room activity to prevent auto-close during active gifting
         // GF-016 FIX: Log errors instead of silently swallowing
         context.autoCloseService.recordActivity(payload.roomId).catch((err) => {
-          logger.debug({ err, roomId: payload.roomId }, "auto-close activity recording failed");
+          reactError(err, { roomId: payload.roomId }, "auto-close activity recording failed", { level: "debug" });
         });
 
         // Queue for persistence

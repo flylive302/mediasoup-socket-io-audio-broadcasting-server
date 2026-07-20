@@ -33,7 +33,7 @@
  */
 import type { Socket, Server, Namespace } from "socket.io";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
-import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "./react-error.js";
 
 // ─── Relay Helper ───────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ function relayCrossRegion(
 ): void {
   if (cascadeRelay?.hasRemotes(roomId)) {
     cascadeRelay.relayToRemote(roomId, event, data).catch((err) => {
-      logger.warn({ err, roomId, event }, "Cross-region relay failed");
+      reactError(err, { roomId, event }, "Cross-region relay failed");
     });
   }
 }

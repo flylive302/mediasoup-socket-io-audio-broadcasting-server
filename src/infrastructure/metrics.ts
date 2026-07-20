@@ -178,6 +178,16 @@ export const metrics = {
     labelNames: ["result"] as const, // success | failure
     registers: [metricsRegistry],
   }),
+
+  // Sentry events dropped client-side by the token bucket (see
+  // src/infrastructure/sentry/token-bucket.ts). A silently throttling bucket
+  // is indistinguishable from a healthy service, so this MUST be alerted on
+  // in Grafana — a non-zero rate means real errors are not reaching Sentry.
+  sentryDropped: new Counter({
+    name: "flylive_sentry_dropped_total",
+    help: "Sentry events dropped by the client-side token bucket",
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

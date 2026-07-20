@@ -1,5 +1,7 @@
 import { config } from "@src/config/index.js";
+import * as Sentry from "@sentry/node";
 import type { Logger } from "@src/infrastructure/logger.js";
+import { seenRecently } from "@src/infrastructure/sentry/dedupe.js";
 import type {
   BatchProcessingResult,
   CascadeInfo,
@@ -163,6 +165,9 @@ export class LaravelClient {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+    } catch (error) {
+      captureLaravelFailure("POST", endpoint, error);
+      throw error;
     } finally {
       clearTimeout(timeoutId);
     }
@@ -186,6 +191,9 @@ export class LaravelClient {
         },
         signal: controller.signal,
       });
+    } catch (error) {
+      captureLaravelFailure("GET", endpoint, error);
+      throw error;
     } finally {
       clearTimeout(timeoutId);
     }
@@ -375,5 +383,55 @@ export class LaravelClient {
     }
 
     return `${collapsed.slice(0, maxLength)}... [truncated]`;
+  }
+}
+
+/**
+ * Collapses the variable parts of a path so every call to the same Laravel
+ * route groups into ONE Sentry issue.
+ *
+ * Without this, fingerprinting by the raw endpoint produces one issue per
+ * room/user id — thousands of near-identical issues that bury the fact that a
+ * single route is down. That is the exact opposite of what fingerprinting by
+ * endpoint is for.
+ */
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint
+    .split("?")[0]!
+    .replace(
+      /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/gi,
+      "/:id",
+    )
+    .replace(/\/\d+(?=\/|$)/g, "/:id");
+}
+
+/**
+ * Transport-level failure talking to Laravel (DNS, connection refused, TLS,
+ * or the AbortController timeout). HTTP error *statuses* are handled by each
+ * caller and deliberately not captured here.
+ *
+ * Deduped per route: a Laravel outage makes every route fail at once and
+ * would otherwise drain the whole token bucket in seconds.
+ */
+function captureLaravelFailure(
+  method: "GET" | "POST",
+  endpoint: string,
+  error: unknown,
+): void {
+  try {
+    const route = normalizeEndpoint(endpoint);
+    if (seenRecently(`laravel|${method}|${route}`)) return;
+
+    Sentry.withScope((scope) => {
+      scope.setTags({
+        stage: "execute",
+        laravel_method: method,
+        laravel_route: route,
+      });
+      scope.setFingerprint(["laravel-client", method, route]);
+      Sentry.captureException(error, { level: "error" });
+    });
+  } catch {
+    // Telemetry must never break an already-failing integration path.
   }
 }

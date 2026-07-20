@@ -12,6 +12,7 @@ import type { Redis } from "ioredis";
 import type { AppContext } from "@src/context.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
+import { reactError } from "@src/shared/react-error.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Redis key helpers + TTLs (shared with the handler)
@@ -288,6 +289,6 @@ export function armGraceTimer(io: Server, redis: Redis, roomId: string): void {
   setTimeout(() => {
     promoteIfFree(redis, roomId)
       .then((promoted) => (promoted ? grantChain(io, redis, roomId, promoted) : undefined))
-      .catch((err) => logger.error({ err, roomId }, "Music grace-timer advance failed"));
+      .catch((err) => reactError(err, { roomId }, "Music grace-timer advance failed", { level: "error" }));
   }, (MUSIC_GRANT_GRACE_TTL_SECONDS + 1) * 1000).unref();
 }

@@ -11,6 +11,7 @@ import {
 import { joinRoomSchema } from "@src/socket/schemas.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 import { setRoomOwner } from "@src/domains/seat/index.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
@@ -225,7 +226,7 @@ async function processJoin(
     roomRegistry
       .refreshOwnership(roomId, selfId)
       .catch((err) =>
-        logger.warn({ err, roomId }, "Failed to refresh room ownership TTL"),
+        reactError(err, { roomId }, "Failed to refresh room ownership TTL"),
       );
   }
 

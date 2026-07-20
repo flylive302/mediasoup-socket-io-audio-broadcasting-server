@@ -7,6 +7,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
+import { reactError } from "@src/shared/react-error.js";
 
 const handleChatMessage = createHandler(
   "chat:message",
@@ -50,7 +51,7 @@ const handleChatMessage = createHandler(
 
     // BL-001 FIX: Record room activity to prevent auto-close during active chat
     context.autoCloseService.recordActivity(payload.roomId).catch((err) => {
-      logger.debug({ err, roomId: payload.roomId }, "recordActivity failed");
+      reactError(err, { roomId: payload.roomId }, "recordActivity failed", { level: "debug" });
     });
 
     logger.debug(

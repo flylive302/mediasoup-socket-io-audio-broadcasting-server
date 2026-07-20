@@ -30,6 +30,7 @@
  * make the segments actually land in R2 under that path while broadcasting.
  */
 import type { Logger } from "pino";
+import { reactError } from "@src/shared/react-error.js";
 
 /** The slice of RoomMediaCluster the controller needs (keeps it test-fakeable). */
 export interface ClusterView {
@@ -218,7 +219,7 @@ export class BroadcastPublishController {
       .catch(() => {})
       .then(op)
       .catch((err) =>
-        this.deps.logger.error({ err, roomId }, "Broadcast op failed"),
+        reactError(err, { roomId }, "Broadcast op failed", { level: "error", logger: this.deps.logger }),
       );
     this.chains.set(roomId, next);
     void next.finally(() => {

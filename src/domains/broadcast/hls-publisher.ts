@@ -31,6 +31,7 @@ import {
   type HlsOutputConfig,
 } from "./hls-pipeline.js";
 import type { HlsUploader } from "./hls-uploader.js";
+import { reactError } from "@src/shared/react-error.js";
 
 export interface HlsPublisherOptions {
   roomId: string;
@@ -107,10 +108,7 @@ export class HlsPublisher {
       this.pendingRestart = null;
       if (!pending || this.stopped) return;
       void this.spawnFfmpeg(pending.sdp, pending.inputCount).catch((err) =>
-        this.logger.error(
-          { err, roomId: this.opts.roomId },
-          "HlsPublisher: restart failed",
-        ),
+        reactError(err, { roomId: this.opts.roomId }, "HlsPublisher: restart failed", { level: "error", logger: this.logger }),
       );
     }, this.opts.restartDebounceMs);
   }

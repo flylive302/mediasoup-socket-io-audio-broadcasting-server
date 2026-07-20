@@ -22,6 +22,7 @@ import { emitToRoom } from "@src/shared/room-emit.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { Errors } from "@src/shared/errors.js";
 import { getIceServers } from "@src/config/iceServers.js";
+import { reactError } from "@src/shared/react-error.js";
 import type { Socket } from "socket.io";
 import type { ClientData } from "@src/client/clientManager.js";
 
@@ -187,10 +188,7 @@ const audioProduceHandler = createHandler(
           }
         })
         .catch((err) => {
-          logger.error(
-            { err, roomId, edgeProducerId: producer.id, userId },
-            "Reverse pipe setup threw after retries",
-          );
+          reactError(err, { roomId, edgeProducerId: producer.id, userId }, "Reverse pipe setup threw after retries", { level: "error" });
         });
     } else {
       // Origin path (or single-instance/cascade-off): emitToRoom is the
@@ -375,10 +373,7 @@ const selfUnmuteHandler = createHandler(
           }
         })
         .catch((err) => {
-          logger.error(
-            { err, roomId, producerId },
-            "selfUnmute reverse-pipe self-heal threw after retries",
-          );
+          reactError(err, { roomId, producerId }, "selfUnmute reverse-pipe self-heal threw after retries", { level: "error" });
         });
     }
 
@@ -414,10 +409,7 @@ export function reactOnProducerClose(
       context.cascadeCoordinator
         .closeReversePipe(roomId, producer.id)
         .catch((err) =>
-          logger.warn(
-            { err, roomId, edgeProducerId: producer.id },
-            "closeReversePipe failed",
-          ),
+          reactError(err, { roomId, edgeProducerId: producer.id }, "closeReversePipe failed"),
         );
     }
 

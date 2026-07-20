@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import { logger } from "./infrastructure/logger.js";
 import { config, initializeConfig } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
@@ -9,6 +10,43 @@ import { waitForActiveDisconnects } from "./socket/index.js";
 // ─── Module-Level Shutdown Reference ─────────────────────────────
 // Set after bootstrap so process error handlers can invoke graceful shutdown.
 let shutdownFn: ((signal: string) => Promise<void>) | null = null;
+
+// ─── Sentry crash-path helpers ───────────────────────────────────
+// Telemetry must never be able to stop the process from exiting, so every
+// Sentry call on a crash path goes through one of these. They swallow
+// everything — the handlers below are `async`, and a throw escaping one of
+// them would surface as a fresh unhandledRejection, i.e. a handler that feeds
+// itself while the process never exits.
+type CaptureOptions = Parameters<typeof Sentry.captureException>[1];
+
+const captureSafe = (err: unknown, options: CaptureOptions): void => {
+  try {
+    Sentry.captureException(err, options);
+  } catch (sentryErr) {
+    logger.warn({ err: sentryErr }, "Sentry capture failed");
+  }
+};
+
+const captureAndFlush = async (
+  err: unknown,
+  timeoutMs: number,
+  options: CaptureOptions,
+): Promise<void> => {
+  captureSafe(err, options);
+  try {
+    await Sentry.flush(timeoutMs);
+  } catch (sentryErr) {
+    logger.warn({ err: sentryErr }, "Sentry flush failed");
+  }
+};
+
+const closeSentry = async (): Promise<void> => {
+  try {
+    await Sentry.close(config.SENTRY_CLOSE_MS);
+  } catch (err) {
+    logger.warn({ err }, "Sentry close failed");
+  }
+};
 
 const start = async () => {
   try {
@@ -122,10 +160,22 @@ const start = async () => {
         await server.close();
 
         clearTimeout(shutdownTimeout);
+
+        // 8. Drain the Sentry queue LAST. Every rolling deploy is a 120s
+        // drain window; without this, anything captured during it is
+        // discarded on exit. SIGTERM itself is never reported — it is normal
+        // deploy rotation, not an error.
+        await closeSentry();
+
         logger.info("Graceful shutdown complete");
         process.exit(0);
       } catch (err) {
         logger.error({ err }, "Error during shutdown");
+        captureSafe(err, {
+          level: "fatal",
+          tags: { path: "gracefulShutdown", signal },
+        });
+        await closeSentry();
         process.exit(1);
       }
     };
@@ -149,7 +199,14 @@ const REJECTION_THRESHOLD = 5;
 const REJECTION_WINDOW_MS = 30_000;
 const rejectionTimestamps: number[] = [];
 
-process.on("unhandledRejection", (err) => {
+// This path has no force-exit timer (unlike uncaughtException below), so a
+// longer flush is free.
+const REJECTION_FLUSH_MS = 5_000;
+
+// The SDK's own OnUnhandledRejection integration is deliberately removed in
+// src/instrument.ts — it would double-report every rejection, and it cannot
+// carry the count/threshold context the circuit breaker below produces.
+process.on("unhandledRejection", async (err) => {
   const now = Date.now();
   rejectionTimestamps.push(now);
 
@@ -163,6 +220,11 @@ process.on("unhandledRejection", (err) => {
       { err, count: rejectionTimestamps.length, windowMs: REJECTION_WINDOW_MS },
       `Unhandled Rejection: ${REJECTION_THRESHOLD} rejections in ${REJECTION_WINDOW_MS / 1000}s — shutting down`,
     );
+    await captureAndFlush(err, REJECTION_FLUSH_MS, {
+      level: "fatal",
+      tags: { path: "unhandledRejection" },
+      extra: { count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+    });
     if (shutdownFn) {
       void shutdownFn("unhandledRejection_threshold");
     } else {
@@ -173,11 +235,31 @@ process.on("unhandledRejection", (err) => {
       { err, count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
       "Unhandled Rejection (transient — process continues)",
     );
+    // Captured even below the threshold, deliberately: a service leaking four
+    // rejections per 30s never breaches and would otherwise stay invisible
+    // forever. The token bucket bounds the volume.
+    captureSafe(err, {
+      level: "error",
+      tags: { path: "unhandledRejection" },
+      extra: { count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+    });
   }
 });
 
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", async (err) => {
   logger.fatal({ err }, "Uncaught Exception — initiating graceful shutdown");
+
+  // Reported BEFORE the shutdown attempt, not after: the 3s deadline below
+  // sits on top of a 120s drain, so this process dies ~2.5s in regardless and
+  // waiting buys almost nothing — while the report is the entire point.
+  // Worst case this adds SENTRY_FLUSH_MS (2s) to exit.
+  await captureAndFlush(err, config.SENTRY_FLUSH_MS, {
+    level: "fatal",
+    // Distinguishes a crash in a running server from one during bootstrap,
+    // where nothing is listening yet and there is no drain to attempt.
+    tags: { path: shutdownFn ? "uncaughtException" : "pre-bootstrap" },
+  });
+
   // Process is in undefined state after uncaughtException.
   // Attempt graceful drain if possible, with a hard 3s deadline.
   if (shutdownFn) {

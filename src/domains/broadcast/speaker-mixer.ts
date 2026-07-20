@@ -24,6 +24,7 @@
 import type * as mediasoup from "mediasoup";
 import type { Logger } from "pino";
 import { buildMixSdp, type MixInput } from "./hls-pipeline.js";
+import { reactError } from "@src/shared/react-error.js";
 
 interface MixEntry {
   transport: mediasoup.types.PlainTransport;
@@ -104,7 +105,7 @@ export class SpeakerMixer {
     await Promise.all(
       [...this.entries.values()].map(({ consumer }) =>
         consumer.resume().catch((err) =>
-          this.logger.warn({ err }, "SpeakerMixer: consumer resume failed"),
+          reactError(err, {}, "SpeakerMixer: consumer resume failed", { logger: this.logger }),
         ),
       ),
     );

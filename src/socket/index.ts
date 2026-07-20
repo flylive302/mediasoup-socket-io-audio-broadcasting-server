@@ -39,6 +39,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { getLifecycleHooks, type DisconnectContext } from "@src/shared/lifecycle.js";
+import { reactError } from "@src/shared/react-error.js";
 
 // ─────────────────────────────────────────────────────────────────
 // F-7: track in-flight disconnect handlers so graceful shutdown can
@@ -290,7 +291,7 @@ async function handleDisconnect(
     await userSocketRepository
       .unregisterSocket(client.userId, socket.id)
       .catch((err) =>
-        log.error({ err, socketId: socket.id }, "unregisterSocket on disconnect failed"),
+        reactError(err, { socketId: socket.id }, "unregisterSocket on disconnect failed", { level: "error", logger: log }),
       );
   } else if (client?.userId) {
     // No room but has userId — just clean up socket registration

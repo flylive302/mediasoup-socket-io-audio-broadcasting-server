@@ -13,6 +13,7 @@ import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import type { PipeOfferResponse } from "./types.js";
 import { OriginSnapshot } from "./origin-snapshot.js";
+import { reactError } from "@src/shared/react-error.js";
 
 const PIPE_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -210,10 +211,7 @@ export class EdgePipeLifecycle {
     const originBaseUrl = this.originUrls.get(roomId);
     if (originBaseUrl) {
       this.notifyOriginPipeClose(originBaseUrl, roomId).catch((err) =>
-        this.logger.error(
-          { err, roomId },
-          "EdgePipeLifecycle: failed to notify origin of pipe close",
-        ),
+        reactError(err, { roomId }, "EdgePipeLifecycle: failed to notify origin of pipe close", { level: "error", logger: this.logger }),
       );
     }
 

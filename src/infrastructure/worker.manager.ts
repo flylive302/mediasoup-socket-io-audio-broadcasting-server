@@ -4,6 +4,7 @@
  * Moved to core/ as it's infrastructure-level code used across domains
  */
 import * as mediasoup from "mediasoup";
+import * as Sentry from "@sentry/node";
 import { cpus, platform } from "os";
 import { execSync } from "child_process";
 import type { Logger } from "./logger.js";
@@ -154,6 +155,16 @@ export class WorkerManager {
           { index, pid: worker.pid },
           "Worker died, restarting...",
         );
+        // FATAL: a dead worker takes every room hosted on it down with it.
+        // Captured as a message, not a synthetic exception — the worker is a
+        // separate OS process, so a JS stack from this handler would describe
+        // the listener, not the failure. Sentry's ChildProcess integration is
+        // deliberately disabled in instrument.ts so this is not double-reported.
+        Sentry.captureMessage("mediasoup worker died", {
+          level: "fatal",
+          tags: { path: "worker.died" },
+          extra: { index, pid: worker.pid },
+        });
         this.handleWorkerDeath(worker.pid);
       });
 
@@ -198,6 +209,13 @@ export class WorkerManager {
       this.logger.debug({ index, pid: worker.pid }, "Worker created");
     } catch (error) {
       this.logger.fatal({ error, index }, "Failed to create worker");
+      // FATAL: without its workers this instance can never serve media, so it
+      // is useless to the fleet even though the process may still be up.
+      Sentry.captureException(error, {
+        level: "fatal",
+        tags: { path: "worker.createFailed" },
+        extra: { index },
+      });
       throw error;
     }
   }

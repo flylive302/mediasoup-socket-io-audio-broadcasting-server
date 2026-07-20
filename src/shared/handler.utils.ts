@@ -4,11 +4,13 @@
  */
 import { z } from "zod";
 import type { Socket } from "socket.io";
+import * as Sentry from "@sentry/node";
 import { logger } from "@src/infrastructure/logger.js";
 import { generateCorrelationId } from "./crypto.js";
 import { Errors } from "./errors.js";
 import type { AppContext } from "@src/context.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { seenRecently } from "@src/infrastructure/sentry/dedupe.js";
 
 /**
  * F-3: record per-event throughput + latency for every wrapped handler.
@@ -99,6 +101,36 @@ export function createHandler<TPayload>(
           "Validation failed",
         );
         recordEvent(eventName, "fail", startTime);
+
+        // GATE failures are normally not errors, but a schema mismatch is a
+        // deliberate exception: grouping collapses thousands of client-side
+        // rejections into ONE Sentry issue named by the offending field, and
+        // release-health flags it as new — surfacing a frontend/MSAB contract
+        // break at a glance instead of drowning in per-request noise.
+        const issue = parseResult.error.issues[0];
+        const issuePath = issue?.path.join(".") ?? "unknown";
+        // Deduped BEFORE capture, not by fingerprinting alone. Fingerprinting
+        // collapses these into one ISSUE, but every event still spends a
+        // token from the bucket in beforeSend — and GATE rejections are
+        // client-driven and unbounded, so a single bad frontend build could
+        // otherwise drain the burst budget and starve real crash reports.
+        if (!seenRecently(`gate|${eventName}|${issuePath}`)) {
+          Sentry.withScope((scope) => {
+            if (userId !== undefined) scope.setUser({ id: String(userId) });
+            scope.setTags({ stage: "gate", event: eventName });
+            scope.setFingerprint(["invalid-payload", eventName, issuePath]);
+            scope.setExtras({
+              path: issuePath,
+              code: issue?.code ?? "unknown",
+              expected: (issue as { expected?: unknown } | undefined)?.expected ?? "unknown",
+              // `received` is coerced to its TYPE on purpose: Zod carries the real value
+              // for literal/enum mismatches, and that value must never leave the process.
+              received: typeof (issue as { received?: unknown } | undefined)?.received,
+            });
+            Sentry.captureMessage("Payload rejected", "warning");
+          });
+        }
+
         callback?.({ success: false, error: Errors.INVALID_PAYLOAD });
         return;
       }
@@ -134,6 +166,14 @@ export function createHandler<TPayload>(
           },
           "Handler exception",
         );
+
+        Sentry.withScope((scope) => {
+          if (userId !== undefined) scope.setUser({ id: String(userId) });
+          scope.setTags({ stage: "execute", event: eventName });
+          scope.setExtras({ requestId, durationMs });
+          scope.setContext("payload_shape", payloadShape(parseResult.data));
+          Sentry.captureException(err);
+        });
 
         callback?.({ success: false, error: Errors.INTERNAL_ERROR });
       }
@@ -185,8 +225,45 @@ export function createSimpleHandler(
           "Handler exception",
         );
 
+        Sentry.withScope((scope) => {
+          if (userId !== undefined) scope.setUser({ id: String(userId) });
+          scope.setTags({ stage: "execute", event: eventName });
+          scope.setExtras({ requestId, durationMs });
+          Sentry.captureException(err);
+        });
+
         callback?.({ success: false, error: Errors.INTERNAL_ERROR });
       }
     };
   };
+}
+
+/**
+ * Shape, never content. Every payload is Zod-validated, so the shape is free
+ * to derive — and a chat body, DM body or any other free-text field must
+ * never leave the process. A per-event allowlist was rejected: it drifts, and
+ * a newly added field would leak silently.
+ */
+function payloadShape(payload: unknown): Record<string, unknown> {
+  if (Array.isArray(payload)) {
+    return { type: "array", length: payload.length };
+  }
+
+  if (payload !== null && typeof payload === "object") {
+    const keys: Record<string, string> = {};
+    for (const key of Object.keys(payload).slice(0, 50)) {
+      keys[key] = typeof (payload as Record<string, unknown>)[key];
+    }
+
+    let byteLength: number | "unknown" = "unknown";
+    try {
+      byteLength = JSON.stringify(payload)?.length ?? "unknown";
+    } catch {
+      byteLength = "unknown";
+    }
+
+    return { keys, byteLength };
+  }
+
+  return { type: typeof payload };
 }

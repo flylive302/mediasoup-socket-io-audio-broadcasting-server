@@ -5,6 +5,7 @@ import { seatLeaveSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 
 export const leaveSeatHandler = createHandler(
   "seat:leave",
@@ -37,7 +38,7 @@ export const leaveSeatHandler = createHandler(
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService
       .recordActivity(roomId)
-      .catch((err) => logger.warn({ err, roomId, userId }, "Failed to record seat activity"));
+      .catch((err) => reactError(err, { roomId, userId }, "Failed to record seat activity"));
 
     return { success: true };
   },

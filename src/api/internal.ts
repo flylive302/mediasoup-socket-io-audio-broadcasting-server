@@ -25,6 +25,7 @@ import { retryAsync } from "@src/shared/retry.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 
 // ─── Request Body Types ──────────────────────────────────────────
 
@@ -600,10 +601,7 @@ export const createInternalRoutes = (
           }
           if (cascadeRelay) {
             cascadeRelay.relayToRemote(roomId, "audio:producerClosed", closedEvent).catch((err) =>
-              logger.warn(
-                { err, roomId, originProducerId: producer.id },
-                "Reverse-pipe producerClosed relay failed",
-              ),
+              reactError(err, { roomId, originProducerId: producer.id }, "Reverse-pipe producerClosed relay failed"),
             );
           }
         });
@@ -625,7 +623,7 @@ export const createInternalRoutes = (
         }
         if (cascadeRelay) {
           cascadeRelay.relayToRemote(roomId, "audio:newProducer", newProducerEvent).catch((err) =>
-            logger.warn({ err, roomId, originProducerId: producer.id }, "Reverse-pipe newProducer relay failed"),
+            reactError(err, { roomId, originProducerId: producer.id }, "Reverse-pipe newProducer relay failed"),
           );
         }
 
@@ -811,7 +809,7 @@ export const createInternalRoutes = (
         }
       } else if (event === "room:closed" && cascadeCoordinator) {
         cascadeCoordinator.handleOriginClosed(roomId).catch((err) =>
-          logger.error({ err, roomId }, "Failed to handle origin closed"),
+          reactError(err, { roomId }, "Failed to handle origin closed", { level: "error" }),
         );
       }
 

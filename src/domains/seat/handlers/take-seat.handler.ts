@@ -9,6 +9,7 @@ import { Errors } from "@src/shared/errors.js";
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import type { AppContext } from "@src/context.js";
+import { reactError } from "@src/shared/react-error.js";
 
 export const takeSeatHandler = createHandler(
   "seat:take",
@@ -91,7 +92,7 @@ export const takeSeatHandler = createHandler(
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService
       .recordActivity(roomId)
-      .catch((err) => logger.warn({ err, roomId, userId }, "Failed to record seat activity"));
+      .catch((err) => reactError(err, { roomId, userId }, "Failed to record seat activity"));
 
     return { success: true };
   },

@@ -148,6 +148,30 @@ const configSchema = z.object({
 
 
 
+  // Sentry (msab-sentry epic). SENTRY_DSN is OPTIONAL on purpose: config
+  // validation exits the process, and telemetry must never gain the power to
+  // take audio down. A missing DSN disables Sentry with a single warning
+  // (src/instrument.ts). It cannot reach production silently because
+  // cloud-init.sh.tpl asserts it in the required-secrets loop at provision
+  // time — loud when nothing is serving traffic, silent at runtime.
+  SENTRY_DSN: z.string().url().optional(),
+  // Must be the IDENTICAL `sha-<commit8>` string used at image-build time for
+  // the sourcemap upload, else every event mis-attributes its release and the
+  // maps silently stop applying. Supplied by cloud-init from the image tag.
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_ENVIRONMENT: z.string().default("production"),
+  // Crash-path budgets. uncaughtException flushes inside a 3s force-exit
+  // deadline; SIGTERM closes after a 120s drain (see src/index.ts).
+  SENTRY_FLUSH_MS: z.coerce.number().default(2_000),
+  SENTRY_CLOSE_MS: z.coerce.number().default(2_000),
+  // Client-side quota control. 30/hour/instance is precisely the sustained
+  // rate that keeps a 2-instance fleet inside the ~45,000 errors/month
+  // headroom even if a storm never stops; burst 20 lets a real incident
+  // report immediately. The bucket is PER-PROCESS — fleet total is
+  // N x refill, so revisit this whenever the fleet size changes.
+  SENTRY_BUCKET_CAPACITY: z.coerce.number().default(20),
+  SENTRY_BUCKET_REFILL_HOUR: z.coerce.number().default(30),
+
   // Security
   CORS_ORIGINS: z
     .string()

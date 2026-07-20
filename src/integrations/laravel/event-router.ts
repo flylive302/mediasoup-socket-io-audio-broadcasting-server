@@ -20,6 +20,7 @@ import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
+import { reactError } from "@src/shared/react-error.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { config } from "@src/config/index.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
@@ -247,10 +248,10 @@ export class EventRouter {
       ) {
         this.forceCloseLocalRoom(String(event.room_id), "admin_force_close").catch(
           (err) =>
-            this.logger.error(
-              { err, roomId: event.room_id },
-              "Admin force-close failed",
-            ),
+            reactError(err, { roomId: event.room_id }, "Admin force-close failed", {
+              level: "error",
+              logger: this.logger,
+            }),
         );
       }
 
@@ -265,7 +266,9 @@ export class EventRouter {
         this.activeAppSlides
           .record(event.payload)
           .catch((err) =>
-            this.logger.warn({ err }, "Failed to record active app slide"),
+            reactError(err, {}, "Failed to record active app slide", {
+              logger: this.logger,
+            }),
           );
       }
 
@@ -452,10 +455,9 @@ export class EventRouter {
       })
       .catch((err) => {
         // Non-blocking — profile sync failure should not break event routing
-        this.logger.warn(
-          { err, userId },
-          "Failed to sync user profile",
-        );
+        reactError(err, { userId }, "Failed to sync user profile", {
+          logger: this.logger,
+        });
       });
   }
 
@@ -508,10 +510,9 @@ export class EventRouter {
       })
       .catch((err) => {
         // Non-blocking — seatCount sync failure should not break event routing
-        this.logger.warn(
-          { err, roomId },
-          "Failed to sync room seatCount from room.updated",
-        );
+        reactError(err, { roomId }, "Failed to sync room seatCount from room.updated", {
+          logger: this.logger,
+        });
       });
   }
 
@@ -523,10 +524,9 @@ export class EventRouter {
     this.roomManager!
       .evictShrunkSeats(roomId, newSeatCount, this.clientManager)
       .catch((err) => {
-        this.logger.warn(
-          { err, roomId, newSeatCount },
-          "Failed to evict shrunk seats",
-        );
+        reactError(err, { roomId, newSeatCount }, "Failed to evict shrunk seats", {
+          logger: this.logger,
+        });
       });
   }
 
@@ -547,9 +547,11 @@ export class EventRouter {
         );
       })
       .catch((err) => {
-        this.logger.error(
-          { err, userId },
+        reactError(
+          err,
+          { userId },
           "Failed to write user revocation key — user may reconnect with old JWT",
+          { level: "error", logger: this.logger },
         );
       });
   }
@@ -575,10 +577,9 @@ export class EventRouter {
     this.roomBlockRepo
       .writeBlock(String(roomId), userId, permanent ? null : remainingSeconds)
       .catch((err) =>
-        this.logger.warn(
-          { err, roomId, userId },
-          "Failed to mirror room block into Redis",
-        ),
+        reactError(err, { roomId, userId }, "Failed to mirror room block into Redis", {
+          logger: this.logger,
+        }),
       );
   }
 
@@ -595,10 +596,9 @@ export class EventRouter {
     this.roomBlockRepo
       .deleteBlock(String(roomId), userId)
       .catch((err) =>
-        this.logger.warn(
-          { err, roomId, userId },
-          "Failed to delete room block Redis mirror",
-        ),
+        reactError(err, { roomId, userId }, "Failed to delete room block Redis mirror", {
+          logger: this.logger,
+        }),
       );
   }
 
@@ -633,10 +633,9 @@ export class EventRouter {
       roomId,
       userId,
     ).catch((err) =>
-      this.logger.warn(
-        { err, roomId, userId },
-        "Failed to eject room member on block",
-      ),
+      reactError(err, { roomId, userId }, "Failed to eject room member on block", {
+        logger: this.logger,
+      }),
     );
   }
 

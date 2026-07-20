@@ -1,6 +1,7 @@
 import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import { RoomStateRepository } from "./roomState.js";
@@ -156,7 +157,7 @@ export class RoomManager {
         registry
           ?.refreshOwnership(roomId, selfId)
           .catch((err) =>
-            logger.warn({ err, roomId }, "Ownership heartbeat refresh failed"),
+            reactError(err, { roomId }, "Ownership heartbeat refresh failed"),
           );
         // realtime-01: heal advisory count + refresh room:state TTL for owned
         // Rooms (Lua is update-if-exists, so a reconcile racing closeRoom's
@@ -190,7 +191,7 @@ export class RoomManager {
             // deletes can't be resurrected (the Lua only HDELs existing fields).
             if (owns) {
               void this.sweepExpiredSeatReservations(roomId).catch((err) =>
-                logger.warn({ err, roomId }, "Seat reservation sweep failed"),
+                reactError(err, { roomId }, "Seat reservation sweep failed"),
               );
             }
             // realtime-17b: gate the broadcast flip on an actual speaker. Without
@@ -226,10 +227,7 @@ export class RoomManager {
             });
           })
           .catch((err) =>
-            logger.warn(
-              { err, roomId },
-              "Presence reconcile on heartbeat failed",
-            ),
+            reactError(err, { roomId }, "Presence reconcile on heartbeat failed"),
           );
       }
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
@@ -405,18 +403,22 @@ export class RoomManager {
       await cluster
         .close()
         .catch((closeErr) =>
-          logger.error(
-            { err: closeErr, roomId },
+          reactError(
+            closeErr,
+            { roomId },
             "Cluster close during ghost-room cleanup failed",
+            { level: "error" },
           ),
         );
       if (this.roomRegistry) {
         await this.roomRegistry
           .cleanup(roomId)
           .catch((rrErr) =>
-            logger.error(
-              { err: rrErr, roomId },
+            reactError(
+              rrErr,
+              { roomId },
               "CAS release during ghost-room cleanup failed",
+              { level: "error" },
             ),
           );
       }
@@ -456,9 +458,11 @@ export class RoomManager {
     const results = await Promise.allSettled(
       orphanedRooms.map((roomId) =>
         this.closeRoom(roomId, "worker_died").catch((err) => {
-          logger.error(
-            { err, roomId, workerPid },
+          reactError(
+            err,
+            { roomId, workerPid },
             "Error closing orphaned room",
+            { level: "error" },
           );
           // Even if closeRoom fails, ensure we remove from local map
           this.rooms.delete(roomId);
@@ -508,7 +512,9 @@ export class RoomManager {
       this.cascadeRelay
         .relayToRemote(roomId, "room:closed", closePayload)
         .catch((err) =>
-          logger.error({ err, roomId }, "Failed to relay room close event"),
+          reactError(err, { roomId }, "Failed to relay room close event", {
+            level: "error",
+          }),
         );
     }
 
@@ -526,7 +532,9 @@ export class RoomManager {
         hosting_port: null,
       })
       .catch((err) =>
-        logger.error({ err, roomId }, "Laravel close status update failed"),
+        reactError(err, { roomId }, "Laravel close status update failed", {
+          level: "error",
+        }),
       );
 
     // 3. ROOM-ARCH-001 FIX: Parallelize independent cleanup operations
@@ -542,7 +550,9 @@ export class RoomManager {
         this.cascadeCoordinator
           .cleanup(roomId)
           .catch((err) =>
-            logger.error({ err, roomId }, "Cascade cleanup failed"),
+            reactError(err, { roomId }, "Cascade cleanup failed", {
+              level: "error",
+            }),
           ),
       );
     }
@@ -553,7 +563,9 @@ export class RoomManager {
         this.roomRegistry
           .cleanup(roomId)
           .catch((err) =>
-            logger.error({ err, roomId }, "RoomRegistry cleanup failed"),
+            reactError(err, { roomId }, "RoomRegistry cleanup failed", {
+              level: "error",
+            }),
           ),
       );
     }
@@ -618,9 +630,11 @@ export class RoomManager {
         hosting_port: null,
       })
       .catch((err) =>
-        logger.error(
-          { err, roomId },
+        reactError(
+          err,
+          { roomId },
           "Laravel not-live update failed during orphan reap",
+          { level: "error" },
         ),
       );
 

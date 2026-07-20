@@ -46,8 +46,12 @@ RUN apt-get update && apt-get install -y \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
     
-# Copy built assets
-COPY --from=builder /app/dist ./dist
+# Copy built assets.
+# `/app/dist/*.js` — NOT `/app/dist` — because the build now emits `.js.map`
+# sourcemaps for Sentry, and this image is published to a public registry.
+# The maps are uploaded to Sentry from the builder stage instead (see §10 of
+# docs/issues/msab-sentry/prd-msab-sentry.md); they must never ship in a layer.
+COPY --from=builder /app/dist/*.js ./dist/
 
 # Env variables should be set by runtime (DO App Platform)
 ENV NODE_ENV=production
@@ -63,5 +67,9 @@ EXPOSE 10000-59999/tcp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3030/health || exit 1
 
-# Start
-CMD ["node", "dist/index.js"]
+# Start.
+# `--import` (not a top-level import in index.ts): under ESM the hoisted
+# imports of index.ts would evaluate before Sentry.init() ran, so
+# auto-instrumentation could silently fail to patch. NODE_OPTIONS was rejected
+# as invisible here and container-wide.
+CMD ["node", "--import", "./dist/instrument.js", "dist/index.js"]

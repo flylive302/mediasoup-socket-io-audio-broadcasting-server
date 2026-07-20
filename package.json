@@ -7,8 +7,8 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsx watch --import ./src/instrument.ts src/index.ts",
+    "build": "tsup src/index.ts src/instrument.ts --format esm --dts --sourcemap",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -21,6 +21,7 @@
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.998.0",
     "@aws-sdk/client-s3": "^3.1075.0",
+    "@sentry/node": "^10.66.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "dotenv": "^16.4.0",
     "fastify": "^5.0.0",
