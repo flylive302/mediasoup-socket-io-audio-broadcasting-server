@@ -30,6 +30,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # msab-sentry §10: ghcr-publish's `releases new/finalize` needs
+    # SENTRY_AUTH_TOKEN (a repo secret). Secrets do NOT cross a `workflow_call`
+    # boundary without this — without it the release step 401s ("No credentials
+    # provided") and fails the whole deploy, even though a direct push-to-master
+    # run of ghcr-publish (which has ambient repo secrets) succeeds.
+    secrets: inherit
 
   deploy:
     needs: build
