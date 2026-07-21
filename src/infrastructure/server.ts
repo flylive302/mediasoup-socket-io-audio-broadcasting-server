@@ -8,8 +8,6 @@ import { getRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
 import { createEventIngestRoutes } from "./event-ingest.js";
 import { createAdminRoutes } from "./drain.js";
-// ⚠️ TEMPORARY — BRANCH-ONLY, DO NOT MERGE. See sentry-probe.ts.
-import { createSentryProbeRoutes } from "./sentry-probe.js";
 import { createInternalRoutes } from "@src/api/internal.js";
 import { initializeSocket } from "@src/socket/index.js";
 import { RevocationBackfillPoller } from "@src/integrations/laravel/revocation-backfill-poller.js";
@@ -165,11 +163,6 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
 
   // Register admin routes (drain mode, status)
   await fastify.register(createAdminRoutes(roomManager));
-
-  // ⚠️ TEMPORARY — BRANCH-ONLY, DO NOT MERGE. Deliberate-failure probes for
-  // msab-observability-hardening tickets 01/02. Removed by rolling the
-  // instance back onto master (checklist Step 5).
-  await fastify.register(createSentryProbeRoutes());
 
   // Register internal API routes (SFU cascade)
   await fastify.register(
