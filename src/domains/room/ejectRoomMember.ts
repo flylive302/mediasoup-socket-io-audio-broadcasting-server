@@ -22,6 +22,7 @@ import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { config } from "@src/config/index.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
+import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
 
 export interface EjectRoomMemberDeps {
@@ -79,7 +80,7 @@ export async function ejectRoomMember(
   // (cross-node safe via fetchSockets()). The client also self-ejects on
   // receiving room.member_removed (leaveRoom + navigate away); this is the
   // server-side guarantee that holds even if the client ignores it.
-  const targetSockets = (await io.in(roomId).fetchSockets()).filter(
+  const targetSockets = (await fetchSocketsSafe(io, roomId, logger)).filter(
     (socket) => String(socket.data?.user?.id) === targetUserIdStr,
   );
 

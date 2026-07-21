@@ -39,6 +39,11 @@ function harness(members: Set<string>, opts: HarnessOpts = {}) {
         }
         return [...members].map((id) => ({ id }));
       },
+      // msab-load-stability 01: presence now goes through fetchSocketsSafe,
+      // which degrades to the adapter-free `.local` view on cross-node failure.
+      local: {
+        fetchSockets: async () => [...members].map((id) => ({ id })),
+      },
     }),
   } as unknown as Server;
 
@@ -224,11 +229,13 @@ describe("finalizeLeave — seat reservation across reconnect (realtime-22 rewor
     // 2026-07-21: this rejection escaped finalizeLeave → handleDisconnect →
     // an unhandledRejection per disconnect; ≥5/30s tripped index.ts's circuit
     // breaker and killed the surviving instance during every fleet roll.
+    // msab-load-stability 01: presence uses fetchSocketsSafe, so the cross-node
+    // rejection degrades to the LOCAL socket view instead of failing reconcile —
+    // the leave resolves with the local count and status submit proceeds.
     const h = harness(new Set(["sock-other"]), { fetchSocketsRejects: true });
     const count = await finalizeLeave(h.socket, h.context, ROOM, { viaDisconnect: true });
-    expect(count).toBeNull();
-    // Status submit skipped (heartbeat heals it) — but the teardown completed.
-    expect(h.submit).not.toHaveBeenCalled();
+    expect(count).toBe(1);
+    expect(h.submit).toHaveBeenCalled();
     expect(h.recordActivity).toHaveBeenCalledWith(ROOM);
     expect(h.clearUserRoom).toHaveBeenCalledWith(LEAVER_ID);
     expect(h.clearClientRoom).toHaveBeenCalledWith(LEAVER);

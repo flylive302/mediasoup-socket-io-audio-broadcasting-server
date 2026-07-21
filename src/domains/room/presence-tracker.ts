@@ -20,6 +20,8 @@
  */
 import type { Server } from "socket.io";
 import type { RoomStateRepository } from "./roomState.js";
+import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
+import { logger } from "@src/infrastructure/logger.js";
 
 export class PresenceTracker {
   /** roomId → epoch ms when presence was first observed at zero. */
@@ -32,7 +34,7 @@ export class PresenceTracker {
 
   /** Real region-wide socket presence for a Room. */
   async present(roomId: string): Promise<number> {
-    const sockets = await this.io.in(roomId).fetchSockets();
+    const sockets = await fetchSocketsSafe(this.io, roomId, logger);
     return sockets.length;
   }
 
