@@ -8,6 +8,14 @@ const devTransport = {
     ignore: "pid,hostname",
     colorize: true,
   },
+  // msab-sentry: this transport runs in a WORKER THREAD, and Node propagates
+  // the entry's `--import ./src/instrument.ts` into workers via execArgv. The
+  // worker has no tsx loader, so instrument.ts's `./config/index.js` specifier
+  // fails to resolve (ERR_MODULE_NOT_FOUND) — the logging worker dies and dev
+  // boot stalls with ZERO log output. Empty execArgv keeps the preload on the
+  // main thread only (which is the only place Sentry must be initialised).
+  // Production is unaffected: no transport is configured there (see below).
+  worker: { execArgv: [] },
 };
 
 export const logger = pino({
