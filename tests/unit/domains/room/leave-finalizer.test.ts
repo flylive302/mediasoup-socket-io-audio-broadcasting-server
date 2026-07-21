@@ -25,12 +25,20 @@ interface HarnessOpts {
   isEdgeRoom?: boolean;
   // realtime-22: the leaveSeat result for the immediate-release path.
   leaveResult?: { success: boolean; seatIndex?: number; clearedSeatIndices?: number[] };
+  // msab-crash-drain 02: model the Redis adapter rejecting the cross-instance
+  // fetchSockets fan-out (an absent fleet peer mid-roll).
+  fetchSocketsRejects?: boolean;
 }
 
 function harness(members: Set<string>, opts: HarnessOpts = {}) {
   const io = {
     in: () => ({
-      fetchSockets: async () => [...members].map((id) => ({ id })),
+      fetchSockets: async () => {
+        if (opts.fetchSocketsRejects) {
+          throw new Error("timeout reached while waiting for fetchSockets response");
+        }
+        return [...members].map((id) => ({ id }));
+      },
     }),
   } as unknown as Server;
 
@@ -210,6 +218,21 @@ describe("finalizeLeave — seat reservation across reconnect (realtime-22 rewor
     expect(emittedEvents(h.emit)).toEqual(
       expect.arrayContaining(["seat:cleared", "room:userLeft"]),
     );
+  });
+
+  it("RESOLVES (never rejects) when the adapter fetchSockets times out — the crash-storm regression (msab-crash-drain 02)", async () => {
+    // 2026-07-21: this rejection escaped finalizeLeave → handleDisconnect →
+    // an unhandledRejection per disconnect; ≥5/30s tripped index.ts's circuit
+    // breaker and killed the surviving instance during every fleet roll.
+    const h = harness(new Set(["sock-other"]), { fetchSocketsRejects: true });
+    const count = await finalizeLeave(h.socket, h.context, ROOM, { viaDisconnect: true });
+    expect(count).toBeNull();
+    // Status submit skipped (heartbeat heals it) — but the teardown completed.
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(h.recordActivity).toHaveBeenCalledWith(ROOM);
+    expect(h.clearUserRoom).toHaveBeenCalledWith(LEAVER_ID);
+    expect(h.clearClientRoom).toHaveBeenCalledWith(LEAVER);
+    expect(emittedEvents(h.emit)).toContain("room:userLeft");
   });
 
   it("a cross-region EDGE disconnect falls back to immediate release (no cross-region kick)", async () => {

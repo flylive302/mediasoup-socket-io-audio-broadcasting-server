@@ -15,6 +15,7 @@
 import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
+import { reactError } from "@src/shared/react-error.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 
@@ -32,7 +33,7 @@ export async function finalizeLeave(
   context: AppContext,
   roomId: string,
   options: FinalizeLeaveOptions,
-): Promise<number> {
+): Promise<number | null> {
   const userId = socket.data.user.id;
   const {
     roomManager,
@@ -121,17 +122,35 @@ export async function finalizeLeave(
   // leave storm (e.g. mass disconnect) can no longer 429-flood Laravel. A truly
   // empty Room's is_live:false rides the same window; the actual Room teardown is
   // driven by AutoCloseEvaluator/closeRoom (which flushes immediately), not here.
-  const newCount = await presenceTracker.reconcile(roomId);
-  const isLive = newCount > 0;
-  statusCoalescer.submit(roomId, {
-    is_live: isLive,
-    participant_count: newCount,
-    hosting_region: isLive ? config.AWS_REGION : null,
-    hosting_ip: isLive
-      ? config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null
-      : null,
-    hosting_port: isLive ? config.PORT : null,
-  });
+  // msab-crash-drain 02: `reconcile` fans out over the Redis adapter and REJECTS
+  // after `requestsTimeout` whenever a fleet peer is absent (mid-roll, crashed).
+  // That rejection must not abort the leave — the teardown above is already
+  // done, and the disconnect path's caller-side cleanup (unregisterSocket,
+  // lifecycle hooks) still has to run. On failure: skip the status submit (the
+  // ownership heartbeat re-reconciles owned Rooms ~30s later) and return null.
+  let newCount: number | null = null;
+  try {
+    newCount = await presenceTracker.reconcile(roomId);
+  } catch (err) {
+    reactError(
+      err,
+      { roomId, userId },
+      "Presence reconcile on leave failed — status update deferred to heartbeat",
+      { logger },
+    );
+  }
+  if (newCount !== null) {
+    const isLive = newCount > 0;
+    statusCoalescer.submit(roomId, {
+      is_live: isLive,
+      participant_count: newCount,
+      hosting_region: isLive ? config.AWS_REGION : null,
+      hosting_ip: isLive
+        ? config.PUBLIC_IP || config.MEDIASOUP_ANNOUNCED_IP || null
+        : null,
+      hosting_port: isLive ? config.PORT : null,
+    });
+  }
 
   logger.debug(
     {

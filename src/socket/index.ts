@@ -215,6 +215,12 @@ export async function initializeSocket(
     // Disconnect — LT-5: uses lifecycle hooks for domain-specific cleanup
     socket.on("disconnect", (reason) => {
       // F-7: register the in-flight handler so shutdown can await it.
+      // msab-crash-drain 02: the .catch is load-bearing — `.finally()` passes
+      // rejections through, so without it every failed disconnect teardown
+      // (e.g. fetchSockets timing out while a fleet peer is mid-roll) became an
+      // unhandledRejection; ≥5 in 30s trips index.ts's circuit breaker and
+      // KILLED the surviving instance during rolls (observed in prod
+      // 2026-07-21, 16:55 bom-01 and 18:12 bom-02).
       const p = handleDisconnect(socket, reason, {
         io,
         redis,
@@ -226,7 +232,12 @@ export async function initializeSocket(
         cascadeRelay: appContext.cascadeRelay,
         appContext,
         presenceService,
-      });
+      }).catch((err) =>
+        reactError(err, { socketId: socket.id, reason }, "Disconnect teardown failed", {
+          level: "error",
+          logger,
+        }),
+      );
       activeDisconnects.add(p);
       void p.finally(() => activeDisconnects.delete(p));
     });
