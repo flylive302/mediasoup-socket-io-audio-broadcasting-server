@@ -125,7 +125,7 @@ export async function finalizeLeave(
   // msab-crash-drain 02: `reconcile` fans out over the Redis adapter and REJECTS
   // after `requestsTimeout` whenever a fleet peer is absent (mid-roll, crashed).
   // That rejection must not abort the leave — the teardown above is already
-  // done, and the disconnect path's caller-side cleanup (unregisterSocket,
+  // done-issues, and the disconnect path's caller-side cleanup (unregisterSocket,
   // lifecycle hooks) still has to run. On failure: skip the status submit (the
   // ownership heartbeat re-reconciles owned Rooms ~30s later) and return null.
   let newCount: number | null = null;

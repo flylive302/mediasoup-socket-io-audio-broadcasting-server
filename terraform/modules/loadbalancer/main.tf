@@ -51,7 +51,7 @@ resource "aws_lb_target_group" "app" {
   # the NLB flow-hash distribute connections. WebRTC media is UDP direct to
   # the instance and unaffected; only the signaling TCP flow is rebalanced.
   # Rollout: apply off-peak, then watch per-target NewFlowCount/connection
-  # counts equalize before declaring done.
+  # counts equalize before declaring done-issues.
   stickiness {
     enabled = false
     type    = "source_ip"
