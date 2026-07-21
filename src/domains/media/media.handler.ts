@@ -18,7 +18,7 @@ import {
   selfMuteSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
-import { emitToRoom } from "@src/shared/room-emit.js";
+import { emitToRoom, broadcastToRoom } from "@src/shared/room-emit.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { Errors } from "@src/shared/errors.js";
 import { getIceServers } from "@src/config/iceServers.js";
@@ -302,7 +302,7 @@ const selfMuteHandler = createHandler(
     );
 
     // Notify room so frontend can update UI (cascade-aware)
-    emitToRoom(socket, roomId, "seat:userMuted", {
+    broadcastToRoom(socket.nsp, roomId, "seat:userMuted", {
       userId: socket.data.user.id,
       isMuted: true,
       selfMuted: true,
@@ -344,7 +344,7 @@ const selfUnmuteHandler = createHandler(
     );
 
     // Notify room so frontend can update UI (cascade-aware)
-    emitToRoom(socket, roomId, "seat:userMuted", {
+    broadcastToRoom(socket.nsp, roomId, "seat:userMuted", {
       userId: socket.data.user.id,
       isMuted: false,
       selfMuted: true,
