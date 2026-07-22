@@ -74,14 +74,27 @@ const transportConnectHandler = createHandler(
     const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
 
-    if (!transport) {
+    if (!transport || transport.closed) {
       return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
     }
 
-    await transport.connect({
-      dtlsParameters: dtlsParameters as mediasoup.types.DtlsParameters,
-    });
-    return { success: true };
+    // prod-bugs 03 (webRtcTransport.connect flavor): same benign race as
+    // restartIce — teardown between GATE and the worker call.
+    try {
+      await transport.connect({
+        dtlsParameters: dtlsParameters as mediasoup.types.DtlsParameters,
+      });
+      return { success: true };
+    } catch (err) {
+      if (isClosedTransportError(err)) {
+        logger.info(
+          { roomId, transportId },
+          "transport:connect raced a closed transport — benign",
+        );
+        return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
+      }
+      throw err;
+    }
   },
 );
 
