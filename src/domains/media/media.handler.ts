@@ -102,14 +102,39 @@ const transportRestartIceHandler = createHandler(
 
     const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
-    if (!transport) {
+    if (!transport || transport.closed) {
       return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
     }
 
-    const iceParameters = await transport.restartIce();
-    return { success: true, data: { iceParameters } };
+    // prod-bugs 03: the transport can close between the GATE check and this
+    // call (disconnect teardown / room close), making the mediasoup worker
+    // reject with InvalidStateError or "Channel request handler ... not
+    // found". That race is benign — tell the client the transport is gone
+    // (typed error → full rebuild) instead of throwing a 500 into Sentry.
+    try {
+      const iceParameters = await transport.restartIce();
+      return { success: true, data: { iceParameters } };
+    } catch (err) {
+      if (isClosedTransportError(err)) {
+        logger.info(
+          { roomId, transportId },
+          "restartIce raced a closed transport — benign",
+        );
+        return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
+      }
+      throw err;
+    }
   },
 );
+
+/** Worker-side rejections that just mean "this transport is already gone". */
+function isClosedTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    err.name === "InvalidStateError" ||
+    /handler with ID .* not found|transport closed/i.test(err.message)
+  );
+}
 
 // 3. Produce (Audio) — always on source router
 const audioProduceHandler = createHandler(
