@@ -421,8 +421,13 @@ export class RoomMediaCluster {
       throw new Error("Source router not initialized");
     }
 
-    // Get a worker — preferably different from the source router's worker
-    const worker = this.workerManager.getLeastLoadedWorker();
+    // prod-bugs 09: MUST be a different worker than the source router's —
+    // pipeToRouter reuses the source producer's id for the pipe producer, and
+    // ids are worker-global, so a same-worker pipe always throws
+    // "Channel request handler with ID … already exists".
+    const worker = this.workerManager.getLeastLoadedWorker(
+      this.sourceRouter.worker.pid,
+    );
     const webRtcServer = this.workerManager.getWebRtcServer(worker);
 
     const routerManager = new RouterManager(worker, this.logger, webRtcServer);
@@ -498,11 +503,20 @@ export class RoomMediaCluster {
       // Transient pipe failures (worker churn, in-flight transport teardown)
       // must not leave a speaker permanently inaudible on this router — retry
       // before giving up (2026-07-10 audio review: asymmetric audibility).
-      const { pipeProducer } = await retryAsync(() =>
-        sourceRouter.pipeToRouter({
-          producerId: sourceProducerId,
-          router: distRouter,
-        }),
+      const { pipeProducer } = await retryAsync(
+        () =>
+          sourceRouter.pipeToRouter({
+            producerId: sourceProducerId,
+            router: distRouter,
+          }),
+        {
+          // prod-bugs 09: "handler already exists" = the pipe producer is
+          // half-created (partial first attempt or same-worker collision) —
+          // repeating the identical call can only collide again. Fail fast so
+          // the caller tears the router down and the client retries cleanly.
+          shouldRetry: (err) =>
+            !(err instanceof Error && err.message.includes("already exists")),
+        },
       );
 
       if (pipeProducer) {

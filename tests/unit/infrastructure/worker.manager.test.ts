@@ -174,6 +174,64 @@ describe("WorkerManager", () => {
       const selected = wm.getLeastLoadedWorker();
       expect(selected.pid).toBe(w2.pid);
     });
+
+    // prod-bugs 09 (NODE-MSAB-6): a distribution router must never share a
+    // worker with its source router — same-worker pipeToRouter always throws
+    // "Channel request handler with ID … already exists".
+    it("excludes the given pid even when that worker is least loaded", async () => {
+      const w1 = createMockWorker();
+      const w2 = createMockWorker();
+      let idx = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mediasoup.createWorker as any).mockImplementation(() =>
+        Promise.resolve([w1, w2][idx++]),
+      );
+
+      const wm = new WorkerManager(mockLogger);
+      await wm.initialize();
+
+      // w2 is more loaded, but w1 (least loaded) is the source's worker.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (let i = 0; i < 5; i++) wm.incrementRouterCount(w2 as any);
+
+      const selected = wm.getLeastLoadedWorker(w1.pid);
+      expect(selected.pid).toBe(w2.pid);
+    });
+
+    it("prefers an over-capacity different worker to the excluded one", async () => {
+      const w1 = createMockWorker();
+      const w2 = createMockWorker();
+      let idx = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mediasoup.createWorker as any).mockImplementation(() =>
+        Promise.resolve([w1, w2][idx++]),
+      );
+
+      const wm = new WorkerManager(mockLogger);
+      await wm.initialize();
+
+      // Push w2 past the soft cap (MAX_ROOMS_PER_WORKER default 100).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (let i = 0; i < 150; i++) wm.incrementRouterCount(w2 as any);
+
+      const selected = wm.getLeastLoadedWorker(w1.pid);
+      expect(selected.pid).toBe(w2.pid);
+    });
+
+    it("falls back to the excluded worker only when it is the sole worker", async () => {
+      const w1 = createMockWorker();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mediasoup.createWorker as any).mockImplementation(() => Promise.resolve(w1));
+
+      const wm = new WorkerManager(mockLogger);
+      // Every createWorker call yields the same mock, so all slots share one
+      // pid — excluding it models the single-worker deployment.
+      await wm.initialize();
+
+      const selected = wm.getLeastLoadedWorker(w1.pid);
+      expect(selected.pid).toBe(w1.pid);
+      expect(mockLogger.warn).toHaveBeenCalled();
+    });
   });
 
   describe("shutdown", () => {

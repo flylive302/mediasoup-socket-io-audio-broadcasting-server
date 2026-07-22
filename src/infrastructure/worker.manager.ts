@@ -69,21 +69,57 @@ export class WorkerManager {
     this.logger.info({ count: this.workers.length }, "Workers initialized");
   }
 
-  /** Get the least loaded worker (by router count), enforcing MAX_ROOMS_PER_WORKER */
-  getLeastLoadedWorker(): mediasoup.types.Worker {
+  /**
+   * Get the least loaded worker (by router count), enforcing MAX_ROOMS_PER_WORKER.
+   *
+   * `excludePid` (prod-bugs 09 / NODE-MSAB-6): a distribution router MUST NOT
+   * share a worker with its room's source router — mediasoup's pipeToRouter
+   * creates the pipe producer with the SAME id as the source producer, and the
+   * worker's channel handler registry is worker-global, so a same-worker pipe
+   * always rejects with "Channel request handler with ID … already exists".
+   * The exclusion is hard: an over-capacity different worker beats the
+   * excluded one (soft router cap vs guaranteed pipe failure). Only a
+   * single-worker deployment falls through, loudly.
+   */
+  getLeastLoadedWorker(excludePid?: number): mediasoup.types.Worker {
     if (this.workers.length === 0) {
       throw new Error("No workers available. Did you call initialize()?");
     }
 
+    const eligible = excludePid === undefined
+      ? this.workers
+      : this.workers.filter((info) => info.worker.pid !== excludePid);
+
     let bestWorker: WorkerInfo | null = null;
 
-    for (const info of this.workers) {
+    for (const info of eligible) {
       // Skip workers at capacity
       if (info.routerCount >= config.MAX_ROOMS_PER_WORKER) continue;
 
       if (!bestWorker || info.routerCount < bestWorker.routerCount) {
         bestWorker = info;
       }
+    }
+
+    // All eligible workers at soft capacity → still prefer a non-excluded
+    // worker over the excluded one (capacity is a soft bound; the same-worker
+    // pipe collision is a hard failure).
+    if (!bestWorker && eligible.length > 0) {
+      bestWorker = eligible.reduce((a, b) => (a.routerCount <= b.routerCount ? a : b));
+      this.logger.warn(
+        { pid: bestWorker.worker.pid, routers: bestWorker.routerCount, excludePid },
+        "All non-excluded workers at soft capacity — over-filling to avoid same-worker pipe collision",
+      );
+    }
+
+    // Single-worker deployment: nothing to exclude against. Same-worker pipes
+    // will fail, but there is no alternative — surface it loudly.
+    if (!bestWorker && excludePid !== undefined) {
+      this.logger.warn(
+        { excludePid },
+        "No worker other than the excluded one exists — same-worker pipe WILL fail (single-worker deployment?)",
+      );
+      return this.getLeastLoadedWorker();
     }
 
     if (!bestWorker) {

@@ -44,6 +44,22 @@ describe("retryAsync", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  // prod-bugs 09: futile-by-construction errors must abort instead of retrying.
+  it("shouldRetry:false aborts immediately and rethrows the original error", async () => {
+    const fn = vi.fn().mockRejectedValue(
+      new Error("Channel request handler with ID x already exists"),
+    );
+    await expect(
+      retryAsync(fn, {
+        attempts: 3,
+        baseDelayMs: 1,
+        shouldRetry: (err) =>
+          !(err instanceof Error && err.message.includes("already exists")),
+      }),
+    ).rejects.toThrow("already exists");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("passes the attempt number to the callback", async () => {
     const attempts: number[] = [];
     await retryAsync(

@@ -17,6 +17,13 @@ export interface RetryOptions {
   baseDelayMs?: number;
   /** Reject a resolved value and retry when it returns false. */
   accept?: (result: unknown) => boolean;
+  /**
+   * Return false to abort immediately (rethrow) instead of retrying — for
+   * errors where a retry is futile by construction (prod-bugs 09: mediasoup
+   * "handler already exists" means the entity is half-created; retrying the
+   * same call can only collide again).
+   */
+  shouldRetry?: (err: unknown) => boolean;
 }
 
 export async function retryAsync<T>(
@@ -26,6 +33,7 @@ export async function retryAsync<T>(
   const attempts = options.attempts ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 200;
   const accept = options.accept ?? (() => true);
+  const shouldRetry = options.shouldRetry ?? (() => true);
 
   let lastError: unknown;
   let lastResult: T | undefined;
@@ -36,6 +44,7 @@ export async function retryAsync<T>(
       if (accept(result)) return result;
       lastResult = result;
     } catch (err) {
+      if (!shouldRetry(err)) throw err;
       lastError = err;
     }
     if (attempt < attempts) {
