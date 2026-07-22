@@ -9,7 +9,15 @@ import type { PresenceTracker } from "../presence-tracker.js";
 import { AutoCloseEvaluator } from "./auto-close-evaluator.js";
 
 const ACTIVITY_KEY = (roomId: string) => `room:${roomId}:activity`;
-const STATE_KEY = (roomId: string) => `room:state:${roomId}`;
+const STATE_KEY_PREFIX = "room:state:";
+
+/**
+ * Bound on Phase-2 presence confirms per sweep. Each confirm is a (bounded)
+ * cross-node fetchSockets; after a mass-crash a backlog of stale room:state
+ * keys could otherwise stretch one sweep for minutes. Overflow candidates are
+ * simply picked up by later sweeps (poll interval 30s).
+ */
+const MAX_PRESENCE_CHECKS_PER_SWEEP = 50;
 
 export class AutoCloseService {
   private readonly evaluator: AutoCloseEvaluator;
@@ -44,17 +52,20 @@ export class AutoCloseService {
   /**
    * Get all rooms that should be closed.
    *
-   * Two-phase (realtime-01):
-   *  1. CHEAP candidate filter — SCAN room:state:* + one pipelined EXISTS+GET
-   *     per room: a candidate has an expired activity key AND advisory count 0.
-   *     One round-trip regardless of room count; bounds the costly step below.
+   * Two-phase (realtime-01, admission gate reworked in msab-load-stability 09):
+   *  1. CHEAP candidate filter — SCAN room:state:* + one pipelined EXISTS per
+   *     room: a candidate is any room whose activity key expired. Candidacy
+   *     deliberately does NOT consult the advisory participantCount integer:
+   *     that integer is only healed by the owning instance's in-memory-scoped
+   *     heartbeat, so a room whose instance crashed kept a stale count > 0
+   *     forever and was never admitted — the orphan-room bug. Activity-TTL
+   *     alone bounds Phase-2 volume, plus a per-sweep cap.
    *  2. PRESENCE confirm — only for candidates, query real socket presence
-   *     (`PresenceTracker`) and run the pure `AutoCloseEvaluator`. A Room is
-   *     closed only when real presence is genuinely zero (fixes Cause B: the
+   *     (`PresenceTracker.reconcile`, which also heals the advisory integer
+   *     fleet-wide) and run the pure `AutoCloseEvaluator`. A Room is closed
+   *     only when real presence is genuinely zero (fixes Cause B: the
    *     advisory integer can under-count a still-connected socket) AND has
-   *     stayed zero past the grace window. The over-count case (integer > 0 but
-   *     truly empty) self-heals via the heartbeat reconcile, which sets owned
-   *     Rooms' integer = presence every ~30s so they become candidates.
+   *     stayed zero past the grace window.
    */
   async getInactiveRoomIds(): Promise<string[]> {
     const candidates = await this.getCandidateRoomIds();
@@ -62,10 +73,11 @@ export class AutoCloseService {
 
     const now = Date.now();
     const inactive: string[] = [];
-    for (const roomId of candidates) {
+    for (const roomId of candidates.slice(0, MAX_PRESENCE_CHECKS_PER_SWEEP)) {
       try {
-        const present = await this.presenceTracker.present(roomId);
-        this.presenceTracker.observe(roomId, present, now);
+        // reconcile = real presence + heal advisory integer (update-if-exists,
+        // can't resurrect a closed room) + feed the grace-window observation.
+        const present = await this.presenceTracker.reconcile(roomId);
         const shouldClose = this.evaluator.shouldClose({
           interactivePresent: present,
           // Broadcast tier (mode/Speaker keep-alive) lands in realtime-08/09;
@@ -87,9 +99,8 @@ export class AutoCloseService {
   }
 
   /**
-   * Phase 1: cheap candidate filter — Rooms whose activity key expired AND whose
-   * advisory participant integer reads 0. Uses a single Redis pipeline for all
-   * EXISTS + GET calls instead of N×2 parallel calls.
+   * Phase 1: cheap candidate filter — Rooms whose activity key expired. One
+   * pipelined EXISTS per room, one round-trip regardless of room count.
    */
   private async getCandidateRoomIds(): Promise<string[]> {
     try {
@@ -100,7 +111,7 @@ export class AutoCloseService {
         const [nextCursor, keys] = await this.redis.scan(
           cursor,
           "MATCH",
-          "room:state:*",
+          `${STATE_KEY_PREFIX}*`,
           "COUNT",
           100,
         );
@@ -111,41 +122,26 @@ export class AutoCloseService {
       if (roomStateKeys.length === 0) return [];
 
       const roomIds = roomStateKeys.map((key) =>
-        key.replace("room:state:", ""),
+        key.replace(STATE_KEY_PREFIX, ""),
       );
 
-      // Single pipeline: batch all EXISTS + GET calls
+      // Single pipeline: batch all EXISTS calls
       const pipeline = this.redis.pipeline();
       for (const roomId of roomIds) {
         pipeline.exists(ACTIVITY_KEY(roomId));
-        pipeline.get(STATE_KEY(roomId));
       }
       const results = await pipeline.exec();
       if (!results) return [];
 
       const candidates: string[] = [];
       for (let i = 0; i < roomIds.length; i++) {
-        const existsResult = results[i * 2];
-        const stateResult = results[i * 2 + 1];
+        const existsResult = results[i];
 
         // Fail safe: skip rooms where Redis errored
-        if (existsResult?.[0] || stateResult?.[0]) continue;
+        if (existsResult?.[0]) continue;
 
         const hasActivity = existsResult?.[1] === 1;
-        const stateStr = stateResult?.[1] as string | null;
-        let participantCount = 1; // Fail safe: assume participants on parse error
-        if (stateStr) {
-          try {
-            const state = JSON.parse(stateStr);
-            participantCount = state.participantCount ?? 0;
-          } catch {
-            // Keep fail-safe default
-          }
-        } else {
-          participantCount = 0;
-        }
-
-        if (!hasActivity && participantCount === 0) {
+        if (!hasActivity) {
           candidates.push(roomIds[i]!);
         }
       }

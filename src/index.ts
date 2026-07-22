@@ -4,12 +4,16 @@ import { config, initializeConfig } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
-import { startDrain, isDraining } from "./infrastructure/drain.js";
+import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain.js";
+import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
 
 // ─── Module-Level Shutdown Reference ─────────────────────────────
-// Set after bootstrap so process error handlers can invoke graceful shutdown.
-let shutdownFn: ((signal: string) => Promise<void>) | null = null;
+// msab-load-stability 07: crash paths (uncaughtException, rejection breaker)
+// no longer reuse the graceful drain — they route into the dedicated bounded
+// crash-shutdown sequence. Set after bootstrap so the process error handlers
+// can invoke it; SIGTERM/SIGINT keep the graceful drain defined in start().
+let crashShutdownFn: ((reason: string) => Promise<void>) | null = null;
 
 // ─── Sentry crash-path helpers ───────────────────────────────────
 // Telemetry must never be able to stop the process from exiting, so every
@@ -105,17 +109,26 @@ const start = async () => {
       try {
         // 1. Enter drain mode and wait for rooms to close (or timeout)
         if (!isDraining()) {
-          await new Promise<void>((resolve) => {
-            const drainTimeout = setTimeout(resolve, DRAIN_CEILING_MS);
+          const report = await new Promise<DrainReport | null>((resolve) => {
+            const drainTimeout = setTimeout(() => resolve(null), DRAIN_CEILING_MS);
             startDrain(roomManager, {
               timeoutMs: DRAIN_CEILING_MS,
-              onComplete: () => {
+              onComplete: (report) => {
                 clearTimeout(drainTimeout);
-                resolve();
+                resolve(report);
               },
             });
           });
-          logger.info("Drain completed, proceeding with shutdown");
+
+          // Honest log: only claim rooms closed when they actually did.
+          if (report?.outcome === "all_rooms_closed") {
+            logger.info({ report }, "Drain completed — all rooms closed, proceeding with shutdown");
+          } else {
+            logger.warn(
+              { report },
+              "Drain ceiling reached with rooms still open — proceeding with shutdown anyway",
+            );
+          }
         }
 
         // 2. Close Socket.IO (disconnect remaining clients)
@@ -180,8 +193,32 @@ const start = async () => {
       }
     };
 
-    // Expose to module-level error handlers
-    shutdownFn = gracefulShutdown;
+    // Crash sequence: honest, bounded, no drain. Sentry capture+flush already
+    // ran in the process handlers below before this is invoked.
+    crashShutdownFn = createCrashShutdown({
+      logger,
+      stopBackgroundJobs: () => {
+        autoCloseJob.stop();
+        roomManager.stopOwnershipHeartbeat();
+        revocationPoller.stop();
+        presenceService.stop();
+        stopCloudWatchPublisher();
+      },
+      flushStatus: () => statusCoalescer.stop(),
+      statusPendingCount: () => statusCoalescer.pendingCount(),
+      flushGifts: () => (giftHandler ? giftHandler.stop() : Promise.resolve()),
+      giftPendingCount: () => (giftHandler ? giftHandler.pendingCount() : Promise.resolve(0)),
+      shutdownWorkers: () => workerManager.shutdown(),
+      quitRedis: async () => {
+        const pubClient = getRedisClient();
+        await Promise.all([
+          pubClient.status === "ready" ? pubClient.quit() : Promise.resolve(),
+          subClient.status === "ready" ? subClient.quit() : Promise.resolve(),
+        ]).then(() => undefined);
+      },
+      closeServer: () => server.close().then(() => undefined),
+      exit: (code) => process.exit(code),
+    });
 
     process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
     process.on("SIGINT", () => gracefulShutdown("SIGINT"));
@@ -225,8 +262,8 @@ process.on("unhandledRejection", async (err) => {
       tags: { path: "unhandledRejection" },
       extra: { count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
     });
-    if (shutdownFn) {
-      void shutdownFn("unhandledRejection_threshold");
+    if (crashShutdownFn) {
+      void crashShutdownFn("unhandledRejection_threshold");
     } else {
       process.exit(1);
     }
@@ -247,27 +284,23 @@ process.on("unhandledRejection", async (err) => {
 });
 
 process.on("uncaughtException", async (err) => {
-  logger.fatal({ err }, "Uncaught Exception — initiating graceful shutdown");
+  logger.fatal({ err }, "Uncaught Exception — initiating crash shutdown");
 
-  // Reported BEFORE the shutdown attempt, not after: the 3s deadline below
-  // sits on top of a 120s drain, so this process dies ~2.5s in regardless and
-  // waiting buys almost nothing — while the report is the entire point.
-  // Worst case this adds SENTRY_FLUSH_MS (2s) to exit.
+  // Reported BEFORE the crash sequence, not after — the report is the entire
+  // point and must never depend on cleanup succeeding. Worst case this adds
+  // SENTRY_FLUSH_MS (2s) to exit. This ordering is the
+  // msab-observability-hardening guarantee; do not move it.
   await captureAndFlush(err, config.SENTRY_FLUSH_MS, {
     level: "fatal",
     // Distinguishes a crash in a running server from one during bootstrap,
-    // where nothing is listening yet and there is no drain to attempt.
-    tags: { path: shutdownFn ? "uncaughtException" : "pre-bootstrap" },
+    // where nothing is listening yet and there is nothing to clean up.
+    tags: { path: crashShutdownFn ? "uncaughtException" : "pre-bootstrap" },
   });
 
-  // Process is in undefined state after uncaughtException.
-  // Attempt graceful drain if possible, with a hard 3s deadline.
-  if (shutdownFn) {
-    const forceExit = setTimeout(() => process.exit(1), 3_000);
-    void shutdownFn("uncaughtException").finally(() => {
-      clearTimeout(forceExit);
-      process.exit(1);
-    });
+  // Process is in undefined state after uncaughtException: bounded crash
+  // sequence (no drain, no disconnect wait), hard-deadlined internally.
+  if (crashShutdownFn) {
+    void crashShutdownFn("uncaughtException");
   } else {
     // Server hasn't bootstrapped yet — just exit
     setTimeout(() => process.exit(1), 1_000);

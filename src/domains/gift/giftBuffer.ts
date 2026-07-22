@@ -95,6 +95,20 @@ export class GiftBuffer {
     }
   }
 
+  /**
+   * Gifts still queued in Redis (crash-shutdown accounting). Unlike the
+   * coalescer's in-memory map these are NOT lost on exit — they persist in
+   * Redis for the next instance's flush loop — so the crash log reports them
+   * as "left in queue", not "dropped". Returns -1 when Redis is unreachable.
+   */
+  async pendingCount(): Promise<number> {
+    try {
+      return await this.redis.llen(this.QUEUE_KEY);
+    } catch {
+      return -1;
+    }
+  }
+
   /** Add gift to buffer (called on each gift event) */
   async enqueue(gift: GiftTransaction): Promise<void> {
     await this.redis.rpush(this.QUEUE_KEY, JSON.stringify(gift));

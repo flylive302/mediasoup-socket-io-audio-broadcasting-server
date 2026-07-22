@@ -26,6 +26,11 @@ export class GiftHandler {
     await this.buffer.stop();
   }
 
+  /** See GiftBuffer.pendingCount — crash-shutdown accounting only. */
+  async pendingCount(): Promise<number> {
+    return this.buffer.pendingCount();
+  }
+
   handle(socket: Socket, context: AppContext) {
     socket.on(
       "gift:send",

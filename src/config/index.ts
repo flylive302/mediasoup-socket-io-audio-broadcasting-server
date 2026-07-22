@@ -164,6 +164,11 @@ const configSchema = z.object({
   // deadline; SIGTERM closes after a 120s drain (see src/index.ts).
   SENTRY_FLUSH_MS: z.coerce.number().default(2_000),
   SENTRY_CLOSE_MS: z.coerce.number().default(2_000),
+  // Crash-shutdown module (msab-load-stability 07). Buffer flushes on the
+  // crash path get this cap instead of the 30s Laravel HTTP timeout; the
+  // whole crash sequence is force-exited at the hard deadline.
+  CRASH_FLUSH_CAP_MS: z.coerce.number().default(2_500),
+  CRASH_HARD_DEADLINE_MS: z.coerce.number().default(10_000),
   // Client-side quota control. 30/hour/instance is precisely the sustained
   // rate that keeps a 2-instance fleet inside the ~45,000 errors/month
   // headroom even if a storm never stops; burst 20 lets a real incident

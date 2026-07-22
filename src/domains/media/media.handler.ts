@@ -16,6 +16,7 @@ import {
   audioConsumeSchema,
   consumerResumeSchema,
   selfMuteSchema,
+  transportRestartIceSchema,
 } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom, broadcastToRoom } from "@src/shared/room-emit.js";
@@ -81,6 +82,32 @@ const transportConnectHandler = createHandler(
       dtlsParameters: dtlsParameters as mediasoup.types.DtlsParameters,
     });
     return { success: true };
+  },
+);
+
+// 2b. Restart ICE (msab-load-stability 10) — client transport recovery.
+// GATE: transport must exist and belong to the caller's room; EXECUTE:
+// mediasoup regenerates ICE ufrag/pwd, client applies them via
+// transport.restartIce() and re-gathers candidates. No producer/consumer state
+// is touched, so a successful restart resumes media on the existing pipeline.
+const transportRestartIceHandler = createHandler(
+  "transport:restartIce",
+  transportRestartIceSchema,
+  async (payload, socket, context) => {
+    const { roomId, transportId } = payload;
+
+    if (!socket.rooms.has(roomId)) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
+    const cluster = context.roomManager.getRoom(roomId);
+    const transport = cluster?.getTransport(transportId);
+    if (!transport) {
+      return { success: false, error: Errors.TRANSPORT_NOT_FOUND };
+    }
+
+    const iceParameters = await transport.restartIce();
+    return { success: true, data: { iceParameters } };
   },
 );
 
@@ -433,6 +460,7 @@ export function reactOnProducerClose(
 export const mediaHandler = (socket: Socket, context: AppContext) => {
   socket.on("transport:create", transportCreateHandler(socket, context));
   socket.on("transport:connect", transportConnectHandler(socket, context));
+  socket.on("transport:restartIce", transportRestartIceHandler(socket, context));
   socket.on("audio:produce", audioProduceHandler(socket, context));
   socket.on("audio:consume", audioConsumeHandler(socket, context));
   socket.on("consumer:resume", consumerResumeHandler(socket, context));

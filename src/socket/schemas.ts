@@ -138,6 +138,12 @@ export const transportConnectSchema = z.object({
   dtlsParameters: dtlsParametersSchema,
 });
 
+// msab-load-stability 10: client-driven ICE restart for transport recovery.
+export const transportRestartIceSchema = z.object({
+  roomId: roomIdSchema,
+  transportId: z.string().uuid(),
+});
+
 export const audioProduceSchema = z.object({
   roomId: roomIdSchema,
   transportId: z.string().uuid(),

@@ -24,6 +24,7 @@ import {
   isDrained,
   startDrain,
   resetDrain,
+  getDrainReport,
 } from "@src/infrastructure/drain.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -119,6 +120,34 @@ describe("Drain Mode", () => {
 
       expect(onComplete).toHaveBeenCalledTimes(1);
     });
+
+    it("reports outcome all_rooms_closed with zero rooms still open", () => {
+      const rm = createMockRoomManager(2);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      startDrain(rm as any);
+
+      rm._setRoomCount(0);
+      vi.advanceTimersByTime(5_000);
+
+      const report = getDrainReport();
+      expect(report).not.toBeNull();
+      expect(report?.outcome).toBe("all_rooms_closed");
+      expect(report?.roomsStillOpen).toBe(0);
+    });
+
+    it("passes the honest report to onComplete on the all-closed path", () => {
+      const rm = createMockRoomManager(1);
+      const onComplete = vi.fn();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      startDrain(rm as any, { onComplete });
+
+      rm._setRoomCount(0);
+      vi.advanceTimersByTime(5_000);
+
+      expect(onComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "all_rooms_closed", roomsStillOpen: 0 }),
+      );
+    });
   });
 
   describe("drain timeout", () => {
@@ -140,6 +169,35 @@ describe("Drain Mode", () => {
 
       vi.advanceTimersByTime(3_000);
       expect(isDrained()).toBe(true);
+    });
+
+    it("reports outcome timeout with the count of rooms still open", () => {
+      const rm = createMockRoomManager(4);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      startDrain(rm as any, { timeoutMs: 10_000 });
+
+      // Rooms never close
+      vi.advanceTimersByTime(10_000);
+
+      const report = getDrainReport();
+      expect(report).not.toBeNull();
+      expect(report?.outcome).toBe("timeout");
+      expect(report?.roomsStillOpen).toBe(4);
+    });
+
+    it("passes the honest report to onComplete on the timeout path — never claims rooms closed", () => {
+      const rm = createMockRoomManager(3);
+      const onComplete = vi.fn();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      startDrain(rm as any, { timeoutMs: 10_000, onComplete });
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(onComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "timeout", roomsStillOpen: 3 }),
+      );
+      const report = getDrainReport();
+      expect(report?.outcome).not.toBe("all_rooms_closed");
     });
   });
 

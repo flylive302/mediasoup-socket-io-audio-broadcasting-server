@@ -18,15 +18,30 @@ import { logger } from "./logger.js";
 
 // ─── Drain State ────────────────────────────────────────────────────
 
+/** Honest outcome of a completed drain — see DrainReport. */
+export type DrainOutcome = "all_rooms_closed" | "timeout";
+
+/**
+ * Honest drain completion report. `outcome: "timeout"` means the ceiling
+ * was hit with rooms still open — callers must never present that as a
+ * plain "drained" success.
+ */
+export interface DrainReport {
+  outcome: DrainOutcome;
+  roomsStillOpen: number;
+  durationMs: number;
+}
+
 let draining = false;
 let drained = false;
 let drainStartedAt: number | null = null;
 let drainTimeoutMs = 600_000; // 10 minutes default
 let drainTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 let drainPollHandle: ReturnType<typeof setInterval> | null = null;
+let lastDrainReport: DrainReport | null = null;
 
 // Callbacks
-let onDrainComplete: (() => void) | null = null;
+let onDrainComplete: ((report: DrainReport) => void) | null = null;
 
 /**
  * Check if the instance is currently draining
@@ -36,10 +51,21 @@ export function isDraining(): boolean {
 }
 
 /**
- * Check if the instance has finished draining (all rooms closed)
+ * Check if the drain process has finished (either all rooms closed, or the
+ * ceiling was hit). Does NOT imply rooms actually closed — check
+ * getDrainReport().outcome for the honest result.
  */
 export function isDrained(): boolean {
   return drained;
+}
+
+/**
+ * The honest report from the most recently completed drain, or null if no
+ * drain has completed yet. `outcome: "timeout"` + `roomsStillOpen > 0` means
+ * the ceiling was hit with rooms still open — never report that as success.
+ */
+export function getDrainReport(): DrainReport | null {
+  return lastDrainReport;
 }
 
 /**
@@ -50,7 +76,7 @@ export function isDrained(): boolean {
  */
 export function startDrain(
   roomManager: RoomManager,
-  opts?: { timeoutMs?: number; onComplete?: () => void },
+  opts?: { timeoutMs?: number; onComplete?: (report: DrainReport) => void },
 ): void {
   if (draining) {
     logger.warn("Drain mode already active");
@@ -59,6 +85,7 @@ export function startDrain(
 
   draining = true;
   drained = false;
+  lastDrainReport = null;
   drainStartedAt = Date.now();
   drainTimeoutMs = opts?.timeoutMs ?? 600_000;
   onDrainComplete = opts?.onComplete ?? null;
@@ -74,24 +101,27 @@ export function startDrain(
     logger.info({ roomCount }, "Drain poll: checking active rooms");
 
     if (roomCount === 0) {
-      completeDrain("all_rooms_closed");
+      completeDrain("all_rooms_closed", 0);
     }
   }, 5_000);
 
   // Force-drain timeout
   drainTimeoutHandle = setTimeout(() => {
+    const roomsStillOpen = roomManager.getRoomCount();
     logger.warn(
-      { timeoutMs: drainTimeoutMs },
-      "⚠️ Drain timeout reached — force-completing drain",
+      { timeoutMs: drainTimeoutMs, roomsStillOpen },
+      "⚠️ Drain ceiling reached — force-completing drain with rooms still open",
     );
-    completeDrain("timeout");
+    completeDrain("timeout", roomsStillOpen);
   }, drainTimeoutMs);
 }
 
 /**
- * Complete the drain process
+ * Complete the drain process. Builds the honest DrainReport — this is the
+ * ONLY place drain completion is reported, so every caller (logs, HTTP
+ * responses, onComplete callback) sees the same truthful outcome.
  */
-function completeDrain(reason: string): void {
+function completeDrain(outcome: DrainOutcome, roomsStillOpen: number): void {
   if (drained) return;
 
   drained = true;
@@ -107,12 +137,22 @@ function completeDrain(reason: string): void {
   }
 
   const durationMs = drainStartedAt ? Date.now() - drainStartedAt : 0;
-  logger.info(
-    { reason, durationMs },
-    "✅ Drain complete — instance ready for termination",
-  );
+  const report: DrainReport = { outcome, roomsStillOpen, durationMs };
+  lastDrainReport = report;
 
-  onDrainComplete?.();
+  if (outcome === "all_rooms_closed") {
+    logger.info(
+      { outcome, durationMs },
+      "✅ Drain complete — all rooms closed, instance ready for termination",
+    );
+  } else {
+    logger.warn(
+      { outcome, durationMs, roomsStillOpen },
+      "⚠️ Drain ceiling reached — rooms still open, proceeding with shutdown anyway",
+    );
+  }
+
+  onDrainComplete?.(report);
 }
 
 /**
@@ -122,6 +162,7 @@ export function resetDrain(): void {
   draining = false;
   drained = false;
   drainStartedAt = null;
+  lastDrainReport = null;
   onDrainComplete = null;
   if (drainPollHandle) {
     clearInterval(drainPollHandle);
@@ -156,6 +197,8 @@ export const createAdminRoutes = (
           message: "Already draining",
           draining: true,
           drained,
+          drainOutcome: lastDrainReport?.outcome ?? null,
+          roomsStillOpen: lastDrainReport?.roomsStillOpen ?? null,
         });
       }
 
@@ -171,6 +214,8 @@ export const createAdminRoutes = (
         message: "Drain mode activated",
         draining: true,
         drained: false,
+        drainOutcome: null,
+        roomsStillOpen: null,
         timeoutSeconds: timeoutSec,
       });
     });
@@ -188,6 +233,8 @@ export const createAdminRoutes = (
       return {
         draining,
         drained,
+        drainOutcome: lastDrainReport?.outcome ?? null,
+        roomsStillOpen: lastDrainReport?.roomsStillOpen ?? null,
         drainStartedAt: drainStartedAt ? new Date(drainStartedAt).toISOString() : null,
         rooms: roomManager.getRoomCount(),
         uptime: process.uptime(),

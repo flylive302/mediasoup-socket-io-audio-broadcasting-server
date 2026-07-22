@@ -59,6 +59,11 @@ export class StatusCoalescer {
     await this.send(roomId, status);
   }
 
+  /** Number of Rooms with a buffered, unsent status (crash-shutdown drop accounting). */
+  pendingCount(): number {
+    return this.pending.size;
+  }
+
   /** Drop any buffered entry for a Room without sending (close-cleanup belt). */
   forget(roomId: string): void {
     this.pending.delete(roomId);
