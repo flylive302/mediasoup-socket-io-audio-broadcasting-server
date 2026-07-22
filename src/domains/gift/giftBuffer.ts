@@ -2,7 +2,10 @@ import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelClient } from "@src/integrations/laravelClient.js";
-import type { GiftTransaction } from "@src/integrations/types.js";
+import type {
+  BatchProcessingResult,
+  GiftTransaction,
+} from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
@@ -188,6 +191,12 @@ export class GiftBuffer {
         metrics.giftsProcessed.inc({ status: "success" }, successCount);
       }
 
+      // REACT — Epic B ticket 06: push the authoritative post-commit sender
+      // balance straight from the batch response, so a lucky cashback shows
+      // the moment the batch commits instead of waiting on Laravel's queued
+      // realtime bridge. Same payload shape as the bridge's `balance.updated`.
+      this.emitSenderBalances(result, transactions);
+
     } catch (error) {
       this.logger.error(
         { error, batchSize: transactions.length },
@@ -218,6 +227,7 @@ export class GiftBuffer {
             metrics.giftsProcessed.inc({ status: "failed" });
           } else {
             metrics.giftsProcessed.inc({ status: "success" }, 1);
+            this.emitSenderBalances(result, [gift]);
           }
           continue; // Item handled, don't re-queue
         } catch {
@@ -261,6 +271,33 @@ export class GiftBuffer {
     }
     } finally {
       this.isFlushing = false;
+    }
+  }
+
+  /**
+   * REACT (fire-and-forget): relay Laravel's per-group authoritative sender
+   * balance snapshots as `balance.updated` to each sender's socket. Matches
+   * senders back to sockets via the buffered transactions' sender_socket_id.
+   * Absent `processed` (older Laravel) is a silent no-op.
+   */
+  private emitSenderBalances(
+    result: BatchProcessingResult,
+    transactions: BufferedGift[],
+  ): void {
+    try {
+      for (const entry of result.processed ?? []) {
+        const source = transactions.find((t) =>
+          entry.transaction_ids.includes(t.transaction_id),
+        );
+        if (!source?.sender_socket_id) continue;
+
+        this.io.to(source.sender_socket_id).emit("balance.updated", entry.balance);
+      }
+    } catch (error) {
+      this.logger.warn(
+        { error },
+        "Failed to emit sender balance updates from batch response",
+      );
     }
   }
 }

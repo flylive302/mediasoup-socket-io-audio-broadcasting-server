@@ -25,6 +25,21 @@ export interface BatchProcessingResult {
     reason: string; // Renamed from "error" per protocol
     sender_socket_id?: string; // Internal use for notifying sender
   }>;
+  /**
+   * Epic B ticket 06: per-group authoritative sender balance snapshots,
+   * shaped exactly like the `balance.updated` event payload. Optional so a
+   * not-yet-upgraded Laravel response stays valid.
+   */
+  processed?: Array<{
+    transaction_ids: string[];
+    sender_id: number;
+    balance: {
+      coins: string;
+      diamonds: string;
+      wealth_xp: string;
+      charm_xp: string;
+    };
+  }>;
 }
 
 /**

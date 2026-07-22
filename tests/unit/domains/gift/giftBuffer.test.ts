@@ -161,6 +161,43 @@ describe("GiftBuffer", () => {
     );
   });
 
+  // ─── flush: authoritative sender balance relay (Epic B 06) ────────
+
+  it("emits balance.updated to the sender socket from the batch response's processed entries", async () => {
+    const giftJson = makeGiftJSON();
+    mockRedis.eval.mockResolvedValue([giftJson]);
+    const balance = {
+      coins: "49500",
+      diamonds: "10",
+      wealth_xp: "123.5",
+      charm_xp: "0",
+    };
+    mockLaravel.processGiftBatch.mockResolvedValue({
+      failed: [],
+      processed: [
+        { transaction_ids: ["tx-1"], sender_id: 1, balance },
+      ],
+    });
+
+    await buffer.stop();
+
+    expect(mockIo.to).toHaveBeenCalledWith("sock-1");
+    expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", balance);
+  });
+
+  it("stays silent when the batch response has no processed entries (older Laravel)", async () => {
+    const giftJson = makeGiftJSON();
+    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockLaravel.processGiftBatch.mockResolvedValue({ failed: [] });
+
+    await buffer.stop();
+
+    expect(mockIo._emit).not.toHaveBeenCalledWith(
+      "balance.updated",
+      expect.anything(),
+    );
+  });
+
   // ─── flush: Laravel failures ──────────────────────────────────────
 
   it("emits gift:error for Laravel-reported failures", async () => {
