@@ -342,6 +342,27 @@ describe("EventRouter", () => {
       expect(result.delivered).toBe(true);
     });
 
+    it("relays lucky:no-draw user-targeted with the reason payload intact", async () => {
+      repo.getSocketIds.mockResolvedValue(["s1"]);
+
+      const event = createEvent({
+        event: "lucky:no-draw",
+        user_id: 42,
+        room_id: null,
+        payload: { reason: "user_capped", gift_id: 7, batch_id: "b1" },
+      });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(repo.getSocketIds).toHaveBeenCalledWith(42);
+      // Payload (incl. the new `user_capped` reason) is forwarded opaquely.
+      expect(io._toReturnValue.emit).toHaveBeenCalledWith("lucky:no-draw", {
+        reason: "user_capped",
+        gift_id: 7,
+        batch_id: "b1",
+      });
+    });
+
     it("allows mission.progress.updated to pass through and routes to the user's sockets", async () => {
       repo.getSocketIds.mockResolvedValue(["socket-1", "socket-2"]);
 
