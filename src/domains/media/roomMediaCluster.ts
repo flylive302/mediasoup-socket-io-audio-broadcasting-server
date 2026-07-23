@@ -15,6 +15,7 @@ import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { retryAsync } from "@src/shared/retry.js";
+import { reactError } from "@src/shared/react-error.js";
 import { RouterManager } from "./routerManager.js";
 
 interface DistributionRouter {
@@ -495,7 +496,12 @@ export class RoomMediaCluster {
     const sourceRouter = this.sourceRouter?.router;
     const distRouter = dist.routerManager.router;
     if (!sourceRouter || !distRouter) {
-      this.logger.warn("Cannot pipe: routers not ready");
+      reactError(
+        new Error("routers not ready"),
+        {},
+        "Cannot pipe: routers not ready",
+        { level: "warn", logger: this.logger },
+      );
       return;
     }
 

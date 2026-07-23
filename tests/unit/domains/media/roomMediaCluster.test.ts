@@ -5,6 +5,7 @@ vi.mock("mediasoup", () => ({}));
 
 vi.mock("@src/config/index.js", () => ({
   config: {
+    LOG_LEVEL: "silent",
     MAX_LISTENERS_PER_DISTRIBUTION_ROUTER: 500,
     MAX_ROOMS_PER_WORKER: 100,
   },

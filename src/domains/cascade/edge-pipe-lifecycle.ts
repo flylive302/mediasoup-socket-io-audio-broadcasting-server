@@ -239,13 +239,23 @@ export class EdgePipeLifecycle {
   ): Promise<string | null> {
     const router = cluster.router;
     if (!router) {
-      this.logger.error({ roomId }, "EdgePipeLifecycle: cluster has no source router");
+      reactError(
+        new Error("cluster has no source router"),
+        { roomId, producerId },
+        "EdgePipeLifecycle: cluster has no source router",
+        { level: "error", logger: this.logger },
+      );
       return null;
     }
 
     const originBaseUrl = this.originUrls.get(roomId);
     if (!originBaseUrl) {
-      this.logger.error({ roomId }, "EdgePipeLifecycle: no origin URL for room");
+      reactError(
+        new Error("no origin URL for room"),
+        { roomId, producerId },
+        "EdgePipeLifecycle: no origin URL for room",
+        { level: "error", logger: this.logger },
+      );
       return null;
     }
 
@@ -309,9 +319,11 @@ export class EdgePipeLifecycle {
 
       return producer.id;
     } catch (err) {
-      this.logger.error(
-        { err, roomId, producerId },
+      reactError(
+        err,
+        { roomId, producerId },
         "EdgePipeLifecycle: failed to set up edge pipe",
+        { level: "error", logger: this.logger },
       );
       if (edgeListener && !edgeListener.transport.closed) {
         edgeListener.transport.close();
@@ -398,9 +410,11 @@ export class EdgePipeLifecycle {
         clearTimeout(timeoutId);
       }
     } catch (err) {
-      this.logger.error(
-        { err, roomId, producerId },
+      reactError(
+        err,
+        { roomId, producerId },
         "EdgePipeLifecycle: pipe offer request error",
+        { level: "error", logger: this.logger },
       );
       return null;
     }

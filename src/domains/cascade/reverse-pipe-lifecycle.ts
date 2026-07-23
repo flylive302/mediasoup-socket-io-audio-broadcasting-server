@@ -10,6 +10,7 @@
 import { config } from "@src/config/index.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { reactError } from "@src/shared/react-error.js";
 import type { PipeManager } from "@src/domains/media/pipe-manager.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import type { ReverseOfferResponse, ReverseFinalizeResponse } from "./types.js";
@@ -72,9 +73,11 @@ export class ReversePipeLifecycle {
 
     const router = cluster.router;
     if (!router) {
-      this.logger.error(
+      reactError(
+        new Error("cluster has no source router"),
         { roomId, edgeProducerId: edgeProducer.id },
         "setupReversePipe: cluster has no source router",
+        { level: "error", logger: this.logger },
       );
       return null;
     }
@@ -201,9 +204,11 @@ export class ReversePipeLifecycle {
       metrics.reversePipeSetup.inc({ result: "success" });
       return { originProducerId: finalizeResponse.originProducerId };
     } catch (err) {
-      this.logger.error(
-        { err, roomId, edgeProducerId: edgeProducer.id },
+      reactError(
+        err,
+        { roomId, edgeProducerId: edgeProducer.id },
         "setupReversePipe: failed",
+        { level: "error", logger: this.logger },
       );
       if (outbound && !outbound.transport.closed) {
         outbound.transport.close();
@@ -264,9 +269,11 @@ export class ReversePipeLifecycle {
         });
 
         if (!response.ok) {
-          this.logger.warn(
+          reactError(
+            new Error(`reverse-offer rejected with status ${response.status}`),
             { roomId, edgeProducerId, status: response.status },
             "ReversePipeLifecycle: reverse-offer request failed",
+            { level: "warn", logger: this.logger },
           );
           return null;
         }
@@ -275,9 +282,11 @@ export class ReversePipeLifecycle {
         clearTimeout(timeoutId);
       }
     } catch (err) {
-      this.logger.error(
-        { err, roomId, edgeProducerId },
+      reactError(
+        err,
+        { roomId, edgeProducerId },
         "ReversePipeLifecycle: reverse-offer request error",
+        { level: "error", logger: this.logger },
       );
       return null;
     }
@@ -318,9 +327,11 @@ export class ReversePipeLifecycle {
         });
 
         if (!response.ok) {
-          this.logger.warn(
+          reactError(
+            new Error(`reverse-finalize rejected with status ${response.status}`),
             { roomId, edgeProducerId, transportId, status: response.status },
             "ReversePipeLifecycle: reverse-finalize request failed",
+            { level: "warn", logger: this.logger },
           );
           return null;
         }
@@ -329,9 +340,11 @@ export class ReversePipeLifecycle {
         clearTimeout(timeoutId);
       }
     } catch (err) {
-      this.logger.error(
-        { err, roomId, edgeProducerId, transportId },
+      reactError(
+        err,
+        { roomId, edgeProducerId, transportId },
         "ReversePipeLifecycle: reverse-finalize request error",
+        { level: "error", logger: this.logger },
       );
       return null;
     }

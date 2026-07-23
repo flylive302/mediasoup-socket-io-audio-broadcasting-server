@@ -246,9 +246,11 @@ const audioProduceHandler = createHandler(
       )
         .then((result) => {
           if (!result) {
-            logger.warn(
-              { roomId, edgeProducerId: producer.id, userId },
+            reactError(
+              new Error("reverse pipe setup exhausted retries"),
+              { roomId, edgeProducerId: producer.id, userId, attempts: 3, trigger: "produce" },
               "Reverse pipe setup failed after retries — cross-instance listeners will be silent for this speaker",
+              { level: "warn" },
             );
           }
         })
@@ -431,9 +433,11 @@ const selfUnmuteHandler = createHandler(
       )
         .then((result) => {
           if (!result) {
-            logger.warn(
-              { roomId, producerId, userId: socket.data.user.id },
+            reactError(
+              new Error("reverse pipe self-heal exhausted retries"),
+              { roomId, producerId, userId: socket.data.user.id, attempts: 3, trigger: "selfUnmute" },
               "selfUnmute reverse-pipe self-heal failed after retries — cross-instance listeners may stay silent",
+              { level: "warn" },
             );
           }
         })

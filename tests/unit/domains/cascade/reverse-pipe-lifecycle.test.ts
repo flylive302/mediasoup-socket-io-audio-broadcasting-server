@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@src/config/index.js", () => ({
   config: {
+    LOG_LEVEL: "silent",
     PUBLIC_IP: "10.0.1.100",
     INTERNAL_API_KEY: "test-internal-key-12345678",
     INSTANCE_ID: "10.0.1.100",

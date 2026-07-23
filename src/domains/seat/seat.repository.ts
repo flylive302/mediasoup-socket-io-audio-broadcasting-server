@@ -17,6 +17,7 @@ import type {
 import type { PendingInvite } from "./seat.types.js";
 import { Errors } from "@src/shared/errors.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 import { registerSeatCommands, type RedisWithSeatCommands } from "./seat.lua-scripts.js";
 import { SeatInviteRepository } from "./seat-invite.repository.js";
 
@@ -152,7 +153,7 @@ export class SeatRepository {
       );
       return result === 1;
     } catch (err) {
-      logger.error({ err, roomId, seatIndex, muted }, "Failed to set mute");
+      reactError(err, { roomId, seatIndex, muted }, "Failed to set mute", { level: "error", logger });
       return false;
     }
   }
@@ -303,7 +304,7 @@ export class SeatRepository {
         userId,
       }));
     } catch (err) {
-      logger.error({ err, roomId }, "Failed to sweep expired seat reservations");
+      reactError(err, { roomId }, "Failed to sweep expired seat reservations", { level: "error", logger });
       return [];
     }
   }
