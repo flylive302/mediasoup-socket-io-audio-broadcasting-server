@@ -173,13 +173,19 @@ export class GiftBuffer {
     try {
       const result = await this.laravelClient.processGiftBatch(transactions);
 
-      // Handle failures - notify senders via Socket.IO
+      // Handle failures - notify senders via Socket.IO. batchId lets the FE
+      // key its per-burst refund (Laravel's failure rows don't carry it, so
+      // map back through the local batch by transaction_id).
+      const batchIdByTransaction = new Map(
+        transactions.map((t) => [t.transaction_id, t.batch_id]),
+      );
       for (const failure of result.failed) {
         if (failure.sender_socket_id) {
           this.io.to(failure.sender_socket_id).emit("gift:error", {
             transactionId: failure.transaction_id,
             code: failure.code, // Error code per protocol
             reason: failure.reason, // Error reason per protocol
+            batchId: batchIdByTransaction.get(failure.transaction_id),
           });
         }
         metrics.giftsProcessed.inc({ status: "failed" });
@@ -222,6 +228,7 @@ export class GiftBuffer {
                 transactionId: fail.transaction_id,
                 code: fail.code,
                 reason: fail.reason,
+                batchId: gift.batch_id,
               });
             }
             metrics.giftsProcessed.inc({ status: "failed" });
@@ -252,6 +259,7 @@ export class GiftBuffer {
               transactionId: gift.transaction_id,
               code: "PROCESSING_FAILED",
               reason: "Gift processing failed after multiple attempts",
+              batchId: gift.batch_id,
             });
           }
           continue;

@@ -9,6 +9,10 @@ export const Errors = {
   RATE_LIMITED: "Too many requests",
   CANNOT_GIFT_SELF: "Cannot send gift to yourself",
   RECIPIENT_NOT_SEATED: "Recipient is not seated",
+  // lucky-burst-draw 08: raised only when every recipient in a burst was
+  // dropped (unseated or self) — a partial burst never errors, it just
+  // ships with the accepted subset.
+  NO_RECIPIENTS_SEATED: "No recipients seated",
 
   // Room
   NOT_IN_ROOM: "Not in room",

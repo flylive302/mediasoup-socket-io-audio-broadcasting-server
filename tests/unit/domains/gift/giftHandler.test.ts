@@ -193,7 +193,9 @@ describe("GiftHandler", () => {
       const sendGift = extractHandler(socket, "gift:send");
       const result = await sendGift(payload);
 
-      expect(result).toEqual({ success: true });
+      // lucky-burst-draw 08: ack carries acceptedRecipientIds, known
+      // synchronously at GATE time.
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2] });
       // Verify broadcast with explicit fields (GF-008)
       expect(socket._emit).toHaveBeenCalledWith("gift:received", {
         senderId: 1,
@@ -288,7 +290,11 @@ describe("GiftHandler", () => {
       ]);
     });
 
-    it("rejects gift:send when sender === recipient (GF-012)", async () => {
+    it("rejects gift:send when sender === recipient, burst-native (GF-012)", async () => {
+      // lucky-burst-draw 08: self-gift is now excluded PER LEG, silently —
+      // for a single-recipient send that drains the burst to zero, so the
+      // burst-native NO_RECIPIENTS_SEATED error surfaces (one shape below
+      // the edge: legacy delegates into the same burst path).
       const socket = createMockSocket("room-1", 1); // userId = 1
       const context = createMockContext();
       handler.handle(socket, context);
@@ -299,7 +305,7 @@ describe("GiftHandler", () => {
 
       expect(result).toEqual({
         success: false,
-        error: Errors.CANNOT_GIFT_SELF,
+        error: Errors.NO_RECIPIENTS_SEATED,
       });
       // Should NOT enqueue or broadcast
       expect(
@@ -327,7 +333,10 @@ describe("GiftHandler", () => {
       ).not.toHaveBeenCalled();
     });
 
-    it("rejects gift:send when recipient is not seated (GF-017)", async () => {
+    it("rejects gift:send when recipient is not seated, burst-native (GF-017)", async () => {
+      // lucky-burst-draw 08: an unseated leg is DROPPED silently; for a
+      // single-recipient send that drains the burst to zero, so the
+      // burst-native NO_RECIPIENTS_SEATED error surfaces.
       const socket = createMockSocket("room-1");
       const context = createMockContext();
       vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(null);
@@ -338,7 +347,7 @@ describe("GiftHandler", () => {
 
       expect(result).toEqual({
         success: false,
-        error: Errors.RECIPIENT_NOT_SEATED,
+        error: Errors.NO_RECIPIENTS_SEATED,
       });
       // Should NOT enqueue or broadcast
       expect(
@@ -356,10 +365,163 @@ describe("GiftHandler", () => {
       const sendGift = extractHandler(socket, "gift:send");
       const result = await sendGift(payload);
 
-      expect(result).toEqual({ success: true });
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2] });
       expect(
         (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
       ).toHaveBeenCalled();
+    });
+  });
+
+  // ─── gift:send with recipientIds[] (lucky-burst-draw 08/04 burst) ──
+
+  describe("gift:send burst (recipientIds[])", () => {
+    const burstPayload = {
+      roomId: "room-1",
+      giftId: 100,
+      recipientIds: [2, 3, 4],
+      quantity: 1,
+      batchId: "batch-xyz",
+    };
+
+    it("drops unseated legs, ack lists accepted recipients only (mixed seated/unseated)", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockImplementation(
+        async (_roomId: string, userId: string) => (userId === "3" ? null : 5),
+      );
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst(burstPayload);
+
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2, 4] });
+
+      const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
+      const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
+      expect(enqueued.recipient_ids).toEqual([2, 4]);
+    });
+
+    it("rejects with NO_RECIPIENTS_SEATED when zero recipients are seated, nothing enqueued", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(null);
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst(burstPayload);
+
+      expect(result).toEqual({
+        success: false,
+        error: Errors.NO_RECIPIENTS_SEATED,
+      });
+      expect(
+        (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
+      ).not.toHaveBeenCalled();
+      expect(socket._emit).not.toHaveBeenCalled();
+    });
+
+    it("drops the sender's own id (self-gift leg dropped) while keeping others", async () => {
+      const socket = createMockSocket("room-1", 2); // userId = 2, also a recipient
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst(burstPayload); // recipientIds: [2, 3, 4]
+
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [3, 4] });
+    });
+
+    it("enqueues exactly ONE buffer row per burst with the exact row shape", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      await sendBurst(burstPayload);
+
+      const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
+      expect(rpush).toHaveBeenCalledTimes(1);
+
+      const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
+      expect(Object.keys(enqueued).sort()).toEqual(
+        [
+          "batch_id",
+          "gift_id",
+          "quantity",
+          "recipient_ids",
+          "room_id",
+          "sender_id",
+          "sender_socket_id",
+          "timestamp",
+          "transaction_id",
+        ].sort(),
+      );
+      expect(enqueued.recipient_ids).toEqual([2, 3, 4]);
+      expect(enqueued.sender_id).toBe(1);
+      expect(enqueued.gift_id).toBe(100);
+    });
+
+    it("broadcasts one burst-shaped gift:received PLUS N legacy singular events", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      await sendBurst(burstPayload);
+
+      const calls = (socket._emit as ReturnType<typeof vi.fn>).mock.calls;
+      const receivedCalls = calls.filter(([event]) => event === "gift:received");
+      // 3 legacy singular events + 1 burst-shaped event
+      expect(receivedCalls).toHaveLength(4);
+
+      const legacyCalls = receivedCalls.filter(
+        ([, data]) => "recipientId" in (data as object),
+      );
+      expect(legacyCalls).toHaveLength(3);
+      expect(legacyCalls.map(([, data]) => (data as { recipientId: number }).recipientId)).toEqual([2, 3, 4]);
+
+      const burstCalls = receivedCalls.filter(
+        ([, data]) => "recipientIds" in (data as object),
+      );
+      expect(burstCalls).toHaveLength(1);
+      expect((burstCalls[0]?.[1] as { recipientIds: number[] }).recipientIds).toEqual([2, 3, 4]);
+      expect((burstCalls[0]?.[1] as { batchId: string }).batchId).toBe("batch-xyz");
+    });
+  });
+
+  // ─── gift:send legacy -> burst-of-1 shim ───────────────────────────
+
+  describe("gift:send legacy shim (lucky-burst-draw 08)", () => {
+    const payload = {
+      roomId: "room-1",
+      giftId: 100,
+      recipientId: 2,
+      quantity: 1,
+    };
+
+    it("normalizes recipientId into a burst-of-1 row identical in shape to a real burst", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      await sendGift(payload);
+
+      const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
+      const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
+      expect(Object.keys(enqueued).sort()).toEqual(
+        [
+          "gift_id",
+          "quantity",
+          "recipient_ids",
+          "room_id",
+          "sender_id",
+          "sender_socket_id",
+          "timestamp",
+          "transaction_id",
+        ].sort(),
+      );
+      expect(enqueued.recipient_ids).toEqual([2]);
     });
   });
 

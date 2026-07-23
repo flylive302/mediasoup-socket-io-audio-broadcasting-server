@@ -1,16 +1,22 @@
 /**
  * Gift transaction payload sent to Laravel backend
  * Per MSAB_PROTOCOL_REFERENCE.md Section 2
+ *
+ * lucky-burst-draw 08: burst-native — one row per send event (single or
+ * multi-recipient), carrying the post-seat-filter accepted recipient list.
+ * The legacy single-recipient socket event is normalized to a 1-element
+ * array at enqueue time so exactly one row shape exists below the edge.
  */
 export interface GiftTransaction {
   transaction_id: string;
   room_id?: number; // Numeric room ID (parsed from socket string)
   sender_id: number;
-  recipient_id: number;
+  recipient_ids: number[];
   gift_id: number; // Changed from string to number per protocol
   quantity: number;
   timestamp: number;
   sender_socket_id: string; // Used to notify sender of error, NOT sent to Laravel
+  batch_id?: string | undefined; // Client burst batchId — echoed on gift:error so the FE keys its refund
 }
 
 /**

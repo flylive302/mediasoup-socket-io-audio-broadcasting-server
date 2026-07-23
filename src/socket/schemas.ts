@@ -196,16 +196,29 @@ export const chatMessageSchema = z.object({
 // Gift Schemas
 // ─────────────────────────────────────────────────────────────────
 
-export const sendGiftSchema = z.object({
-  roomId: roomIdSchema,
-  giftId: z.number().int().positive(),
-  recipientId: z.number().int().positive(),
-  quantity: z.number().int().positive().max(9999).default(1),
-  // Groups all per-recipient emits from a single send/combo press. Receivers
-  // coalesce events sharing a batchId into one full-screen playback, so a
-  // fan-out to N seats plays once while N separate combo presses play N times.
-  batchId: z.string().min(1).max(64).optional(),
-});
+// lucky-burst-draw 08/04: `gift:send` is the single burst wire event.
+// New FE clients send `recipientIds[]` (one burst = one event, N recipients).
+// Stale/legacy FE bundles keep sending the old scalar `recipientId` shape
+// indefinitely — MSAB normalizes it to a burst-of-1 at the edge (ticket 03/04
+// resolution: legacy shim kept forever, no removal date). Exactly one of the
+// two must be present. recipientIds bounded by the room seat cap (30) — a
+// burst can never exceed the number of seats a room can physically have.
+export const sendGiftSchema = z
+  .object({
+    roomId: roomIdSchema,
+    giftId: z.number().int().positive(),
+    recipientId: z.number().int().positive().optional(),
+    recipientIds: z.array(z.number().int().positive()).min(1).max(30).optional(),
+    quantity: z.number().int().positive().max(9999).default(1),
+    // Groups all per-recipient emits from a single send/combo press. Receivers
+    // coalesce events sharing a batchId into one full-screen playback, so a
+    // fan-out to N seats plays once while N separate combo presses play N times.
+    batchId: z.string().min(1).max(64).optional(),
+  })
+  .refine((data) => data.recipientId !== undefined || data.recipientIds !== undefined, {
+    message: "Either recipientId or recipientIds is required",
+    path: ["recipientId"],
+  });
 
 export const prepareGiftSchema = z.object({
   roomId: roomIdSchema,
