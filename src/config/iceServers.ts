@@ -10,6 +10,7 @@
  */
 import { config } from "./index.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { reactError } from "@src/shared/react-error.js";
 
 export interface IceServer {
   urls: string | string[];
@@ -110,7 +111,16 @@ export async function getIceServers(): Promise<IceServer[]> {
       logger.warn("Serving stale TURN credentials after fetch failure");
       return _cache.servers;
     }
-    // Last resort: STUN only
+    // Last resort: STUN only. This is the silent blind spot
+    // audio-pipe-observability 11 was chartered to surface: symmetric-NAT
+    // clients get no relay and can never recover (the `attempts-exhausted`
+    // half). Make it VISIBLE in Sentry, not just Pino/CloudWatch.
+    reactError(
+      error,
+      { instanceId: config.INSTANCE_ID },
+      "TURN fetch failed with cold cache — serving STUN-only (symmetric-NAT clients cannot connect)",
+      { level: "error", logger },
+    );
     return config.ICE_STUN_URLS.length > 0
       ? [{ urls: config.ICE_STUN_URLS }]
       : [];
