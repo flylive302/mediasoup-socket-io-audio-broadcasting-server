@@ -29,6 +29,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     laravelEventsReceived: { inc: vi.fn() },
     laravelEventsInFlight: { inc: vi.fn(), dec: vi.fn() },
     laravelEventProcessingDuration: { observe: vi.fn() },
+    roomBlockMirror: { inc: vi.fn() },
   },
 }));
 
@@ -602,6 +603,124 @@ describe("EventRouter", () => {
         expect.objectContaining({ roomId: "99", newSeatCount: 10 }),
         "Failed to evict shrunk seats",
       );
+    });
+  });
+
+  // ─── ADR 0017 / msab-join-gates 02: room-block Redis mirror ────
+  //
+  // This is the missing half of the cross-service contract. The Laravel side
+  // is pinned by backend `tests/Feature/Room/RoomBlockWireContractTest.php`
+  // (literal payload keys on the wire); `room-block.repository.test.ts` pins
+  // the literal Redis key. These tests join the two: they prove a real
+  // `room.member_removed` envelope, shaped exactly as Laravel emits it,
+  // produces the exact key that `room:join`'s GATE reads.
+  //
+  // Nothing covered this before, which is how a mirror could be *believed*
+  // disconnected for a day with no test able to settle the question.
+  describe("room-block mirror (ADR 0017)", () => {
+    function createMockRedis() {
+      return {
+        set: vi.fn().mockResolvedValue("OK"),
+        del: vi.fn().mockResolvedValue(1),
+      } as any;
+    }
+
+    function createRouterWithRedis(redis: any) {
+      return new EventRouter(io, repo, clientManager, logger, redis);
+    }
+
+    it("writes the join-GATE key with a TTL for a timed block", async () => {
+      const redis = createMockRedis();
+
+      await createRouterWithRedis(redis).route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          user_id: 42,
+          room_id: null,
+          // Payload shape is Laravel's, verbatim — see RoomEventEmitter.php
+          payload: {
+            room_id: 7,
+            user_id: 42,
+            removed_by: 1,
+            duration: "1h",
+            banned_until: "2026-07-26T02:00:00+00:00",
+            remaining_seconds: 3600,
+            permanent: false,
+          },
+        }),
+      );
+      await flushPromises();
+
+      expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1", "EX", 3600);
+    });
+
+    it("writes the key with NO TTL for a permanent block", async () => {
+      const redis = createMockRedis();
+
+      await createRouterWithRedis(redis).route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          user_id: 42,
+          room_id: null,
+          payload: {
+            room_id: 7,
+            user_id: 42,
+            removed_by: 1,
+            duration: "permanent",
+            banned_until: null,
+            remaining_seconds: null,
+            permanent: true,
+          },
+        }),
+      );
+      await flushPromises();
+
+      expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1");
+    });
+
+    it("deletes the key on unblock", async () => {
+      const redis = createMockRedis();
+
+      await createRouterWithRedis(redis).route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_USER_UNBLOCKED,
+          user_id: 42,
+          room_id: null,
+          payload: { room_id: 7, room_name: "Test Room", user_id: 42 },
+        }),
+      );
+      await flushPromises();
+
+      expect(redis.del).toHaveBeenCalledWith("room:7:blocked:42");
+    });
+
+    // The mirror write is REACT — a Redis failure must reach Sentry via
+    // reactError but must never fail the event route, or one bad mirror
+    // write would start rejecting Laravel's whole fanout POST.
+    it("never throws out of route() when the mirror write fails", async () => {
+      const redis = createMockRedis();
+      redis.set.mockRejectedValue(new Error("Redis down"));
+
+      const routing = createRouterWithRedis(redis).route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          user_id: 42,
+          room_id: null,
+          payload: {
+            room_id: 7,
+            user_id: 42,
+            remaining_seconds: 3600,
+            permanent: false,
+          },
+        }),
+      );
+
+      // Resolves rather than rejects — the rejected mirror write is caught by
+      // the REACT-stage .catch(reactError) and never surfaces to the caller.
+      await expect(routing).resolves.toBeDefined();
+      await flushPromises();
+
+      expect(redis.set).toHaveBeenCalled();
     });
   });
 });

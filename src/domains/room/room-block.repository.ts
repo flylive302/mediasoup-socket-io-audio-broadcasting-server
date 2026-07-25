@@ -9,8 +9,19 @@
  */
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
-const BLOCK_KEY = (roomId: string, userId: number) =>
+/**
+ * The literal wire contract with Laravel's block fanout. MSAB owns both the
+ * write (event-router on `room.member_removed`) and the read (`room:join`
+ * GATE) of this key, in its own Redis — Laravel never touches it.
+ *
+ * NOTE: Laravel's `RoomUserBlock` cache key template is the same string, but
+ * it lives in Laravel's own prefixed cache keyspace and is a completely
+ * separate concern. The collision is cosmetic and has already caused one
+ * misdiagnosis (msab-join-gates 02) — do not "align" the two.
+ */
+export const BLOCK_KEY = (roomId: string, userId: number) =>
   `room:${roomId}:blocked:${userId}`;
 
 export class RoomBlockRepository {
@@ -23,6 +34,12 @@ export class RoomBlockRepository {
    * Mirror a block. `remainingSeconds` null/undefined means permanent — no
    * TTL, the key lives until an explicit unblock deletes it. A timed block
    * gets `EX remainingSeconds` so it self-expires with no cleanup action.
+   *
+   * REJECTS on Redis failure. It must: a swallowed error here leaves a blocked
+   * user able to rejoin over the socket with no signal anywhere, and the
+   * caller (event-router) already routes the rejection to `reactError` →
+   * Sentry. This method used to catch internally and resolve, which made that
+   * escalation unreachable dead code (msab-join-gates 02).
    */
   async writeBlock(
     roomId: string,
@@ -37,29 +54,33 @@ export class RoomBlockRepository {
         const ttl = Math.max(1, Math.floor(remainingSeconds));
         await this.redis.set(key, "1", "EX", ttl);
       }
+      metrics.roomBlockMirror.inc({ operation: "write", result: "success" });
       this.logger.debug(
         { roomId, userId, remainingSeconds },
         "Room block mirror written",
       );
     } catch (err) {
-      this.logger.warn(
-        { err, roomId, userId },
-        "Failed to write room block mirror — join GATE degrades to unblocked until next block/unblock",
-      );
+      metrics.roomBlockMirror.inc({ operation: "write", result: "failure" });
+      throw err;
     }
   }
 
-  /** Mirror an unblock — deletes the key regardless of remaining TTL. */
+  /**
+   * Mirror an unblock — deletes the key regardless of remaining TTL.
+   *
+   * REJECTS on Redis failure, for the mirror-image reason: a swallowed error
+   * leaves an unblocked user locked out of the socket join until the key's TTL
+   * lapses — and a permanent block carries no TTL, so never.
+   */
   async deleteBlock(roomId: string, userId: number): Promise<void> {
     const key = BLOCK_KEY(roomId, userId);
     try {
       await this.redis.del(key);
+      metrics.roomBlockMirror.inc({ operation: "delete", result: "success" });
       this.logger.debug({ roomId, userId }, "Room block mirror deleted");
     } catch (err) {
-      this.logger.warn(
-        { err, roomId, userId },
-        "Failed to delete room block mirror",
-      );
+      metrics.roomBlockMirror.inc({ operation: "delete", result: "failure" });
+      throw err;
     }
   }
 
@@ -87,10 +108,27 @@ export class RoomBlockRepository {
       }
       return { blocked: true, permanent: false, remainingSeconds: ttl };
     } catch (err) {
-      this.logger.warn(
-        { err, roomId, userId },
-        "Room block mirror read failed — failing open (not blocked)",
-      );
+      // Deliberate fail-open — see the doc block above. Failing closed would
+      // lock every legitimate joiner out of every room during a Redis blip,
+      // which is a far larger outage than the moderation gap it prevents.
+      // But fail-open MUST be loud: without this counter a broken mirror is
+      // indistinguishable from a healthy one, which is precisely how
+      // msab-join-gates 02 went unnoticed. Only failures are counted — the
+      // success path is nearly every join and needs no metric.
+      //
+      // Both the counter and the log are themselves guarded: anything that
+      // throws on the way out of a fail-OPEN path would silently convert it
+      // into fail-CLOSED and start refusing legitimate joins. Observability
+      // must never be able to take the gate down.
+      try {
+        metrics.roomBlockMirror.inc({ operation: "read", result: "failure" });
+        this.logger.warn(
+          { err, roomId, userId },
+          "Room block mirror read failed — failing open (not blocked)",
+        );
+      } catch {
+        // Intentionally empty — see above.
+      }
       return { blocked: false, permanent: false, remainingSeconds: null };
     }
   }

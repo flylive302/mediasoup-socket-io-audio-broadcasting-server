@@ -12,6 +12,10 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: {
     eventsTotal: { inc: vi.fn() },
     eventLatency: { observe: vi.fn() },
+    // The join GATE reads the room-block mirror; these tests supply a Redis
+    // that rejects, so the repository's fail-open catch path runs and counts
+    // the failure. Without this the counter is undefined and the GATE throws.
+    roomBlockMirror: { inc: vi.fn() },
   },
 }));
 
@@ -133,6 +137,78 @@ describe("joinRoomHandler", () => {
     context = createMockContext();
     vi.clearAllMocks();
     handler = joinRoomHandler(socket, context);
+  });
+
+  // ─── ADR 0017 / msab-join-gates 02: the block GATE ─────────────
+  //
+  // The only outcome a moderator actually experiences. Every other test in
+  // the chain pins a link (Laravel payload keys → Redis key → getStatus
+  // mapping); this pins the link that turns a mirrored block into a refused
+  // join. Nothing covered it before, which is why "are blocks enforced on
+  // the socket?" could not be answered from the test suite.
+  //
+  // NOTE the default context has `redis: {}` — `redis.ttl` is undefined, so
+  // the GATE's read throws, fails OPEN, and every other test in this file
+  // joins normally. These two cases supply a Redis that actually answers.
+  describe("block GATE (ADR 0017)", () => {
+    function contextWithBlockTtl(ttl: number) {
+      const ctx = createMockContext();
+      ctx.redis = { ttl: vi.fn().mockResolvedValue(ttl) };
+      return ctx;
+    }
+
+    it("rejects a timed block with room_blocked and the remaining time", async () => {
+      const ctx = contextWithBlockTtl(3600);
+      const cb = vi.fn();
+
+      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+
+      // Literal "room_blocked" — the frontend matches on this exact string,
+      // so asserting Errors.ROOM_BLOCKED would not pin the contract.
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: "room_blocked",
+          permanent: false,
+          remaining_seconds: 3600,
+        }),
+      );
+    });
+
+    it("rejects a permanent block (ttl -1) with permanent: true", async () => {
+      const ctx = contextWithBlockTtl(-1);
+      const cb = vi.fn();
+
+      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: "room_blocked",
+          permanent: true,
+          remaining_seconds: null,
+        }),
+      );
+    });
+
+    it("does not run the join EXECUTE stage for a blocked user", async () => {
+      const ctx = contextWithBlockTtl(3600);
+
+      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, vi.fn());
+
+      expect(socket.join).not.toHaveBeenCalled();
+    });
+
+    it("lets a user through when the mirror reports no block (ttl -2)", async () => {
+      const ctx = contextWithBlockTtl(-2);
+      const cb = vi.fn();
+
+      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+      );
+    });
   });
 
   describe("room:userJoined broadcast", () => {

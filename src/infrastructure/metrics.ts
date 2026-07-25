@@ -188,6 +188,20 @@ export const metrics = {
     help: "Sentry events dropped by the client-side token bucket",
     registers: [metricsRegistry],
   }),
+
+  // ADR 0017 / msab-join-gates 02: the room-block Redis mirror. Every one of
+  // these outcomes is a moderation failure that is otherwise invisible —
+  // a failed write leaves a blocked user able to rejoin over the socket, and
+  // a failed read fails OPEN by design. Alarm on ANY non-success.
+  // Deliberately NOT emitted on a key miss: that is the ~99.9% path (nearly
+  // every join is by a non-blocked user) and would drown the signal.
+  roomBlockMirror: new Counter({
+    name: "flylive_room_block_mirror_total",
+    help: "Room-block Redis mirror operations by outcome",
+    // operation: write | delete | read — result: success | failure
+    labelNames: ["operation", "result"] as const,
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

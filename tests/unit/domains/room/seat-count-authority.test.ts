@@ -20,6 +20,9 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: {
     eventsTotal: { inc: vi.fn() },
     eventLatency: { observe: vi.fn() },
+    // See join-room.handler.test.ts — the join GATE's block-mirror read
+    // fails open here and increments this counter.
+    roomBlockMirror: { inc: vi.fn() },
   },
 }));
 
