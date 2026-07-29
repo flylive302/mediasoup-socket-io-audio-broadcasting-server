@@ -195,7 +195,7 @@ describe("GiftHandler", () => {
 
       // lucky-burst-draw 08: ack carries acceptedRecipientIds, known
       // synchronously at GATE time.
-      expect(result).toEqual({ success: true, acceptedRecipientIds: [2] });
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2], transaction_id: expect.any(String) });
       // Verify broadcast with explicit fields (GF-008)
       expect(socket._emit).toHaveBeenCalledWith("gift:received", {
         senderId: 1,
@@ -365,7 +365,7 @@ describe("GiftHandler", () => {
       const sendGift = extractHandler(socket, "gift:send");
       const result = await sendGift(payload);
 
-      expect(result).toEqual({ success: true, acceptedRecipientIds: [2] });
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2], transaction_id: expect.any(String) });
       expect(
         (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
       ).toHaveBeenCalled();
@@ -394,7 +394,7 @@ describe("GiftHandler", () => {
       const sendBurst = extractHandler(socket, "gift:send");
       const result = await sendBurst(burstPayload);
 
-      expect(result).toEqual({ success: true, acceptedRecipientIds: [2, 4] });
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2, 4], transaction_id: expect.any(String) });
 
       const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
       const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
@@ -428,7 +428,7 @@ describe("GiftHandler", () => {
       const sendBurst = extractHandler(socket, "gift:send");
       const result = await sendBurst(burstPayload); // recipientIds: [2, 3, 4]
 
-      expect(result).toEqual({ success: true, acceptedRecipientIds: [3, 4] });
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [3, 4], transaction_id: expect.any(String) });
     });
 
     it("enqueues exactly ONE buffer row per burst with the exact row shape", async () => {
@@ -437,12 +437,19 @@ describe("GiftHandler", () => {
       handler.handle(socket, context);
 
       const sendBurst = extractHandler(socket, "gift:send");
-      await sendBurst(burstPayload);
+      const ack = await sendBurst(burstPayload);
 
       const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
       expect(rpush).toHaveBeenCalledTimes(1);
 
       const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
+
+      // gift-path-latency/11: the ack MUST hand back the very id that goes into
+      // the buffer — that is the whole join key. If these ever diverge, the
+      // sender silently cannot attribute its own `lucky:result`, with no error
+      // anywhere. Pinning equality (not just "is a string") is the point.
+      expect((ack as { transaction_id?: string }).transaction_id).toBe(enqueued.transaction_id);
+      expect(enqueued.transaction_id).toEqual(expect.any(String));
       expect(Object.keys(enqueued).sort()).toEqual(
         [
           "batch_id",

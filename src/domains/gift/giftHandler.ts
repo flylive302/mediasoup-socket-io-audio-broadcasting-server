@@ -159,7 +159,13 @@ export class GiftHandler {
     // Queue for persistence — exactly ONE row per burst.
     await this.buffer.enqueue(transaction);
 
-    return { success: true, acceptedRecipientIds };
+    // `transaction_id` is returned so the sender can join its own gift to the
+    // eventual `lucky:result` (echoed there as `reference_id`). It is the only
+    // identifier that survives the whole path — the buffer is 1:N (one flush
+    // POSTs up to MAX_BATCH_SIZE transactions from many sockets), so a
+    // per-request correlation header structurally cannot attribute a result to
+    // one sender. Purely additive; older clients ignore the field.
+    return { success: true, acceptedRecipientIds, transaction_id: transaction.transaction_id };
   }
 
   /**

@@ -6,16 +6,41 @@ name: Deploy — Production (rolling, gated)
 # a Required reviewer (Settings → Environments → vultr-production → Required
 # reviewers). GitHub pauses the job for approval before any instance is touched.
 #
-# Auto-deploys the prod fleet on push to `master` (mirrors AWS' old master→deploy
-# behaviour and the staging push→roll flow). Also runnable on demand via
-# workflow_dispatch. The required-reviewer gate on the `vultr-production`
-# environment still applies, so the roll pauses for approval before any instance
-# is touched — set that environment to zero required reviewers if you want the
-# push to roll straight through with no manual approval.
+# 🔴 THE `push: master` TRIGGER IS DISABLED — DISABLED 2026-07-30, DO NOT RE-ENABLE ON VULTR.
+#
+# Vultr removed the VPC 2.0 API. `GET /v2/instances/{id}/vpc2` now 404s account-wide, and the
+# Terraform provider's `vultr_instance` Read calls it unconditionally — so plan/apply/create/update/
+# import ALL fail with `error getting list of attached VPCs 2.0`. Present in every provider release
+# through 2.32.0 (latest); upgrading and pinning both do nothing. There is NO working Terraform path
+# to this fleet.
+#
+# Why the trigger had to go, not just the habit of using it: `scripts/rolling-deploy.sh` DRAINS an
+# instance BEFORE it plans, and an HTTP drain has no inverse (`completeDrain()` never clears
+# `draining`, so /health returns 503 forever). Run #45 halted exactly there and left the fleet on ONE
+# box for ~12h until `docker restart -t 30 msab` was typed into the noVNC console by hand. With this
+# trigger live, the NEXT push to master repeats that outage automatically.
+#
+# `workflow_dispatch` is kept ONLY so the workflow stays visible in the Actions UI. Running it will
+# still fail the same way — it is not a recovery tool.
+#   ⛔ A plain re-run (or `roll_only: bom:0`) re-drains bom-01 back into the stuck 503 state.
+#   ⛔ `roll_only: bom:1` drains the HEALTHY sibling → full outage. (`roll_only` is 0-based.)
+#
+# To ship an MSAB image change before the AWS cutover: `docker pull` + re-run the container on ONE
+# box at a time, via noVNC (there are no authorized SSH keys on the fleet). Operator-only.
+#
+# Re-enable the `push:` block below at the AWS cutover, when Terraform owns real infra again.
+# Full mechanism: `docs/reference/hard-won-gotchas.md` § "Vultr fleet / Terraform deploy".
+#
+# Original behaviour, for restoration: auto-deployed the prod fleet on push to `master` (mirroring
+# AWS' old master→deploy behaviour and the staging push→roll flow). The required-reviewer gate on the
+# `vultr-production` environment still applies either way, so the roll pauses for approval before any
+# instance is touched — set that environment to zero required reviewers if you want a push to roll
+# straight through with no manual approval.
 
 on:
-  push:
-    branches: [master]
+  # DISABLED 2026-07-30 — see the block above. Restore at AWS cutover.
+  # push:
+  #   branches: [master]
   workflow_dispatch:
     inputs:
       roll_only:
