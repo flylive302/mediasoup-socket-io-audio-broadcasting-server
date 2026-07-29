@@ -12,6 +12,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { EventRouter } from "@src/integrations/laravel/event-router.js";
 import type { LaravelEvent } from "@src/integrations/laravel/types.js";
 import { config } from "@src/config/index.js";
+import { withCorrelation } from "./correlation.js";
 import { z } from "zod";
 
 /** Zod schema — matches the existing LaravelEventSchema in event-subscriber.ts */
@@ -64,7 +65,10 @@ export const createEventIngestRoutes = (
       const snsMessageType = request.headers["x-amz-sns-message-type"];
 
       fastify.log.info(
-        { snsMessageType: snsMessageType ?? "none", contentType: request.headers["content-type"] },
+        {
+          snsMessageType: snsMessageType ?? "none",
+          contentType: request.headers["content-type"],
+        },
         "Event ingest: request received",
       );
 
@@ -75,13 +79,19 @@ export const createEventIngestRoutes = (
           try {
             await fetch(body.SubscribeURL);
             fastify.log.info("SNS subscription confirmed");
-            return reply.code(200).send({ status: "ok", message: "Subscription confirmed" });
+            return reply
+              .code(200)
+              .send({ status: "ok", message: "Subscription confirmed" });
           } catch (err) {
             fastify.log.error({ err }, "Failed to confirm SNS subscription");
-            return reply.code(500).send({ status: "error", message: "Confirmation failed" });
+            return reply
+              .code(500)
+              .send({ status: "error", message: "Confirmation failed" });
           }
         }
-        return reply.code(400).send({ status: "error", message: "Missing SubscribeURL" });
+        return reply
+          .code(400)
+          .send({ status: "error", message: "Missing SubscribeURL" });
       }
 
       // --- Authentication ---
@@ -92,7 +102,9 @@ export const createEventIngestRoutes = (
         (request.query as Record<string, string>)?.key;
 
       if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
-        return reply.code(401).send({ status: "error", message: "Unauthorized" });
+        return reply
+          .code(401)
+          .send({ status: "error", message: "Unauthorized" });
       }
 
       // --- Parse Event ---
@@ -103,7 +115,9 @@ export const createEventIngestRoutes = (
         try {
           raw = JSON.parse(raw);
         } catch {
-          return reply.code(400).send({ status: "error", message: "Invalid JSON" });
+          return reply
+            .code(400)
+            .send({ status: "error", message: "Invalid JSON" });
         }
       }
 
@@ -149,21 +163,36 @@ export const createEventIngestRoutes = (
           { inFlight: inFlightEvents, event: event.event },
           "Event ingest at capacity — shedding (503)",
         );
-        return reply
-          .code(503)
-          .header("Retry-After", "1")
-          .send({ status: "error", message: "Event ingest at capacity, retry" });
+        return reply.code(503).header("Retry-After", "1").send({
+          status: "error",
+          message: "Event ingest at capacity, retry",
+        });
       }
 
       fastify.log.info(
-        { event: event.event, userId: event.user_id, roomId: event.room_id, correlationId: event.correlation_id },
+        {
+          event: event.event,
+          userId: event.user_id,
+          roomId: event.room_id,
+          correlationId: event.correlation_id,
+        },
         "Event ingest: routing event",
       );
 
       // --- Route Event ---
+      //
+      // Adopt the API's identifier as the ambient one for the whole routing operation. This is the
+      // join that makes a Laravel request and the socket delivery it caused appear as one trace:
+      // every log line written beneath this point carries the sender's id without naming it.
+      //
+      // The schema defaults `correlation_id` to the literal "unknown" when absent, which
+      // resolveCorrelationId treats as missing and replaces with a minted id — a real identifier
+      // that joins nothing beats the string "unknown" repeated across unrelated events.
       inFlightEvents++;
       try {
-        const routingResult = await eventRouter.route(event);
+        const routingResult = await withCorrelation(event.correlation_id, () =>
+          eventRouter.route(event),
+        );
 
         return reply.code(200).send({
           status: "ok",

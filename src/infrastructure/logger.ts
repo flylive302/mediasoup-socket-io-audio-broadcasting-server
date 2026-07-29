@@ -1,5 +1,6 @@
 import { pino, stdSerializers } from "pino";
 import { config } from "@src/config/index.js";
+import { correlationMixin } from "./correlation.js";
 
 const devTransport = {
   target: "pino-pretty",
@@ -27,6 +28,10 @@ export const logger = pino({
     err: stdSerializers.err,
     error: stdSerializers.err,
   },
+  // Ambient correlation: every record gets the identifier of the operation that produced it,
+  // without the call site naming it. Defined in correlation.ts so there is one definition and it
+  // is directly testable.
+  mixin: correlationMixin,
   ...(config.NODE_ENV === "development" && { transport: devTransport }),
 });
 

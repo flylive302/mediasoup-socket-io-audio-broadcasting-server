@@ -2,6 +2,7 @@ import { config } from "@src/config/index.js";
 import * as Sentry from "@sentry/node";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { seenRecently } from "@src/infrastructure/sentry/dedupe.js";
+import { currentCorrelationId } from "@src/infrastructure/correlation.js";
 import type {
   BatchProcessingResult,
   CascadeInfo,
@@ -9,13 +10,35 @@ import type {
   RoomStatusUpdate,
 } from "./types.js";
 
+/**
+ * The correlation header for an outbound call to the API, or nothing outside a correlated
+ * operation.
+ *
+ * This is the return leg. The API stamps `X-Correlation-ID` on calls it makes to this service and
+ * adopts the header when one is supplied, so sending it here makes a round trip that starts at a
+ * socket event and ends in the API appear as one trace rather than two unrelated halves.
+ *
+ * Spreading `{}` when there is no ambient identifier is deliberate: an absent header is adopted-or-
+ * minted by the API, whereas an empty-string header would be a value it has to reject.
+ */
+function correlationHeader(): Record<string, string> {
+  const correlationId = currentCorrelationId();
+
+  return correlationId === undefined
+    ? {}
+    : { "X-Correlation-ID": correlationId };
+}
+
 const ROLE_CACHE_TTL_MS = 30_000; // 30 seconds
 // B-6 FIX: Prevent unbounded growth of roleCache
 const ROLE_CACHE_MAX_SIZE = 5_000;
 const ROLE_CACHE_PRUNE_INTERVAL_MS = 60_000; // 1 minute
 
 export class LaravelClient {
-  private readonly roleCache = new Map<string, { role: string; expiresAt: number }>();
+  private readonly roleCache = new Map<
+    string,
+    { role: string; expiresAt: number }
+  >();
   private roleCachePruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly logger: Logger) {
@@ -46,7 +69,10 @@ export class LaravelClient {
       }
     }
     if (pruned > 0) {
-      this.logger.debug({ pruned, remaining: this.roleCache.size }, "LaravelClient: roleCache pruned");
+      this.logger.debug(
+        { pruned, remaining: this.roleCache.size },
+        "LaravelClient: roleCache pruned",
+      );
     }
   }
 
@@ -125,20 +151,31 @@ export class LaravelClient {
           { status: response.status, roomId },
           "Failed to fetch cascade info",
         );
-        return { hosting_region: null, hosting_ip: null, hosting_port: null, is_live: false };
+        return {
+          hosting_region: null,
+          hosting_ip: null,
+          hosting_port: null,
+          is_live: false,
+        };
       }
 
-      const data = await response.json() as Record<string, unknown>;
+      const data = (await response.json()) as Record<string, unknown>;
 
       return {
         hosting_region: (data.hosting_region as string) ?? null,
         hosting_ip: (data.hosting_ip as string) ?? null,
-        hosting_port: typeof data.hosting_port === "number" ? data.hosting_port : null,
+        hosting_port:
+          typeof data.hosting_port === "number" ? data.hosting_port : null,
         is_live: data.is_live === true,
       };
     } catch (error) {
       this.logger.error({ error, roomId }, "Error fetching cascade info");
-      return { hosting_region: null, hosting_ip: null, hosting_port: null, is_live: false };
+      return {
+        hosting_region: null,
+        hosting_ip: null,
+        hosting_port: null,
+        is_live: false,
+      };
     }
   }
 
@@ -150,7 +187,10 @@ export class LaravelClient {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.LARAVEL_API_TIMEOUT_MS);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      config.LARAVEL_API_TIMEOUT_MS,
+    );
 
     try {
       return await fetch(url, {
@@ -161,6 +201,7 @@ export class LaravelClient {
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
           // F-64: per-instance throttle key so MSAB instances don't share one bucket
           "X-Instance-ID": config.INSTANCE_ID,
+          ...correlationHeader(),
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -177,7 +218,10 @@ export class LaravelClient {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.LARAVEL_API_TIMEOUT_MS);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      config.LARAVEL_API_TIMEOUT_MS,
+    );
 
     try {
       return await fetch(url, {
@@ -188,6 +232,7 @@ export class LaravelClient {
           "X-Internal-Key": config.LARAVEL_INTERNAL_KEY,
           // F-64: per-instance throttle key so MSAB instances don't share one bucket
           "X-Instance-ID": config.INSTANCE_ID,
+          ...correlationHeader(),
         },
         signal: controller.signal,
       });
@@ -265,9 +310,10 @@ export class LaravelClient {
    * seconds). Backs the MSAB revocation backfill poller — recovers
    * revocations whose real-time SNS emit this instance missed.
    */
-  async getRevokedSince(
-    since: number,
-  ): Promise<{ revoked: Array<{ user_id: number; revoked_at: number }>; server_time: number }> {
+  async getRevokedSince(since: number): Promise<{
+    revoked: Array<{ user_id: number; revoked_at: number }>;
+    server_time: number;
+  }> {
     const response = await this.get(
       `/api/v1/internal/users/revoked?since=${encodeURIComponent(String(since))}`,
     );
@@ -304,9 +350,14 @@ export class LaravelClient {
    * Check if a user is a room admin/owner
    * Returns the user's role in the room or null if not a member
    */
-  async getMemberRole(roomId: string, userId: string): Promise<'owner' | 'admin' | 'member' | null> {
+  async getMemberRole(
+    roomId: string,
+    userId: string,
+  ): Promise<"owner" | "admin" | "member" | null> {
     try {
-      const response = await this.get(`/api/v1/internal/rooms/${roomId}/members/${userId}/role`);
+      const response = await this.get(
+        `/api/v1/internal/rooms/${roomId}/members/${userId}/role`,
+      );
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -320,16 +371,19 @@ export class LaravelClient {
         return null;
       }
 
-      const data = await response.json() as { role?: string };
+      const data = (await response.json()) as { role?: string };
       const role = data.role;
-      
-      if (role === 'owner' || role === 'admin' || role === 'member') {
+
+      if (role === "owner" || role === "admin" || role === "member") {
         return role;
       }
-      
+
       return null;
     } catch (error) {
-      this.logger.error({ error, roomId, userId }, "Error fetching member role");
+      this.logger.error(
+        { error, roomId, userId },
+        "Error fetching member role",
+      );
       return null;
     }
   }

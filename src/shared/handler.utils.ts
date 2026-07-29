@@ -6,7 +6,10 @@ import { z } from "zod";
 import type { Socket } from "socket.io";
 import * as Sentry from "@sentry/node";
 import { logger } from "@src/infrastructure/logger.js";
-import { generateCorrelationId } from "./crypto.js";
+import {
+  currentCorrelationId,
+  withCorrelation,
+} from "@src/infrastructure/correlation.js";
 import { Errors } from "./errors.js";
 import type { AppContext } from "@src/context.js";
 import { metrics } from "@src/infrastructure/metrics.js";
@@ -24,7 +27,10 @@ function recordEvent(
   startTime: number,
 ): void {
   metrics.eventsTotal.inc({ event: eventName, status });
-  metrics.eventLatency.observe({ event: eventName }, (Date.now() - startTime) / 1000);
+  metrics.eventLatency.observe(
+    { event: eventName },
+    (Date.now() - startTime) / 1000,
+  );
 }
 
 /**
@@ -84,99 +90,109 @@ export function createHandler<TPayload>(
 ) {
   return (socket: Socket, context: AppContext) => {
     return async (rawPayload: unknown, callback?: SocketCallback) => {
-      const startTime = Date.now();
-      const requestId = generateCorrelationId();
-      const userId = socket.data.user?.id;
+      // Bind one identifier to this invocation and everything it awaits. The logger's mixin reads
+      // it, so the log objects below never mention it.
+      //
+      // `socket.data.correlationId` is the handshake-supplied value. It is undefined today and
+      // observability ticket 10 is what sets it; reading it here means that ticket adds no code to
+      // this file. Until then every invocation mints its own, exactly as before.
+      await withCorrelation(socket.data.correlationId, async () => {
+        const startTime = Date.now();
+        const userId = socket.data.user?.id;
 
-      // 1. Validate payload
-      const parseResult = schema.safeParse(rawPayload);
-      if (!parseResult.success) {
-        logger.debug(
-          {
-            requestId,
-            event: eventName,
-            userId,
-            errors: parseResult.error.format(),
-          },
-          "Validation failed",
-        );
-        recordEvent(eventName, "fail", startTime);
+        // 1. Validate payload
+        const parseResult = schema.safeParse(rawPayload);
+        if (!parseResult.success) {
+          logger.debug(
+            {
+              event: eventName,
+              userId,
+              errors: parseResult.error.format(),
+            },
+            "Validation failed",
+          );
+          recordEvent(eventName, "fail", startTime);
 
-        // GATE failures are normally not errors, but a schema mismatch is a
-        // deliberate exception: grouping collapses thousands of client-side
-        // rejections into ONE Sentry issue named by the offending field, and
-        // release-health flags it as new — surfacing a frontend/MSAB contract
-        // break at a glance instead of drowning in per-request noise.
-        const issue = parseResult.error.issues[0];
-        const issuePath = issue?.path.join(".") ?? "unknown";
-        // Deduped BEFORE capture, not by fingerprinting alone. Fingerprinting
-        // collapses these into one ISSUE, but every event still spends a
-        // token from the bucket in beforeSend — and GATE rejections are
-        // client-driven and unbounded, so a single bad frontend build could
-        // otherwise drain the burst budget and starve real crash reports.
-        if (!seenRecently(`gate|${eventName}|${issuePath}`)) {
-          Sentry.withScope((scope) => {
-            if (userId !== undefined) scope.setUser({ id: String(userId) });
-            scope.setTags({ stage: "gate", event: eventName });
-            scope.setFingerprint(["invalid-payload", eventName, issuePath]);
-            scope.setExtras({
-              path: issuePath,
-              code: issue?.code ?? "unknown",
-              expected: (issue as { expected?: unknown } | undefined)?.expected ?? "unknown",
-              // `received` is coerced to its TYPE on purpose: Zod carries the real value
-              // for literal/enum mismatches, and that value must never leave the process.
-              received: typeof (issue as { received?: unknown } | undefined)?.received,
+          // GATE failures are normally not errors, but a schema mismatch is a
+          // deliberate exception: grouping collapses thousands of client-side
+          // rejections into ONE Sentry issue named by the offending field, and
+          // release-health flags it as new — surfacing a frontend/MSAB contract
+          // break at a glance instead of drowning in per-request noise.
+          const issue = parseResult.error.issues[0];
+          const issuePath = issue?.path.join(".") ?? "unknown";
+          // Deduped BEFORE capture, not by fingerprinting alone. Fingerprinting
+          // collapses these into one ISSUE, but every event still spends a
+          // token from the bucket in beforeSend — and GATE rejections are
+          // client-driven and unbounded, so a single bad frontend build could
+          // otherwise drain the burst budget and starve real crash reports.
+          if (!seenRecently(`gate|${eventName}|${issuePath}`)) {
+            Sentry.withScope((scope) => {
+              if (userId !== undefined) scope.setUser({ id: String(userId) });
+              scope.setTags({ stage: "gate", event: eventName });
+              scope.setFingerprint(["invalid-payload", eventName, issuePath]);
+              scope.setExtras({
+                path: issuePath,
+                code: issue?.code ?? "unknown",
+                expected:
+                  (issue as { expected?: unknown } | undefined)?.expected ??
+                  "unknown",
+                // `received` is coerced to its TYPE on purpose: Zod carries the real value
+                // for literal/enum mismatches, and that value must never leave the process.
+                received: typeof (issue as { received?: unknown } | undefined)
+                  ?.received,
+              });
+              Sentry.captureMessage("Payload rejected", "warning");
             });
-            Sentry.captureMessage("Payload rejected", "warning");
-          });
+          }
+
+          callback?.({ success: false, error: Errors.INVALID_PAYLOAD });
+          return;
         }
 
-        callback?.({ success: false, error: Errors.INVALID_PAYLOAD });
-        return;
-      }
+        // 2. Execute handler
+        try {
+          const result = await handler(parseResult.data, socket, context);
 
-      // 2. Execute handler
-      try {
-        const result = await handler(parseResult.data, socket, context);
+          const durationMs = Date.now() - startTime;
+          recordEvent(eventName, result.success ? "ok" : "fail", startTime);
+          logger.debug(
+            {
+              event: eventName,
+              userId,
+              success: result.success,
+              durationMs,
+            },
+            "Handler completed",
+          );
 
-        const durationMs = Date.now() - startTime;
-        recordEvent(eventName, result.success ? "ok" : "fail", startTime);
-        logger.debug(
-          {
-            requestId,
-            event: eventName,
-            userId,
-            success: result.success,
-            durationMs,
-          },
-          "Handler completed",
-        );
+          callback?.(result);
+        } catch (err) {
+          const durationMs = Date.now() - startTime;
+          recordEvent(eventName, "error", startTime);
+          logger.error(
+            {
+              err,
+              event: eventName,
+              userId,
+              durationMs,
+            },
+            "Handler exception",
+          );
 
-        callback?.(result);
-      } catch (err) {
-        const durationMs = Date.now() - startTime;
-        recordEvent(eventName, "error", startTime);
-        logger.error(
-          {
-            err,
-            requestId,
-            event: eventName,
-            userId,
-            durationMs,
-          },
-          "Handler exception",
-        );
+          Sentry.withScope((scope) => {
+            if (userId !== undefined) scope.setUser({ id: String(userId) });
+            scope.setTags({ stage: "execute", event: eventName });
+            // Explicit here on purpose: Sentry is a separate sink from the logger and the mixin
+            // does not reach it. Tagged (not an extra) so issues are searchable by identifier.
+            scope.setTag("correlation_id", currentCorrelationId());
+            scope.setExtras({ durationMs });
+            scope.setContext("payload_shape", payloadShape(parseResult.data));
+            Sentry.captureException(err);
+          });
 
-        Sentry.withScope((scope) => {
-          if (userId !== undefined) scope.setUser({ id: String(userId) });
-          scope.setTags({ stage: "execute", event: eventName });
-          scope.setExtras({ requestId, durationMs });
-          scope.setContext("payload_shape", payloadShape(parseResult.data));
-          Sentry.captureException(err);
-        });
-
-        callback?.({ success: false, error: Errors.INTERNAL_ERROR });
-      }
+          callback?.({ success: false, error: Errors.INTERNAL_ERROR });
+        }
+      });
     };
   };
 }
@@ -190,50 +206,50 @@ export function createSimpleHandler(
 ) {
   return (socket: Socket, context: AppContext) => {
     return async (callback?: SocketCallback) => {
-      const startTime = Date.now();
-      const requestId = generateCorrelationId();
-      const userId = socket.data.user?.id;
+      await withCorrelation(socket.data.correlationId, async () => {
+        const startTime = Date.now();
+        const userId = socket.data.user?.id;
 
-      try {
-        const result = await handler(socket, context);
+        try {
+          const result = await handler(socket, context);
 
-        const durationMs = Date.now() - startTime;
-        recordEvent(eventName, result.success ? "ok" : "fail", startTime);
-        logger.debug(
-          {
-            requestId,
-            event: eventName,
-            userId,
-            success: result.success,
-            durationMs,
-          },
-          "Handler completed",
-        );
+          const durationMs = Date.now() - startTime;
+          recordEvent(eventName, result.success ? "ok" : "fail", startTime);
+          logger.debug(
+            {
+              event: eventName,
+              userId,
+              success: result.success,
+              durationMs,
+            },
+            "Handler completed",
+          );
 
-        callback?.(result);
-      } catch (err) {
-        const durationMs = Date.now() - startTime;
-        recordEvent(eventName, "error", startTime);
-        logger.error(
-          {
-            err,
-            requestId,
-            event: eventName,
-            userId,
-            durationMs,
-          },
-          "Handler exception",
-        );
+          callback?.(result);
+        } catch (err) {
+          const durationMs = Date.now() - startTime;
+          recordEvent(eventName, "error", startTime);
+          logger.error(
+            {
+              err,
+              event: eventName,
+              userId,
+              durationMs,
+            },
+            "Handler exception",
+          );
 
-        Sentry.withScope((scope) => {
-          if (userId !== undefined) scope.setUser({ id: String(userId) });
-          scope.setTags({ stage: "execute", event: eventName });
-          scope.setExtras({ requestId, durationMs });
-          Sentry.captureException(err);
-        });
+          Sentry.withScope((scope) => {
+            if (userId !== undefined) scope.setUser({ id: String(userId) });
+            scope.setTags({ stage: "execute", event: eventName });
+            scope.setTag("correlation_id", currentCorrelationId());
+            scope.setExtras({ durationMs });
+            Sentry.captureException(err);
+          });
 
-        callback?.({ success: false, error: Errors.INTERNAL_ERROR });
-      }
+          callback?.({ success: false, error: Errors.INTERNAL_ERROR });
+        }
+      });
     };
   };
 }

@@ -32,11 +32,15 @@ export const UserSchema = z.object({
   vip_level: z.number().default(0),
   isSpeaker: z.boolean().default(false),
   badge_slot_limit: z.number().default(6),
-  equipped_badges: z.array(z.object({
-    slot_position: z.number().int(),
-    badge_id: z.number().int(),
-    image_url: z.string().nullable().default(null),
-  })).default([]),
+  equipped_badges: z
+    .array(
+      z.object({
+        slot_position: z.number().int(),
+        badge_id: z.number().int(),
+        image_url: z.string().nullable().default(null),
+      }),
+    )
+    .default([]),
 });
 
 /** User type derived from Zod schema */
@@ -44,4 +48,13 @@ export type User = z.infer<typeof UserSchema>;
 
 export interface AuthSocketData {
   user: User;
+
+  /**
+   * Correlation identifier supplied at the socket handshake, if any.
+   *
+   * Undefined today: nothing populates it yet. `createHandler` already reads it and binds it as
+   * the ambient identifier for the invocation, so observability ticket 10 — which carries the
+   * identifier across the handshake — only has to set it here.
+   */
+  correlationId?: string;
 }
