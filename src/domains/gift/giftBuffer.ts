@@ -163,6 +163,26 @@ export class GiftBuffer {
     this.logger.info({ count: transactions.length }, "Flushing gift batch");
     metrics.giftBatchSize.observe(transactions.length);
 
+    // gift-path-latency 11: how long each gift sat between the sender's emit and
+    // this flush picking it up — the first of the three waits on the result path.
+    // `gift.timestamp` was stamped by giftHandler on THIS process's clock, and so
+    // is `pickedUpAt`, so the difference is a real wait and not clock skew.
+    // ⛔ Never subtract a Laravel-side timestamp from either of them.
+    // A corrupt or future-dated stamp is skipped rather than observed as negative.
+    const pickedUpAt = Date.now();
+    for (const gift of transactions) {
+      const waitMs = pickedUpAt - gift.timestamp;
+      if (Number.isFinite(waitMs) && waitMs >= 0) {
+        // A re-queued gift keeps its ORIGINAL timestamp (the fallback path below
+        // only bumps retryCount), so its wait spans every failed Laravel round
+        // trip too. Label it so the clean batching cost stays readable.
+        metrics.giftBufferWaitSeconds.observe(
+          { attempt: (gift.retryCount ?? 0) === 0 ? "first" : "retried" },
+          waitMs / 1000,
+        );
+      }
+    }
+
     // GF-006 FIX: Report dead-letter queue size for alerting
     // GF-014 FIX: Sample every 10th flush to reduce Redis RTT
     if (this.flushCount % 10 === 0) {
@@ -170,8 +190,18 @@ export class GiftBuffer {
       metrics.giftDeadLetterSize.set(dlqSize);
     }
 
+    // gift-path-latency 11: hop (d) — the batch POST itself. Timed on BOTH
+    // outcomes: a timeout is the slow case this measurement exists to expose, so
+    // recording successes only would hide exactly the tail that matters.
+    const postStartedAt = Date.now();
+
     try {
       const result = await this.laravelClient.processGiftBatch(transactions);
+
+      metrics.giftBatchPostSeconds.observe(
+        { outcome: "success" },
+        (Date.now() - postStartedAt) / 1000,
+      );
 
       // Handle failures - notify senders via Socket.IO. batchId lets the FE
       // key its per-burst refund (Laravel's failure rows don't carry it, so
@@ -204,6 +234,11 @@ export class GiftBuffer {
       this.emitSenderBalances(result, transactions);
 
     } catch (error) {
+      metrics.giftBatchPostSeconds.observe(
+        { outcome: "failure" },
+        (Date.now() - postStartedAt) / 1000,
+      );
+
       this.logger.error(
         { error, batchSize: transactions.length },
         "Gift batch failed, attempting per-item fallback",

@@ -24,6 +24,8 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftBatchSize: { observe: vi.fn() },
     giftsProcessed: { inc: vi.fn() },
     giftDeadLetterSize: { set: vi.fn() },
+    giftBufferWaitSeconds: { observe: vi.fn() },
+    giftBatchPostSeconds: { observe: vi.fn() },
   },
 }));
 
@@ -159,6 +161,140 @@ describe("GiftBuffer", () => {
       { status: "success" },
       1,
     );
+  });
+
+  // ─── flush: gift-path-latency 11 metrics (buffer wait + batch POST) ──
+
+  it("observes one giftBufferWaitSeconds sample per transaction, equal to (flushTime - timestamp)/1000", async () => {
+    const flushTime = 1_700_000_010_000;
+    vi.setSystemTime(flushTime);
+
+    const gift1 = makeGiftJSON({ transaction_id: "tx-1", timestamp: flushTime - 1000 });
+    const gift2 = makeGiftJSON({ transaction_id: "tx-2", timestamp: flushTime - 500 });
+    mockRedis.eval.mockResolvedValue([gift1, gift2]);
+
+    await buffer.stop();
+
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(2);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(1, { attempt: "first" }, 1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(2, { attempt: "first" }, 0.5);
+  });
+
+  it("skips observing wait time for a transaction with a future timestamp (negative wait)", async () => {
+    const flushTime = 1_700_000_010_000;
+    vi.setSystemTime(flushTime);
+
+    // One normal (past) transaction and one with a future timestamp (clock skew / bad stamp).
+    const pastGift = makeGiftJSON({ transaction_id: "tx-1", timestamp: flushTime - 1000 });
+    const futureGift = makeGiftJSON({ transaction_id: "tx-2", timestamp: flushTime + 5000 });
+    mockRedis.eval.mockResolvedValue([pastGift, futureGift]);
+
+    await buffer.stop();
+
+    // Only the past-timestamp transaction is observed — count matters, not just sign.
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first" }, 1);
+  });
+
+  it("labels giftBufferWaitSeconds by attempt: \"first\" for a fresh gift, \"retried\" for one with retryCount >= 1, discriminated within the same flush", async () => {
+    const flushTime = 1_700_000_010_000;
+    vi.setSystemTime(flushTime);
+
+    // Same flush, one of each kind — the discrimination itself is what's under test.
+    const freshGift = makeGiftJSON({
+      transaction_id: "tx-1",
+      timestamp: flushTime - 1000,
+    });
+    const retriedGift = makeGiftJSON({
+      transaction_id: "tx-2",
+      timestamp: flushTime - 2000,
+      retryCount: 2,
+    });
+    mockRedis.eval.mockResolvedValue([freshGift, retriedGift]);
+
+    await buffer.stop();
+
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(2);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first" }, 1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "retried" }, 2);
+  });
+
+  it("observes exactly one giftBatchPostSeconds sample under outcome=success on a successful batch POST", async () => {
+    const giftJson = makeGiftJSON();
+    mockRedis.eval.mockResolvedValue([giftJson]);
+    // default mockLaravel.processGiftBatch resolves { failed: [] }
+
+    await buffer.stop();
+
+    expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledTimes(1);
+    expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledWith(
+      { outcome: "success" },
+      expect.any(Number),
+    );
+    expect(metrics.giftBatchPostSeconds.observe).not.toHaveBeenCalledWith(
+      { outcome: "failure" },
+      expect.anything(),
+    );
+  });
+
+  it("observes exactly one giftBatchPostSeconds sample under outcome=failure when the batch POST rejects, unconfused by the per-item fallback", async () => {
+    const giftJson = makeGiftJSON();
+    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
+
+    await buffer.stop();
+
+    // Sanity check: the per-item fallback really did re-invoke processGiftBatch
+    // beyond the initial batch-level call, so the assertion below is proven to
+    // be about the batch-level histogram, not accidentally passing because the
+    // fallback never ran.
+    expect(mockLaravel.processGiftBatch).toHaveBeenCalledTimes(2);
+
+    expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledTimes(1);
+    expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledWith(
+      { outcome: "failure" },
+      expect.any(Number),
+    );
+    expect(metrics.giftBatchPostSeconds.observe).not.toHaveBeenCalledWith(
+      { outcome: "success" },
+      expect.anything(),
+    );
+  });
+
+  // The four tests above assert against the vi.fn() spies this file mocks
+  // @src/infrastructure/metrics.js into — they prove giftBuffer.ts CALLS the
+  // histograms correctly, but a mocked module means they can't see whether the
+  // real histograms in metrics.ts have the right Prometheus name, buckets or
+  // labels. This test bypasses just that one mock via vi.importActual to check
+  // the real definitions, without touching the vi.mock/spy setup above.
+  it("defines the real giftBufferWaitSeconds / giftBatchPostSeconds histograms with the documented name, buckets and attempt/outcome labels", async () => {
+    const actual = await vi.importActual<typeof import("@src/infrastructure/metrics.js")>(
+      "@src/infrastructure/metrics.js",
+    );
+
+    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "first" }, 0.2);
+    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "retried" }, 0.3);
+    const waitText = await actual.metricsRegistry.getSingleMetricAsString(
+      "flylive_gift_buffer_wait_seconds",
+    );
+    expect(waitText).toContain("# TYPE flylive_gift_buffer_wait_seconds histogram");
+    expect(waitText).toContain('attempt="first"');
+    expect(waitText).toContain('attempt="retried"');
+    for (const bucket of [0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5]) {
+      expect(waitText).toContain(`le="${bucket}"`);
+    }
+
+    actual.metrics.giftBatchPostSeconds.observe({ outcome: "success" }, 0.3);
+    actual.metrics.giftBatchPostSeconds.observe({ outcome: "failure" }, 0.4);
+    const postText = await actual.metricsRegistry.getSingleMetricAsString(
+      "flylive_gift_batch_post_seconds",
+    );
+    expect(postText).toContain("# TYPE flylive_gift_batch_post_seconds histogram");
+    expect(postText).toContain('outcome="success"');
+    expect(postText).toContain('outcome="failure"');
+    for (const bucket of [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 10]) {
+      expect(postText).toContain(`le="${bucket}"`);
+    }
   });
 
   // ─── flush: authoritative sender balance relay (Epic B 06) ────────

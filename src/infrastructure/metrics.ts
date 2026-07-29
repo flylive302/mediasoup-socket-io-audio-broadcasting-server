@@ -92,6 +92,36 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-path-latency 11: the two hops of the result path that this service owns
+  // outright. Both are measured on THIS process's clock only — a gift's enqueue
+  // stamp and the flush that picks it up are both Date.now() here, so no
+  // cross-machine skew can enter. Never subtract a Laravel timestamp from these.
+  giftBufferWaitSeconds: new Histogram({
+    name: "flylive_gift_buffer_wait_seconds",
+    help: "Time a gift waited in the Redis buffer, from enqueue to flush pickup",
+    // `attempt` separates the clean batching wait from retry latency. A failed
+    // batch re-queues each gift with its ORIGINAL timestamp (see flush()'s
+    // fallback path), so a retried gift's wait includes every failed round trip
+    // to Laravel. Without this label those samples would silently inflate the
+    // buffer's p95 and make ticket 12 indict the buffer for an API failure.
+    // ⚠️ Read `attempt="first"` when asking "how long does batching cost?".
+    labelNames: ["attempt"] as const, // first, retried
+    // Straddles GIFT_BUFFER_FLUSH_INTERVAL_MS (500ms default): anything far above
+    // it means flushes are backing up behind a slow Laravel, not idling.
+    buckets: [0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5],
+    registers: [metricsRegistry],
+  }),
+
+  giftBatchPostSeconds: new Histogram({
+    name: "flylive_gift_batch_post_seconds",
+    help: "Wall time of the batch POST to the Laravel gift endpoint",
+    labelNames: ["outcome"] as const, // success, failure
+    // Centred on the observed 593ms avg / 1,572ms p95 so the tail is legible
+    // rather than piling into a single overflow bucket.
+    buckets: [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 10],
+    registers: [metricsRegistry],
+  }),
+
   // Laravel API calls
   laravelApiCalls: new Counter({
     name: "flylive_laravel_api_calls_total",
