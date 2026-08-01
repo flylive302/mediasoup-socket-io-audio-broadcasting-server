@@ -102,6 +102,21 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     // pay the extra delay. ADR 0002 explicitly accepts this for launch.
     pingInterval: 25_000,
     pingTimeout: 20_000,
+    // platform-security 04: bound inbound messages. Socket.IO's default is
+    // 1 MB per message — roughly 250x anything legitimate sends, and nobody
+    // chose it. Derived, not guessed: the largest real payload is
+    // `user:profileSync` at ~3-4 KB (badge slots are tiered 6/9/12; name and
+    // signature are capped in `socket/schemas.ts`), and WebRTC signalling is
+    // smaller AND architecturally bounded because the router advertises
+    // exactly one audio codec (opus), so RTP capabilities can only ever carry
+    // that codec plus standard header extensions. The 16 KB floor leaves 4-5x
+    // headroom for badge-slot growth and CDN URL drift.
+    //
+    // Oversized messages are rejected by the transport before parsing — which
+    // also means the connection is closed, not just the message dropped. That
+    // is the reason for the headroom: this is a ceiling for abuse, never a
+    // limit a real client should approach.
+    maxHttpBufferSize: config.SOCKET_MAX_HTTP_BUFFER_BYTES,
     // connectionStateRecovery REMAINS DISABLED — deliberately deferred, not an
     // oversight. CSR would let a dropped transport resume its session, but it
     // still fires `disconnect` on the server, so `finalizeLeave` clears the

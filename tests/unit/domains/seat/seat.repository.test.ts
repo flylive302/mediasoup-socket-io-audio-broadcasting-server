@@ -10,7 +10,12 @@ vi.mock("@src/infrastructure/logger.js", () => ({
   },
 }));
 
+vi.mock("@src/infrastructure/metrics.js", () => ({
+  metrics: { redisDegradations: { inc: vi.fn() } },
+}));
+
 import { SeatRepository } from "@src/domains/seat/seat.repository.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 // ─── Mock Redis ─────────────────────────────────────────────────────
 
@@ -429,5 +434,67 @@ describe("SeatRepository", () => {
 
       expect(result).toBeNull();
     });
+  });
+});
+
+// ─── Redis degradation instrumentation (platform-security 07) ───────
+//
+// The seat repository is the widest degradation surface in MSAB (~14 catch
+// sites). Every one returns a benign-looking fallback so a Redis blip never
+// takes a room down — which is correct, and is exactly why it was invisible.
+//
+// ⚠️ Known and deliberately NOT fixed here (ticket 07 finding): on the READ
+// paths the fallback is indistinguishable from a real result. `getSeats` ->
+// [] reads as "no one is seated"; `getSeatOccupant` -> null reads as "that
+// seat is free". A caller cannot tell degradation from truth. Making that
+// distinguishable is an API change across every call site, far beyond this
+// ticket. The counter is what makes it detectable in the meantime.
+
+describe("SeatRepository — Redis degradation instrumentation", () => {
+  let redis: ReturnType<typeof createMockRedis>;
+  let repo: SeatRepository;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = createMockRedis();
+    repo = new SeatRepository(redis);
+  });
+
+  it("records a read degradation and still returns [] from getSeats", async () => {
+    redis.hgetall.mockRejectedValue(new Error("READONLY"));
+
+    // Unchanged fallback — and indistinguishable from an empty room.
+    await expect(repo.getSeats("room-1")).resolves.toEqual([]);
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "seat",
+      operation: "read",
+    });
+  });
+
+  it("records a read degradation and still returns null from getSeatOccupant", async () => {
+    redis.hget.mockRejectedValue(new Error("READONLY"));
+
+    // Unchanged fallback — and indistinguishable from an empty seat.
+    await expect(repo.getSeatOccupant("room-1", 3)).resolves.toBeNull();
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "seat",
+      operation: "read",
+    });
+  });
+
+  it("emits nothing on the healthy path", async () => {
+    redis.hget.mockResolvedValue(JSON.stringify({ userId: "42" }));
+
+    await expect(repo.getSeatOccupant("room-1", 3)).resolves.toBe("42");
+    expect(metrics.redisDegradations.inc).not.toHaveBeenCalled();
+  });
+
+  it("keeps the fallback intact when the metrics backend itself throws", async () => {
+    redis.hgetall.mockRejectedValue(new Error("READONLY"));
+    vi.mocked(metrics.redisDegradations.inc).mockImplementationOnce(() => {
+      throw new Error("prom-client exploded");
+    });
+
+    await expect(repo.getSeats("room-1")).resolves.toEqual([]);
   });
 });

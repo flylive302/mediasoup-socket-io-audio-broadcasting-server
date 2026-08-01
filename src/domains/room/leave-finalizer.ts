@@ -16,6 +16,7 @@ import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { reactError } from "@src/shared/react-error.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 
@@ -132,6 +133,13 @@ export async function finalizeLeave(
   try {
     newCount = await presenceTracker.reconcile(roomId);
   } catch (err) {
+    // platform-security 07: this is the symmetric leave path for BOTH explicit
+    // leave and disconnect. When it fails the status submit is skipped entirely,
+    // so Laravel keeps the old is_live/participant_count until the ~30s
+    // ownership heartbeat re-reconciles — and if that is failing too (same
+    // Redis), the room stays phantom-live indefinitely. Behaviour unchanged;
+    // this just makes the degradation visible to alerting.
+    recordRedisDegradation("room-manager", "leave-reconcile");
     reactError(
       err,
       { roomId, userId },

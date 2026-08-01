@@ -112,4 +112,78 @@ describe("config assertions", () => {
     const { initializeConfig } = await import("@src/config/index.js");
     await expect(initializeConfig()).resolves.not.toThrow();
   });
+
+  // platform-security 06: pin the PARSED default value of the auth-gate
+  // fail-policy flags directly against the Zod schema — not just via a
+  // downstream gate's behavior — so "defaults reproduce today's fail-OPEN
+  // production behavior exactly" is a regression-guarded fact, not an
+  // inference. Both flags share `booleanEnvSchemaDefaultTrue`, which (unlike
+  // the plain `booleanEnvSchema` used by RATE_LIMIT_FAIL_OPEN) must treat an
+  // explicit-but-EMPTY env value the same as unset — a templated cloud-init
+  // file or blank `.env` line produces `""`, not `undefined`, and `""`
+  // bypasses Zod's `.default()` entirely.
+  describe("auth-gate fail-policy defaults (platform-security 06)", () => {
+    it.each([
+      ["JWT_REVOCATION_FAIL_OPEN"],
+      ["ROOM_BLOCK_FAIL_OPEN"],
+    ] as const)("%s: unset env resolves to true (fail-open)", async (key) => {
+      delete process.env[key];
+
+      const { config } = await import("@src/config/index.js");
+      expect(config[key]).toBe(true);
+    });
+
+    it.each([
+      ["JWT_REVOCATION_FAIL_OPEN"],
+      ["ROOM_BLOCK_FAIL_OPEN"],
+    ] as const)(
+      "%s: explicit empty string still resolves to true (fail-open) — the bug this schema exists to avoid",
+      async (key) => {
+        process.env[key] = "";
+
+        const { config } = await import("@src/config/index.js");
+        expect(config[key]).toBe(true);
+      },
+    );
+
+    it.each([
+      ["JWT_REVOCATION_FAIL_OPEN"],
+      ["ROOM_BLOCK_FAIL_OPEN"],
+    ] as const)("%s: 'true'/'1' resolve to true", async (key) => {
+      process.env[key] = "true";
+      const trueResult = await import("@src/config/index.js");
+      expect(trueResult.config[key]).toBe(true);
+
+      vi.resetModules();
+      process.env[key] = "1";
+      const oneResult = await import("@src/config/index.js");
+      expect(oneResult.config[key]).toBe(true);
+    });
+
+    it.each([
+      ["JWT_REVOCATION_FAIL_OPEN"],
+      ["ROOM_BLOCK_FAIL_OPEN"],
+    ] as const)(
+      "%s: only explicit 'false'/'0' resolve to false (fail-closed)",
+      async (key) => {
+        process.env[key] = "false";
+        const falseResult = await import("@src/config/index.js");
+        expect(falseResult.config[key]).toBe(false);
+
+        vi.resetModules();
+        process.env[key] = "0";
+        const zeroResult = await import("@src/config/index.js");
+        expect(zeroResult.config[key]).toBe(false);
+      },
+    );
+
+    it.each([
+      ["JWT_REVOCATION_FAIL_OPEN"],
+      ["ROOM_BLOCK_FAIL_OPEN"],
+    ] as const)("%s: an unrecognized value fails startup", async (key) => {
+      process.env[key] = "yes";
+
+      await expect(import("@src/config/index.js")).rejects.toThrow();
+    });
+  });
 });

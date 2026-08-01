@@ -2,6 +2,7 @@ import type { Server as SocketServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import { reactError } from "@src/shared/react-error.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
 import { RoomStateRepository } from "./roomState.js";
@@ -182,8 +183,20 @@ export class RoomManager {
             // is the split-brain mode-flap. The ownership check is contained:
             // false-on-error keeps the gate on the safe (no-flip) side AND never
             // aborts the unconditional presence/TTL submit below.
+            // platform-security 07: `isOwner` reads the CAS claim from Redis, so
+            // this swallow was fully silent — a sustained Redis outage pins every
+            // instance to `owns === false`, which quietly stops mode flips AND the
+            // expired-seat sweep fleet-wide while every room still looks healthy.
+            // The `false`-on-error result is UNCHANGED (it is the safe side); only
+            // the silence is fixed.
             const owns =
-              present > 0 ? await this.isOwner(roomId).catch(() => false) : false;
+              present > 0
+                ? await this.isOwner(roomId).catch((err: unknown) => {
+                    recordRedisDegradation("room-manager", "ownership-check");
+                    reactError(err, { roomId }, "Ownership check failed — assuming not owner");
+                    return false;
+                  })
+                : false;
             // realtime-22: on the CAS origin only, release any seat whose reconnect
             // grace has expired (a disconnected speaker who never came back).
             // Owned-room gated so exactly one instance sweeps → no duplicate
@@ -226,9 +239,13 @@ export class RoomManager {
               hosting_port: present > 0 ? config.PORT : null,
             });
           })
-          .catch((err) =>
-            reactError(err, { roomId }, "Presence reconcile on heartbeat failed"),
-          );
+          .catch((err) => {
+            // The heartbeat is what heals the advisory participant count and
+            // refreshes room:state's TTL. Sustained failure here is how a room
+            // silently drifts or expires — count it, don't just log it.
+            recordRedisDegradation("room-manager", "heartbeat-reconcile");
+            reactError(err, { roomId }, "Presence reconcile on heartbeat failed");
+          });
       }
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
     // Don't keep the event loop (or tests) alive solely for the heartbeat.

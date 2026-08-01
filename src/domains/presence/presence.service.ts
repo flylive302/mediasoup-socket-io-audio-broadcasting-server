@@ -30,6 +30,7 @@ import type { Server } from "socket.io";
 import { logger } from "@src/infrastructure/logger.js";
 import { config } from "@src/config/index.js";
 import type { ClientManager } from "@src/client/clientManager.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 export function presenceUserRoom(userId: number): string {
   return `presence:user:${userId}`;
@@ -61,6 +62,7 @@ export class PresenceService {
         this.emitTransition(userId, true);
       }
     } catch (err) {
+      recordRedisDegradation("presence", "write");
       logger.error({ err, userId }, "presence.onConnect failed");
     }
   }
@@ -78,6 +80,7 @@ export class PresenceService {
         this.emitTransition(userId, false);
       }
     } catch (err) {
+      recordRedisDegradation("presence", "write");
       logger.error({ err, userId }, "presence.onDisconnect failed");
     }
   }
@@ -152,6 +155,7 @@ export class PresenceService {
       }
       await pipeline.exec();
     } catch (err) {
+      recordRedisDegradation("presence", "write");
       logger.error({ err }, "Presence sweep failed");
     }
   }

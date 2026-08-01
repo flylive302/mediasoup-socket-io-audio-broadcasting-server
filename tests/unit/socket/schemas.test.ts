@@ -4,6 +4,7 @@ import {
   audioProduceSchema,
   transportCreateSchema,
   joinRoomSchema,
+  profileSyncSchema,
 } from "@src/socket/schemas.js";
 
 describe("Message Schemas", () => {
@@ -140,6 +141,60 @@ describe("Room Schemas", () => {
   it("joinRoomSchema accepts valid roomId", () => {
     const payload = { roomId: "123" };
     const result = joinRoomSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+});
+
+// platform-security 04: the profile-sync payload is the largest legitimate
+// socket message in the app. Its string fields were unbounded in the server's
+// own schema — bounded only because the frontend echoed Laravel-validated
+// values, which a modified client is free not to do.
+describe("Profile sync schema — string bounds (platform-security 04)", () => {
+  const validBadge = { slot_position: 1, badge_id: 7, image_url: "https://cdn.example/b.png" };
+
+  function profile(overrides: Record<string, unknown>) {
+    return { profile: { name: "Ada", signature: "hi", avatar: "https://cdn.example/a.png", ...overrides } };
+  }
+
+  it("accepts a fully populated, max-length profile", () => {
+    const result = profileSyncSchema.safeParse(
+      profile({
+        name: "a".repeat(255),
+        // 255, not 100: Laravel's registration and account-restore paths both
+        // allow 255, so real users can already have one that long.
+        signature: "b".repeat(255),
+        equipped_badges: Array.from({ length: 12 }, (_, i) => ({ ...validBadge, slot_position: i })),
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an over-length name", () => {
+    const result = profileSyncSchema.safeParse(profile({ name: "a".repeat(256) }));
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an over-length signature", () => {
+    const result = profileSyncSchema.safeParse(profile({ signature: "b".repeat(256) }));
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an over-length avatar URL", () => {
+    const result = profileSyncSchema.safeParse(profile({ avatar: "https://cdn.example/" + "c".repeat(2048) }));
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an over-length badge image URL", () => {
+    const result = profileSyncSchema.safeParse(
+      profile({ equipped_badges: [{ ...validBadge, image_url: "d".repeat(2049) }] }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("still accepts a null badge image URL", () => {
+    const result = profileSyncSchema.safeParse(
+      profile({ equipped_badges: [{ ...validBadge, image_url: null }] }),
+    );
     expect(result.success).toBe(true);
   });
 });

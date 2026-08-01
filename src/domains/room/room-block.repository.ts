@@ -10,6 +10,7 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { config } from "@src/config/index.js";
 
 /**
  * The literal wire contract with Laravel's block fanout. MSAB owns both the
@@ -91,8 +92,10 @@ export class RoomBlockRepository {
    * (permanent block), >0 = blocked with that many seconds remaining — so
    * the join GATE gets existence AND remaining-time feedback for the same
    * single-read budget an `EXISTS` check would have cost. A Redis failure
-   * fails OPEN (not blocked) so a mirror outage never locks legitimate
-   * joiners out; Laravel's HTTP gate remains the authoritative check.
+   * applies the configured fail-policy (`config.ROOM_BLOCK_FAIL_OPEN`,
+   * default true / fail-open — see config/index.ts) so a mirror outage never
+   * locks legitimate joiners out UNLESS someone has deliberately opted into
+   * fail-closed; Laravel's HTTP gate remains the authoritative check either way.
    */
   async getStatus(
     roomId: string,
@@ -108,26 +111,35 @@ export class RoomBlockRepository {
       }
       return { blocked: true, permanent: false, remainingSeconds: ttl };
     } catch (err) {
-      // Deliberate fail-open — see the doc block above. Failing closed would
-      // lock every legitimate joiner out of every room during a Redis blip,
-      // which is a far larger outage than the moderation gap it prevents.
-      // But fail-open MUST be loud: without this counter a broken mirror is
-      // indistinguishable from a healthy one, which is precisely how
-      // msab-join-gates 02 went unnoticed. Only failures are counted — the
-      // success path is nearly every join and needs no metric.
+      // Deliberate, configurable fail-policy — see the doc block above.
+      // Default fail-open: failing closed would lock every legitimate joiner
+      // out of every room during a Redis blip, which is a far larger outage
+      // than the moderation gap it prevents. But EITHER setting must be
+      // loud: without this counter a broken mirror is indistinguishable from
+      // a healthy one, which is precisely how msab-join-gates 02 went
+      // unnoticed. Only failures are counted — the success path is nearly
+      // every join and needs no metric.
       //
-      // Both the counter and the log are themselves guarded: anything that
-      // throws on the way out of a fail-OPEN path would silently convert it
-      // into fail-CLOSED and start refusing legitimate joins. Observability
-      // must never be able to take the gate down.
+      // Both the counter and the log are themselves guarded: with no
+      // surrounding try/catch, a throw from either (e.g. a broken logger
+      // transport) would propagate out of getStatus entirely — turning
+      // EITHER configured policy into an unhandled rejection instead of the
+      // chosen outcome. Observability must never be able to take the gate down.
+      // `!== false` (not a plain boolean read) so an omitted/undefined
+      // config value resolves to the safe fail-open default, same reasoning
+      // as jwtValidator's revocation check.
+      const failOpen = config.ROOM_BLOCK_FAIL_OPEN !== false;
       try {
         metrics.roomBlockMirror.inc({ operation: "read", result: "failure" });
         this.logger.warn(
-          { err, roomId, userId },
-          "Room block mirror read failed — failing open (not blocked)",
+          { err, roomId, userId, failOpen },
+          "Room block mirror read failed — applying configured fail-policy",
         );
       } catch {
         // Intentionally empty — see above.
+      }
+      if (!failOpen) {
+        return { blocked: true, permanent: false, remainingSeconds: null };
       }
       return { blocked: false, permanent: false, remainingSeconds: null };
     }

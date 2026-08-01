@@ -233,6 +233,57 @@ export const metrics = {
     labelNames: ["operation", "result"] as const,
     registers: [metricsRegistry],
   }),
+
+  // platform-security 01: a media operation arrived for a room the socket
+  // never joined. Every real client awaits the room:join ack before creating a
+  // transport, and both recovery routes re-join first — so the steady state is
+  // ZERO. A sustained non-zero rate is either a broken client build or someone
+  // driving the produce chain against a room they are not in, and both need to
+  // be visible rather than silently dropped.
+  // Fed by transport:create / transport:connect / audio:produce ONLY.
+  // transport:restartIce carries the same gate but is excluded on purpose: it
+  // races teardown by design, and its benign rejections would bury the signal.
+  mediaRoomGateRejections: new Counter({
+    name: "flylive_media_room_gate_rejections_total",
+    help: "Media operations rejected because the socket has not joined the room",
+    labelNames: ["event"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  // platform-security 05: the in-process global per-socket event budget
+  // (src/infrastructure/socketEventBudget.ts) rejected an event. Steady
+  // state should be ~zero — every real client stays inside the configured
+  // burst/refill (sized off the join-burst and gift-allowance floors). A
+  // sustained non-zero rate means either a client is flooding or the budget
+  // is sized too tight for real traffic, and either needs a human look
+  // rather than showing up as unexplained client-side errors.
+  socketEventBudgetExceeded: new Counter({
+    name: "flylive_socket_event_budget_exceeded_total",
+    help: "Socket events rejected by the global per-socket in-process event budget",
+    registers: [metricsRegistry],
+  }),
+
+  // platform-security 07: a Redis operation failed and the caller continued
+  // with a default/empty value. ~20 such sites across ~15 files degrade this
+  // way — deliberately, so a Redis blip never takes the room down — but most
+  // only LOGGED it, which means a sustained outage was visible to log
+  // archaeology and invisible to alerting. One (the gift buffer's pending
+  // count) was fully silent, returning a sentinel with neither log nor metric.
+  //
+  // Alarm on ANY sustained rate: every increment here is a subsystem quietly
+  // running on fallback data. `subsystem` and `operation` are code-controlled
+  // literals — never interpolate a user-supplied value into either, or this
+  // becomes a cardinality hole.
+  //
+  // Emit ONLY via recordRedisDegradation() in shared/redis-degradation.ts,
+  // which guards the call so instrumentation can never throw into the
+  // degradation path it is instrumenting.
+  redisDegradations: new Counter({
+    name: "flylive_redis_degradation_total",
+    help: "Redis operations that failed and fell back to a default value",
+    labelNames: ["subsystem", "operation"] as const,
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

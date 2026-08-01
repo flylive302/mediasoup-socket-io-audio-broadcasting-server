@@ -17,6 +17,7 @@ import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import type { LaravelClient } from "@src/integrations/laravelClient.js";
 import { config } from "@src/config/index.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 const CURSOR_KEY = "msab:revocation_poll:since";
 const POLL_INTERVAL_MS = 60_000;
@@ -79,6 +80,10 @@ export class RevocationBackfillPoller {
       }
     } catch (err) {
       // Non-blocking — primary SNS path still handles real-time revocation.
+      // NOTE: this single try wraps both the Redis cursor/key writes and the
+      // laravelClient.getRevokedSince() HTTP call — a Laravel-side outage
+      // increments this Redis-degradation counter too (see ticket 07 report).
+      recordRedisDegradation("revocation-backfill", "poll");
       this.logger.warn({ err }, "Revocation backfill poll failed");
     } finally {
       this.running = false;

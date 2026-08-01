@@ -6,6 +6,7 @@
  */
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 // Redis key patterns
 const USER_SOCKETS_KEY = (userId: number) => `user:${userId}:sockets`;
@@ -45,6 +46,7 @@ export class UserSocketRepository {
       this.logger.debug({ userId, socketId }, "Socket registered for user");
       return true;
     } catch (err) {
+      recordRedisDegradation("user-socket", "write");
       this.logger.error({ err, userId, socketId }, "Failed to register socket");
       return false;
     }
@@ -62,6 +64,7 @@ export class UserSocketRepository {
       this.logger.debug({ userId, socketId }, "Socket unregistered for user");
       return true;
     } catch (err) {
+      recordRedisDegradation("user-socket", "delete");
       this.logger.error({ err, userId, socketId }, "Failed to unregister socket");
       return false;
     }
@@ -76,6 +79,7 @@ export class UserSocketRepository {
       const key = USER_SOCKETS_KEY(userId);
       return await this.redis.smembers(key);
     } catch (err) {
+      recordRedisDegradation("user-socket", "read");
       this.logger.error({ err, userId }, "Failed to get socket IDs");
       return [];
     }

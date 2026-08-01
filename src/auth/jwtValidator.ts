@@ -167,10 +167,26 @@ export async function verifyJwt(
 
   const user = parseResult.data;
 
-  // 6. Check revocation (fail-OPEN on Redis error for availability)
+  // 6. Check revocation (fail-policy configurable, default fail-OPEN — see
+  // config.JWT_REVOCATION_FAIL_OPEN below)
   // HMAC signature verification above is the primary auth gate.
-  // Revocation is defense-in-depth — we accept the risk of allowing a
-  // recently-revoked token during a Redis blip rather than blocking ALL users.
+  // Revocation is defense-in-depth — by default we accept the risk of
+  // allowing a recently-revoked token during a Redis blip rather than
+  // blocking ALL users; JWT_REVOCATION_FAIL_OPEN=false flips that trade-off.
+  //
+  // platform-security 06 — residual risk, do NOT "fix" here (separate
+  // decision): this check runs ONLY at socket CONNECT time, as connection
+  // middleware (see src/auth/middleware.ts), with NO periodic revalidation
+  // for the life of the connection. So even on the fail-CLOSED setting, a
+  // token that already passed this check before a revocation landed stays
+  // valid until the socket disconnects — potentially hours, not milliseconds.
+  // And on a Redis blip under the default fail-OPEN setting, a token revoked
+  // DURING the blip slips through this check entirely and is then subject to
+  // that same no-revalidation window. The `auth:user_revoked:*` force-relay
+  // from Laravel (event-router → targeted socket disconnect) is a separate
+  // mitigation for the "already connected, later revoked" case, with its own
+  // independent failure characteristics — it does not change anything about
+  // this function's fail-policy.
   try {
     // Pipeline both revocation lookups in a single Redis round-trip
     const userRevokedKey = `auth:user_revoked:${user.id}`;
@@ -210,12 +226,20 @@ export async function verifyJwt(
       }
     }
   } catch (err) {
+    // `!== false` (not a plain boolean read) so an omitted/undefined config
+    // value — e.g. a test double that doesn't set this field — still resolves
+    // to the safe fail-open default rather than silently flipping fail-closed.
+    const failOpen = config.JWT_REVOCATION_FAIL_OPEN !== false;
     logger.warn(
-      { err, userId: user.id },
-      "JWT: Redis unreachable during revocation check — skipping (fail-open)",
+      { err, userId: user.id, failOpen },
+      "JWT: Redis unreachable during revocation check — applying configured fail-policy",
     );
     metrics.authAttempts.inc({ result: "redis_error" });
-    // Continue — user has a valid HMAC-signed JWT, allow connection
+
+    if (!failOpen) {
+      return null;
+    }
+    // Continue — user has a valid HMAC-signed JWT, allow connection (fail-open)
   }
 
   return user;

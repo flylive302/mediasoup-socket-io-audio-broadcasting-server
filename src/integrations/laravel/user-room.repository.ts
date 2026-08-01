@@ -6,6 +6,7 @@
  */
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 const USER_ROOM_KEY = (userId: number) => `user:${userId}:room`;
 
@@ -31,6 +32,7 @@ export class UserRoomRepository {
       this.logger.debug({ userId, roomId }, "User room set");
       return true;
     } catch (err) {
+      recordRedisDegradation("user-room", "write");
       this.logger.error({ err, userId, roomId }, "Failed to set user room");
       return false;
     }
@@ -47,6 +49,7 @@ export class UserRoomRepository {
       this.logger.debug({ userId }, "User room cleared");
       return true;
     } catch (err) {
+      recordRedisDegradation("user-room", "delete");
       this.logger.error({ err, userId }, "Failed to clear user room");
       return false;
     }
@@ -61,6 +64,7 @@ export class UserRoomRepository {
       const key = USER_ROOM_KEY(userId);
       return await this.redis.get(key);
     } catch (err) {
+      recordRedisDegradation("user-room", "read");
       this.logger.error({ err, userId }, "Failed to get user room");
       return null;
     }

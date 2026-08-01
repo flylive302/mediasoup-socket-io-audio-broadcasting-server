@@ -161,3 +161,41 @@ describe("event-ingest SNS delivery formats", () => {
     expect(routedEvents).toHaveLength(0);
   });
 });
+
+describe("event-ingest SNS SubscriptionConfirmation is deleted (platform-security/02)", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const eventRouter = { route: vi.fn() } as any;
+    app = Fastify({ logger: false });
+    await app.register(createEventIngestRoutes(eventRouter));
+    await app.ready();
+  });
+
+  it("triggers no outbound fetch and is rejected exactly like an unauthenticated request", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    try {
+      const unauthenticated = await app.inject({
+        method: "POST",
+        url: "/api/events",
+        payload: makeEvent(1),
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/events",
+        headers: { "x-amz-sns-message-type": "SubscriptionConfirmation" },
+        payload: { SubscribeURL: "http://attacker.example/confirm" },
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(401);
+      expect(res.statusCode).toBe(unauthenticated.statusCode);
+      expect(res.json()).toEqual(unauthenticated.json());
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});

@@ -9,6 +9,7 @@
 import type { Redis } from "ioredis";
 import type { PendingInvite } from "./seat.types.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 // Redis key patterns
 const INVITE_KEY = (roomId: string, seatIndex: number) =>
@@ -53,6 +54,7 @@ export class SeatInviteRepository {
 
       return true;
     } catch (err) {
+      recordRedisDegradation("seat-invite", "write");
       logger.error(
         { err, roomId, seatIndex, targetUserId },
         "Failed to create invite",
@@ -72,6 +74,7 @@ export class SeatInviteRepository {
       const data = await this.redis.get(INVITE_KEY(roomId, seatIndex));
       return data ? (JSON.parse(data) as PendingInvite) : null;
     } catch (err) {
+      recordRedisDegradation("seat-invite", "read");
       logger.error({ err, roomId, seatIndex }, "Failed to get invite");
       return null;
     }
@@ -96,6 +99,7 @@ export class SeatInviteRepository {
       await pipeline.exec();
       return true;
     } catch (err) {
+      recordRedisDegradation("seat-invite", "delete");
       logger.error({ err, roomId, seatIndex }, "Failed to delete invite");
       return false;
     }
@@ -122,6 +126,7 @@ export class SeatInviteRepository {
 
       return { invite, seatIndex };
     } catch (err) {
+      recordRedisDegradation("seat-invite", "read");
       logger.error(
         { err, roomId, targetUserId },
         "Failed to get invite by user",

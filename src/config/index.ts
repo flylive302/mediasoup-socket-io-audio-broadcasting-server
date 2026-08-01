@@ -12,6 +12,29 @@ const booleanEnvSchema = z
   .default("")
   .transform((v) => v === "true" || v === "1");
 
+/**
+ * Mirror of `booleanEnvSchema` above, but defaults to `true`. Used only for
+ * flags whose SAFE/current-production default is fail-OPEN (unset env → the
+ * unchanged hardcoded behavior), unlike `RATE_LIMIT_FAIL_OPEN` which defaults
+ * fail-closed. See JWT_REVOCATION_FAIL_OPEN / ROOM_BLOCK_FAIL_OPEN below.
+ *
+ * NOT a copy-paste of `booleanEnvSchema`'s transform: `.default()` only
+ * applies when the env var is unset (`undefined`); an explicit but EMPTY
+ * value (`FOO=` in a templated cloud-init file, an unresolved Terraform var,
+ * a blank line in a copied `.env`) is still the valid enum member `""`, which
+ * bypasses `.default()` entirely. `booleanEnvSchema` treats `v === "true" ||
+ * v === "1"` as true and everything else — including `""` — as false, which
+ * is safe there because false already IS that helper's default. Here it
+ * would silently invert `""` to fail-CLOSED, exactly the "no operational
+ * change on deploy" guarantee this ticket exists to protect. So this
+ * transform instead treats only an explicit "false"/"0" as false; unset,
+ * `""`, "true", and "1" all resolve to the safe fail-open default.
+ */
+const booleanEnvSchemaDefaultTrue = z
+  .enum(["true", "false", "1", "0", ""])
+  .default("true")
+  .transform((v) => v !== "false" && v !== "0");
+
 const configSchema = z.object({
   // Server
   NODE_ENV: z
@@ -53,6 +76,24 @@ const configSchema = z.object({
   // poller — a revocation only needs to outlive the longest-lived still-valid token.
   JWT_MAX_AGE_SECONDS: z.coerce.number().default(86_400),
 
+  // platform-security 06: explicit, configurable fail-policy for the two
+  // Redis-backed authorization gates that have ALWAYS hardcoded fail-OPEN in
+  // production (jwtValidator's revocation check, and the room-block mirror's
+  // GATE read) — accepting a possibly-revoked token / a possibly-blocked
+  // joiner during a Redis outage, rather than locking out every user. That is
+  // very likely correct (failing closed turns a Redis blip into a total
+  // outage), but it used to be baked into the code with no way to flip it
+  // without a release. Both default to `true` (fail-open) so shipping this
+  // changes NOTHING operationally — same pattern RATE_LIMIT_FAIL_OPEN already
+  // established (its own comment cross-references this fail-open as the
+  // precedent), just with the opposite default polarity because these two
+  // gates' current hardcoded behavior IS fail-open, not fail-closed. A Redis
+  // "blip" here is seconds, not milliseconds — offline queueing is on by
+  // default and ioredis's command timeout is 5s, so each gate call can hang
+  // that long before the catch block (and this policy) even runs.
+  JWT_REVOCATION_FAIL_OPEN: booleanEnvSchemaDefaultTrue,
+  ROOM_BLOCK_FAIL_OPEN: booleanEnvSchemaDefaultTrue,
+
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
   LARAVEL_INTERNAL_KEY: z.string().min(32), // For server-to-server auth
@@ -92,6 +133,35 @@ const configSchema = z.object({
   // Redis blip). Set true to fail-open (allow), matching jwtValidator's
   // fail-open revocation lookup — a conscious trade-off, not a silent change.
   RATE_LIMIT_FAIL_OPEN: booleanEnvSchema,
+
+  // platform-security 05: global per-socket event budget — an in-process
+  // token bucket applied ahead of the five RATE_LIMIT_* / GIFT_RATE_* limits
+  // above (unchanged), so a handler with no limit of its own still has a
+  // ceiling. Deliberately NOT Redis-backed — see
+  // src/infrastructure/socketEventBudget.ts for why, and for the arithmetic
+  // behind these two defaults. CAPACITY is the burst size (clears the
+  // ~65-68 event join burst). REFILL_PER_SECOND is the sustained rate —
+  // sized off the SUM of every existing per-handler ceiling that can
+  // legally run at once on one socket (gift send + prepare + chat + seat
+  // reaction + the periodic audioPlayer:stateUpdate ≈ 13.7/s), not just the
+  // single loosest one (gift, 330/60s ≈ 5.5/s) the ticket cites as its
+  // floor — sizing to the single figure alone left under 1.3x headroom on
+  // that realistic combined ceiling. No fail-open/closed knob: in-process
+  // state has no external dependency to fail.
+  SOCKET_EVENT_BUDGET_CAPACITY: z.coerce.number().int().positive().default(100),
+  SOCKET_EVENT_BUDGET_REFILL_PER_SECOND: z.coerce.number().positive().default(20),
+
+  // platform-security 04: maximum inbound socket message size. Socket.IO's
+  // own default is 1 MB — ~250x the largest thing anything legitimate sends,
+  // and nobody chose it. 16 KB is the ticket's derived FLOOR (profile-sync,
+  // the largest real payload, is ~3-4 KB), so `.min()` refuses to start on a
+  // value below it rather than letting a tuning mistake sever live clients:
+  // an over-limit message closes the CONNECTION, it is not merely dropped.
+  SOCKET_MAX_HTTP_BUFFER_BYTES: z.coerce
+    .number()
+    .int()
+    .min(16_384)
+    .default(16_384),
 
   // Mediasoup Workers
   MEDIASOUP_NUM_WORKERS: z.coerce.number().optional(), // If not set, uses os.cpus().length

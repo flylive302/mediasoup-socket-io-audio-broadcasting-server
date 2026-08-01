@@ -4,9 +4,12 @@
  *
  * Replaces Redis pub/sub for Laravel → MSAB event delivery.
  * Handles:
- *  - SNS SubscriptionConfirmation (auto-confirms the subscription)
- *  - SNS Notification with raw message delivery (event JSON)
+ *  - SNS Notification, raw or enveloped message delivery (event JSON)
  *  - Direct POST from Laravel (same JSON format)
+ *
+ * NOTE: SNS SubscriptionConfirmation auto-confirmation was deleted (platform-security/02,
+ * 2026-08-01) — it fetched an attacker-supplied URL before authentication ran. See the
+ * comment above the auth check below for what re-adding it safely would require.
  */
 import type { FastifyPluginAsync } from "fastify";
 import type { EventRouter } from "@src/integrations/laravel/event-router.js";
@@ -58,11 +61,10 @@ export const createEventIngestRoutes = (
      * POST /api/events
      *
      * Accepts events from:
-     * 1. AWS SNS (with SubscriptionConfirmation handling)
+     * 1. AWS SNS Notification delivery (raw or enveloped)
      * 2. Direct HTTP POST from Laravel
      */
     fastify.post("/api/events", async (request, reply) => {
-      // --- SNS Subscription Confirmation ---
       const snsMessageType = request.headers["x-amz-sns-message-type"];
 
       fastify.log.info(
@@ -73,31 +75,28 @@ export const createEventIngestRoutes = (
         "Event ingest: request received",
       );
 
-      if (snsMessageType === "SubscriptionConfirmation") {
-        const body = request.body as { SubscribeURL?: string };
-        if (body.SubscribeURL) {
-          // Auto-confirm SNS subscription
-          try {
-            await fetch(body.SubscribeURL);
-            fastify.log.info("SNS subscription confirmed");
-            return reply
-              .code(200)
-              .send({ status: "ok", message: "Subscription confirmed" });
-          } catch (err) {
-            fastify.log.error({ err }, "Failed to confirm SNS subscription");
-            return reply
-              .code(500)
-              .send({ status: "error", message: "Confirmation failed" });
-          }
-        }
-        return reply
-          .code(400)
-          .send({ status: "error", message: "Missing SubscribeURL" });
-      }
-
       // --- Authentication ---
       // Direct POST from Laravel sends X-Internal-Key header.
       // SNS sends the key as ?key= query parameter (SNS cannot send custom headers).
+      //
+      // SECURITY (platform-security/02, 2026-08-01): this route used to auto-confirm AWS SNS
+      // subscriptions here — whenever `x-amz-sns-message-type: SubscriptionConfirmation` was
+      // present, it fetched the request body's `SubscribeURL` BEFORE the auth check below ran.
+      // The message-type header is attacker-settable and was never verified against anything,
+      // so any unauthenticated caller on the internet could make this server fetch an
+      // arbitrary URL (blind SSRF). The branch has been deleted outright — not reordered —
+      // because Laravel never used SNS (it delivers events via direct authenticated POST) and
+      // the AWS account the topic would have lived in is dead. See
+      // docs/issues/platform-security/02-delete-the-sns-confirmation-branch.md for the full
+      // writeup.
+      //
+      // If SNS delivery is ever re-adopted, the message-type header must still never be
+      // trusted alone. Re-adding auto-confirmation safely requires, at minimum:
+      //   1. SNS message signature verification (`SigningCertURL` + `Signature`) before
+      //      trusting anything in the body.
+      //   2. A host allowlist for `SubscribeURL` / `SigningCertURL` (must be a real AWS SNS
+      //      endpoint for the expected region — not attacker-controlled).
+      //   3. A bounded fetch with a timeout — never an unbounded `fetch()`.
       const internalKey =
         (request.headers["x-internal-key"] as string | undefined) ??
         (request.query as Record<string, string>)?.key;

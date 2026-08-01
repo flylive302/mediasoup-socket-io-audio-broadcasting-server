@@ -34,10 +34,12 @@ type JoinPayload = z.input<typeof joinRoomSchema>;
  * — non-blocked joins pay exactly this one extra read; blocked joins are
  * rejected before any cluster/seat work runs, carrying remaining-time
  * feedback (the same read that proves existence also yields the TTL, so
- * this stays a single round trip). A Redis failure fails OPEN
- * (RoomBlockRepository.getStatus already degrades to "not blocked") so a
- * mirror outage never locks a legitimate joiner out — Laravel's HTTP gate
- * remains authoritative.
+ * this stays a single round trip). A Redis failure applies the configured
+ * fail-policy inside `RoomBlockRepository.getStatus` — `ROOM_BLOCK_FAIL_OPEN`,
+ * default true, which degrades to "not blocked" exactly as before, so a mirror
+ * outage never locks a legitimate joiner out (platform-security 06 made this a
+ * deploy-time choice; it was hardcoded). Laravel's HTTP gate remains
+ * authoritative under either setting.
  */
 async function getJoinBlockStatus(
   roomId: string,

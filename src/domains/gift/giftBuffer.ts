@@ -8,6 +8,7 @@ import type {
 } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -107,7 +108,9 @@ export class GiftBuffer {
   async pendingCount(): Promise<number> {
     try {
       return await this.redis.llen(this.QUEUE_KEY);
-    } catch {
+    } catch (err) {
+      recordRedisDegradation("gift-buffer", "pending-count");
+      this.logger.warn({ err }, "Failed to get gift buffer pending count");
       return -1;
     }
   }

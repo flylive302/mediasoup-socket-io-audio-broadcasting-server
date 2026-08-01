@@ -10,7 +10,12 @@ vi.mock("@src/infrastructure/logger.js", () => ({
   },
 }));
 
+vi.mock("@src/infrastructure/metrics.js", () => ({
+  metrics: { redisDegradations: { inc: vi.fn() } },
+}));
+
 import { UserRoomRepository } from "@src/integrations/laravel/user-room.repository.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 // Helper: create a mock Redis
 function createMockRedis() {
@@ -114,5 +119,61 @@ describe("UserRoomRepository (RL-015)", () => {
       expect(result).toBeNull();
       expect(logger.error).toHaveBeenCalled();
     });
+  });
+});
+
+// ─── Redis degradation instrumentation (platform-security 07) ───────
+//
+// Third spot-check area (with the gift buffer and the seat repository). Same
+// contract everywhere: the fallback value is untouched, only the silence is
+// fixed. `getUserRoom` -> null carries the same miss-vs-error ambiguity as the
+// seat reads — recorded as a finding, deliberately not restructured here.
+
+describe("UserRoomRepository — Redis degradation instrumentation", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let redis: any;
+  let repo: UserRoomRepository;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = createMockRedis();
+    repo = new UserRoomRepository(redis, createMockLogger());
+  });
+
+  it("labels a failed write as user-room/write and still returns false", async () => {
+    redis.setex.mockRejectedValue(new Error("READONLY"));
+
+    await expect(repo.setUserRoom(1, "room-1")).resolves.toBe(false);
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "user-room",
+      operation: "write",
+    });
+  });
+
+  it("labels a failed delete as user-room/delete and still returns false", async () => {
+    redis.del.mockRejectedValue(new Error("READONLY"));
+
+    await expect(repo.clearUserRoom(1)).resolves.toBe(false);
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "user-room",
+      operation: "delete",
+    });
+  });
+
+  it("labels a failed read as user-room/read and still returns null", async () => {
+    redis.get.mockRejectedValue(new Error("READONLY"));
+
+    await expect(repo.getUserRoom(1)).resolves.toBeNull();
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "user-room",
+      operation: "read",
+    });
+  });
+
+  it("emits nothing on the healthy path", async () => {
+    redis.get.mockResolvedValue("room-9");
+
+    await expect(repo.getUserRoom(1)).resolves.toBe("room-9");
+    expect(metrics.redisDegradations.inc).not.toHaveBeenCalled();
   });
 });

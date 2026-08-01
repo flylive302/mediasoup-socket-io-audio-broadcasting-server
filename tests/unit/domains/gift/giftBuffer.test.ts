@@ -26,6 +26,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftDeadLetterSize: { set: vi.fn() },
     giftBufferWaitSeconds: { observe: vi.fn() },
     giftBatchPostSeconds: { observe: vi.fn() },
+    redisDegradations: { inc: vi.fn() },
   },
 }));
 
@@ -497,5 +498,67 @@ describe("GiftBuffer", () => {
     // The final-flush call inside stop() must have actually called eval again.
     // (First call = in-flight, second = final flush during stop.)
     expect(mockRedis.eval).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── Redis degradation instrumentation (platform-security 07) ───────
+//
+// pendingCount() was the epic's one FULLY silent degradation path: it caught
+// a Redis error, emitted neither log nor metric, and returned -1. The sentinel
+// is load-bearing (callers distinguish "unknown" from "zero"), so these tests
+// pin that it is unchanged — the ticket adds observability, never behaviour.
+
+describe("GiftBuffer.pendingCount — Redis degradation", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockRedis: any;
+  let mockLogger: Logger;
+  let buffer: GiftBuffer;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRedis = createMockRedis();
+    mockLogger = createMockLogger();
+    buffer = new GiftBuffer(
+      mockRedis as Redis,
+      createMockLaravelClient(),
+      createMockIo(),
+      mockLogger,
+    );
+  });
+
+  it("returns the real queue length when Redis is healthy", async () => {
+    mockRedis.llen.mockResolvedValue(42);
+
+    await expect(buffer.pendingCount()).resolves.toBe(42);
+    expect(metrics.redisDegradations.inc).not.toHaveBeenCalled();
+  });
+
+  it("still returns the -1 sentinel when Redis fails — behaviour unchanged", async () => {
+    mockRedis.llen.mockRejectedValue(new Error("READONLY"));
+
+    await expect(buffer.pendingCount()).resolves.toBe(-1);
+  });
+
+  it("now records the degradation and logs it, instead of failing silently", async () => {
+    mockRedis.llen.mockRejectedValue(new Error("READONLY"));
+
+    await buffer.pendingCount();
+
+    expect(metrics.redisDegradations.inc).toHaveBeenCalledWith({
+      subsystem: "gift-buffer",
+      operation: "pending-count",
+    });
+    expect(mockLogger.warn).toHaveBeenCalled();
+  });
+
+  it("does not let a throwing metrics backend break the sentinel", async () => {
+    mockRedis.llen.mockRejectedValue(new Error("READONLY"));
+    vi.mocked(metrics.redisDegradations.inc).mockImplementationOnce(() => {
+      throw new Error("prom-client exploded");
+    });
+
+    // The helper swallows it — the caller still gets its fallback rather than
+    // an unhandled rejection.
+    await expect(buffer.pendingCount()).resolves.toBe(-1);
   });
 });

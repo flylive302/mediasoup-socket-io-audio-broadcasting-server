@@ -307,12 +307,26 @@ export const getUserRoomSchema = z.object({
  * directly through the socket for immediate room propagation.
  * Visual/identity fields plus XP (updated via balance.updated) are accepted;
  * private balance fields (coins, diamonds) are excluded.
+ *
+ * platform-security 04: the string fields carry explicit maximums. They were
+ * bounded only because the frontend echoes Laravel-validated values — a
+ * modified client emitting directly was unconstrained by the server's own
+ * schema (the same threat model as ticket 01).
+ *
+ * ⚠️ `signature` is capped at 255, NOT the 100 used by
+ * `UpdateUserProfileRequest`. Laravel's own bounds are inconsistent:
+ * registration and account-restore both allow 255. Capping at 100 here would
+ * silently reject profile syncs for any existing user who set a longer
+ * signature through those paths. 255 is the loosest real bound, so it is the
+ * safe one for a gate that only rejects.
  */
 export const profileSyncSchema = z.object({
   profile: z.object({
-    name: z.string().optional(),
-    signature: z.string().optional(),
-    avatar: z.string().optional(),
+    name: z.string().max(255).optional(),
+    signature: z.string().max(255).optional(),
+    // CDN URL — the conventional 2048-char URL ceiling, well under the
+    // per-message buffer limit and far above any URL we actually emit.
+    avatar: z.string().max(2048).optional(),
     frame_id: z.number().nullable().optional(),
     chat_bubble_id: z.number().nullable().optional(),
     entry_animation_id: z.number().nullable().optional(),
@@ -326,7 +340,7 @@ export const profileSyncSchema = z.object({
     equipped_badges: z.array(z.object({
       slot_position: z.number().int(),
       badge_id: z.number().int(),
-      image_url: z.string().nullable(),
+      image_url: z.string().max(2048).nullable(),
     })).optional(),
   }),
 });

@@ -22,10 +22,46 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom, broadcastToRoom } from "@src/shared/room-emit.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { Errors } from "@src/shared/errors.js";
+import { metrics } from "@src/infrastructure/metrics.js";
+import { seenRecently } from "@src/infrastructure/sentry/dedupe.js";
 import { getIceServers } from "@src/config/iceServers.js";
 import { reactError } from "@src/shared/react-error.js";
 import type { Socket } from "socket.io";
 import type { ClientData } from "@src/client/clientManager.js";
+
+/**
+ * GATE (platform-security 01) — media operations are only valid for a socket
+ * that has actually joined the room.
+ *
+ * Without this, any authenticated account could run `transport:create →
+ * transport:connect → audio:produce` against an arbitrary `roomId` lifted from
+ * the payload: the producer is registered on that room's cluster and
+ * `audio:newProducer` is broadcast to it, so listeners hear a speaker who is
+ * not in their participant list and whom no moderator can identify or remove.
+ * `transport:restartIce` below has always carried this check — the same
+ * `socket.rooms` predicate used by the chat, gift and seat-reaction domains.
+ * These three handlers simply never got it. Same predicate, same EXISTING
+ * `NOT_IN_ROOM` error, so clients need no new handling.
+ *
+ * Returns true when the caller may proceed. A rejection is counted on every
+ * occurrence — the expected steady state is zero, so the rate itself is the
+ * alarm — but the identifying warn is deduped per socket per minute. The
+ * rejection path is client-driven and unbounded (the same reason
+ * `handler.utils.ts` dedupes its GATE captures), and an epic about flood
+ * ceilings must not ship a floodable log write.
+ */
+function isRoomMember(socket: Socket, roomId: string, event: string): boolean {
+  if (socket.rooms.has(roomId)) return true;
+
+  metrics.mediaRoomGateRejections.inc({ event });
+  if (!seenRecently(`not-in-room|${socket.id}`)) {
+    logger.warn(
+      { event, roomId, userId: socket.data.user?.id, socketId: socket.id },
+      "Media operation rejected — socket has not joined this room",
+    );
+  }
+  return false;
+}
 
 // 1. Create Transport
 const transportCreateHandler = createHandler(
@@ -33,6 +69,10 @@ const transportCreateHandler = createHandler(
   transportCreateSchema,
   async (payload, socket, context) => {
     const { type, roomId } = payload;
+
+    if (!isRoomMember(socket, roomId, "transport:create")) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
 
     // SEC-MED-001: Limit transports per client (1 producer + 1 consumer max)
     const client = context.clientManager.getClient(socket.id);
@@ -69,8 +109,13 @@ const transportCreateHandler = createHandler(
 const transportConnectHandler = createHandler(
   "transport:connect",
   transportConnectSchema,
-  async (payload, _socket, context) => {
+  async (payload, socket, context) => {
     const { roomId, transportId, dtlsParameters } = payload;
+
+    if (!isRoomMember(socket, roomId, "transport:connect")) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
     const cluster = context.roomManager.getRoom(roomId);
     const transport = cluster?.getTransport(transportId);
 
@@ -109,6 +154,9 @@ const transportRestartIceHandler = createHandler(
   async (payload, socket, context) => {
     const { roomId, transportId } = payload;
 
+    // Deliberately NOT routed through isRoomMember: restartIce races teardown
+    // by design (see below), so a benign disconnect-in-flight rejection here
+    // would pollute the abuse counter the three media gates feed.
     if (!socket.rooms.has(roomId)) {
       return { success: false, error: Errors.NOT_IN_ROOM };
     }
@@ -155,6 +203,11 @@ const audioProduceHandler = createHandler(
   audioProduceSchema,
   async (payload, socket, context) => {
     const { roomId, transportId, kind, rtpParameters } = payload;
+
+    if (!isRoomMember(socket, roomId, "audio:produce")) {
+      return { success: false, error: Errors.NOT_IN_ROOM };
+    }
+
     // dj-talk-over/01 compat: TS infers the schema's Input shape here (Zod's
     // `.default()` widens Input to optional) even though `.default()`
     // guarantees the parsed value is always populated at runtime — fall back

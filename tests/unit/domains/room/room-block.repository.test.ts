@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { BLOCK_KEY, RoomBlockRepository } from "@src/domains/room/room-block.repository.js";
+// No config mock in this file — the real config singleton (validated via
+// tests/setup.ts's dummy env) is used, and ROOM_BLOCK_FAIL_OPEN tests below
+// mutate/restore it directly, same technique as rateLimiter.test.ts.
+import { config } from "@src/config/index.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 // Helper: create a mock Redis covering only what RoomBlockRepository touches.
 function createMockRedis() {
@@ -149,6 +154,69 @@ describe("RoomBlockRepository", () => {
         blocked: false,
         permanent: false,
         remainingSeconds: null,
+      });
+    });
+
+    // platform-security 06: configurable fail-policy on getStatus's own
+    // Redis error path — closes the gap of nothing asserting the log/metric
+    // fire, and nothing covering the fail-CLOSED branch at all.
+    describe("ROOM_BLOCK_FAIL_OPEN", () => {
+      it("fails open (blocked=false) when explicitly true, firing the log + metric", async () => {
+        const original = config.ROOM_BLOCK_FAIL_OPEN;
+        (config as { ROOM_BLOCK_FAIL_OPEN: boolean }).ROOM_BLOCK_FAIL_OPEN = true;
+        const incSpy = vi.spyOn(metrics.roomBlockMirror, "inc");
+        try {
+          redis.ttl.mockRejectedValue(new Error("Redis down"));
+
+          const status = await repo.getStatus("7", 42);
+
+          expect(status).toEqual({
+            blocked: false,
+            permanent: false,
+            remainingSeconds: null,
+          });
+          expect(incSpy).toHaveBeenCalledWith({
+            operation: "read",
+            result: "failure",
+          });
+          expect(logger.warn).toHaveBeenCalledWith(
+            expect.objectContaining({ roomId: "7", userId: 42, failOpen: true }),
+            expect.any(String),
+          );
+        } finally {
+          incSpy.mockRestore();
+          (config as { ROOM_BLOCK_FAIL_OPEN: boolean }).ROOM_BLOCK_FAIL_OPEN =
+            original;
+        }
+      });
+
+      it("fails closed (blocked=true) when explicitly false, firing the log + metric", async () => {
+        const original = config.ROOM_BLOCK_FAIL_OPEN;
+        (config as { ROOM_BLOCK_FAIL_OPEN: boolean }).ROOM_BLOCK_FAIL_OPEN = false;
+        const incSpy = vi.spyOn(metrics.roomBlockMirror, "inc");
+        try {
+          redis.ttl.mockRejectedValue(new Error("Redis down"));
+
+          const status = await repo.getStatus("7", 42);
+
+          expect(status).toEqual({
+            blocked: true,
+            permanent: false,
+            remainingSeconds: null,
+          });
+          expect(incSpy).toHaveBeenCalledWith({
+            operation: "read",
+            result: "failure",
+          });
+          expect(logger.warn).toHaveBeenCalledWith(
+            expect.objectContaining({ roomId: "7", userId: 42, failOpen: false }),
+            expect.any(String),
+          );
+        } finally {
+          incSpy.mockRestore();
+          (config as { ROOM_BLOCK_FAIL_OPEN: boolean }).ROOM_BLOCK_FAIL_OPEN =
+            original;
+        }
       });
     });
   });

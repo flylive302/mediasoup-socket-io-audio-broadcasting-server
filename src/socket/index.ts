@@ -12,6 +12,7 @@ import { ClientManager } from "@src/client/clientManager.js";
 import { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
+import { installSocketEventBudget } from "@src/infrastructure/socketEventBudget.js";
 import type { AppContext } from "@src/context.js";
 
 // Domain Registry - registers all domain handlers
@@ -185,6 +186,11 @@ export async function initializeSocket(
 
     logger.info({ socketId: socket.id, userId }, "Socket connected");
 
+    // platform-security 05: global per-socket event budget, ahead of every
+    // socket.on(eventName, ...) listener (including the five existing
+    // per-handler Redis rate limits, which are unaffected).
+    installSocketEventBudget(socket);
+
     // Register Client in ClientManager (local instance tracking)
     clientManager.addClient(socket);
 
@@ -346,6 +352,7 @@ async function handleDisconnect(
   // F-1: pair with the .inc() in the connection handler
   metrics.socketConnections.dec();
 }
+
 
 // ─────────────────────────────────────────────────────────────────
 // RL-013 FIX: Register socket with exponential backoff retry

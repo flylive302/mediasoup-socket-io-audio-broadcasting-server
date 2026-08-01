@@ -18,6 +18,7 @@ import type { PendingInvite } from "./seat.types.js";
 import { Errors } from "@src/shared/errors.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { reactError } from "@src/shared/react-error.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import { registerSeatCommands, type RedisWithSeatCommands } from "./seat.lua-scripts.js";
 import { SeatInviteRepository } from "./seat-invite.repository.js";
 
@@ -67,6 +68,7 @@ export class SeatRepository {
 
       return parsed;
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, userId, seatIndex }, "Failed to take seat");
       return { success: false, error: Errors.INTERNAL_ERROR };
     }
@@ -91,6 +93,7 @@ export class SeatRepository {
 
       return parsed;
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, userId }, "Failed to leave seat");
       return { success: false, error: Errors.INTERNAL_ERROR };
     }
@@ -124,6 +127,7 @@ export class SeatRepository {
 
       return parsed;
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, userId, seatIndex }, "Failed to assign seat");
       return { success: false, error: Errors.INTERNAL_ERROR };
     }
@@ -153,6 +157,7 @@ export class SeatRepository {
       );
       return result === 1;
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       reactError(err, { roomId, seatIndex, muted }, "Failed to set mute", { level: "error", logger });
       return false;
     }
@@ -190,6 +195,7 @@ export class SeatRepository {
         kicked: parsed.kicked === false ? null : (parsed.kicked ?? null),
       };
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, seatIndex }, "Failed to lock seat");
       return { success: false, error: Errors.INTERNAL_ERROR };
     }
@@ -216,6 +222,7 @@ export class SeatRepository {
 
       return parsed;
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, seatIndex }, "Failed to unlock seat");
       return { success: false, error: Errors.INTERNAL_ERROR };
     }
@@ -244,6 +251,7 @@ export class SeatRepository {
       };
       return parsed.success ? (parsed.reservedSeatIndices ?? []) : [];
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, userId }, "Failed to reserve seat");
       return [];
     }
@@ -275,6 +283,7 @@ export class SeatRepository {
         isMuted?: boolean;
       };
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, userId }, "Failed to reclaim seat");
       return { reclaimed: false };
     }
@@ -304,6 +313,7 @@ export class SeatRepository {
         userId,
       }));
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       reactError(err, { roomId }, "Failed to sweep expired seat reservations", { level: "error", logger });
       return [];
     }
@@ -335,6 +345,7 @@ export class SeatRepository {
         userId,
       }));
     } catch (err) {
+      recordRedisDegradation("seat", "write");
       logger.error({ err, roomId, newSeatCount }, "Failed to evict shrunk seats");
       return [];
     }
@@ -377,6 +388,7 @@ export class SeatRepository {
 
       return seats;
     } catch (err) {
+      recordRedisDegradation("seat", "read");
       logger.error({ err, roomId }, "Failed to get seats");
       return [];
     }
@@ -393,6 +405,7 @@ export class SeatRepository {
       const data = JSON.parse(seatStr) as SeatAssignment;
       return data.userId ?? null;
     } catch (err) {
+      recordRedisDegradation("seat", "read");
       logger.error({ err, roomId, seatIndex }, "Failed to check seat occupant");
       return null;
     }
@@ -407,6 +420,7 @@ export class SeatRepository {
       const seatIndexStr = await this.redis.get(USER_SEAT_KEY(roomId, userId));
       return seatIndexStr ? parseInt(seatIndexStr, 10) : null;
     } catch (err) {
+      recordRedisDegradation("seat", "read");
       logger.error({ err, roomId, userId }, "Failed to get user seat");
       return null;
     }
@@ -484,6 +498,7 @@ export class SeatRepository {
 
       await pipeline.exec();
     } catch (err) {
+      recordRedisDegradation("seat", "delete");
       logger.error({ err, roomId }, "Failed to clear room seats");
     }
   }

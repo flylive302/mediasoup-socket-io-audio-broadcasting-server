@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createHmac } from "node:crypto";
 import type { Redis } from "ioredis";
 
@@ -29,6 +29,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
 }));
 
 import { verifyJwt } from "@src/auth/jwtValidator.js";
+import { config } from "@src/config/index.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -200,6 +201,55 @@ describe("JwtValidator", () => {
     expect(user).not.toBeNull();
     expect(user!.id).toBe(42);
     expect(mockAuthAttempts.inc).toHaveBeenCalledWith({ result: "redis_error" });
+  });
+
+  // platform-security 06: configurable fail-policy. The mocked config above
+  // has no JWT_REVOCATION_FAIL_OPEN field at all — the test above already
+  // pins that an undefined config value still resolves to fail-open (today's
+  // hardcoded behavior). These pin the explicit-true and explicit-false
+  // settings, mutating the mocked config object directly (same technique as
+  // rateLimiter.test.ts) and restoring it afterwards.
+  describe("JWT_REVOCATION_FAIL_OPEN", () => {
+    afterEach(() => {
+      delete (config as { JWT_REVOCATION_FAIL_OPEN?: boolean })
+        .JWT_REVOCATION_FAIL_OPEN;
+    });
+
+    it("returns user (fail-open) on Redis error when explicitly true", async () => {
+      (config as { JWT_REVOCATION_FAIL_OPEN?: boolean }).JWT_REVOCATION_FAIL_OPEN = true;
+
+      const pipeline = createPipelineMock([]);
+      pipeline.exec.mockRejectedValue(new Error("Redis connection lost"));
+      mockRedis.pipeline.mockReturnValue(pipeline);
+
+      const payload = validUserPayload();
+      const token = createJwt(payload);
+
+      const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
+
+      expect(user).not.toBeNull();
+      expect(user!.id).toBe(42);
+      expect(mockAuthAttempts.inc).toHaveBeenCalledWith({ result: "redis_error" });
+    });
+
+    it("returns null (fail-closed) on Redis error when explicitly false", async () => {
+      (config as { JWT_REVOCATION_FAIL_OPEN?: boolean }).JWT_REVOCATION_FAIL_OPEN = false;
+
+      const pipeline = createPipelineMock([]);
+      pipeline.exec.mockRejectedValue(new Error("Redis connection lost"));
+      mockRedis.pipeline.mockReturnValue(pipeline);
+
+      const payload = validUserPayload();
+      const token = createJwt(payload);
+
+      const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
+
+      // Still an existing user with a valid HMAC signature, but the
+      // configured fail-policy now rejects on the Redis error.
+      expect(user).toBeNull();
+      // The log + metric must still fire under fail-closed too.
+      expect(mockAuthAttempts.inc).toHaveBeenCalledWith({ result: "redis_error" });
+    });
   });
 
   it("uses iat + max age fallback when no exp claim", async () => {

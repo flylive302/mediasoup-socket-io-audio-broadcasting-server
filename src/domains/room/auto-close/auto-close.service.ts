@@ -7,6 +7,7 @@ import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import type { PresenceTracker } from "../presence-tracker.js";
 import { AutoCloseEvaluator } from "./auto-close-evaluator.js";
+import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 
 const ACTIVITY_KEY = (roomId: string) => `room:${roomId}:activity`;
 const STATE_KEY_PREFIX = "room:state:";
@@ -44,6 +45,7 @@ export class AutoCloseService {
         config.ROOM_INACTIVITY_TIMEOUT_MS,
       );
     } catch (err) {
+      recordRedisDegradation("auto-close", "write");
       logger.error({ err, roomId }, "Failed to record room activity");
     }
   }
@@ -92,6 +94,7 @@ export class AutoCloseService {
         if (shouldClose) inactive.push(roomId);
       } catch (err) {
         // Fail safe: a presence-check error must never close a live Room.
+        recordRedisDegradation("auto-close", "reconcile");
         logger.error({ err, roomId }, "Presence confirm failed; keeping room");
       }
     }
@@ -148,6 +151,7 @@ export class AutoCloseService {
 
       return candidates;
     } catch (err) {
+      recordRedisDegradation("auto-close", "read");
       logger.error({ err }, "Failed to get inactive rooms");
       return [];
     }
