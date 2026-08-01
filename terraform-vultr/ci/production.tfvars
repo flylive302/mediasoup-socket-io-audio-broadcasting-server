@@ -22,6 +22,20 @@ laravel_api_url = "https://app.flyliveapp.com"
 # bom-only fleet per 2026-07-08 right-sizing: Vultr's $100/mo cap counts ALL
 # services (Valkey $30 + LB $10 + instances). 2× vhf-2c-4gb ($24 each) = $88
 # is the only HA config that fits. Bump plan/regions when the limit lifts.
+#
+# 🔴 STALE SINCE 2026-07-31 — reality is ONE box, not two. `bom-01` was destroyed
+# that day; only `flylive-audio-production-bom-02` survives. This file was not
+# updated because Terraform cannot run against this fleet at all (Vultr removed
+# the VPC 2.0 API — every `vultr_instance` read 404s), so editing it changes
+# nothing and would only add risk:
+#
+# ⛔ DO NOT "correct" this to `bom = 1`. Terraform's `count` destroys from the
+#    TAIL, so `bom = 1` targets main[1] = bom-02 — the box that is still alive.
+#    It would destroy production and keep the box that no longer exists.
+#
+# Whoever gets Terraform working again (AWS cutover) must reconcile state with
+# reality FIRST, before any plan/apply. See docs/reference/hard-won-gotchas.md
+# § "Vultr fleet / Terraform deploy".
 fleet_regions = {
   bom = 2
 }
