@@ -81,8 +81,14 @@ module "compute" {
   image_tag       = var.image_tag
   ghcr_pull_token = var.ghcr_pull_token
 
-  laravel_internal_key    = var.laravel_internal_key
-  jwt_secret              = var.jwt_secret
+  laravel_internal_key = var.laravel_internal_key
+  jwt_secret           = var.jwt_secret
+
+  # Rotation overlap — empty outside a rotation, so this is inert by default.
+  laravel_internal_key_previous = var.laravel_internal_key_previous
+  jwt_secret_previous           = var.jwt_secret_previous
+  internal_api_key_previous     = var.internal_api_key_previous
+
   session_secret          = var.session_secret
   laravel_api_url         = var.laravel_api_url
   cors_origins            = var.cors_origins

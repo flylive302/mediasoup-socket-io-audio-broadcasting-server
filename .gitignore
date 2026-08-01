@@ -8,7 +8,23 @@ coverage
 *.log
 # SSH known_hosts files for deployment scripts
 scripts/deploy/.known_hosts
-terraform/tfplan
+
+# Terraform plan and state artifacts, any terraform directory, any depth.
+# Plan files are ZIP archives that can embed cleartext secrets from state - never commit.
+tfplan*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+# tfvars commonly hold secrets, so they are ignored by default.
+# The CI var files are the deliberate exception - they carry only non-secret shape
+# (regions, plans, domains) and take every credential from CI secrets at apply time.
+# terraform-vultr/.gitignore already negates them for that directory; this root-level
+# negation keeps the exception true if a tfvars file is ever added outside it.
+# NOTE: never put a trailing "# comment" on a pattern line - git treats the comment
+# text as part of the pattern and the rule silently stops matching.
+*.tfvars
+!terraform-vultr/ci/*.tfvars
 
 # Local Vultr API key for terraform (never commit)
 terraform-vultr/.vultr-api-key

@@ -210,6 +210,9 @@ docker run -d \
   -e "JWT_SECRET=${jwt_secret}" \
   -e "LARAVEL_INTERNAL_KEY=${laravel_internal_key}" \
   -e "INTERNAL_API_KEY=${laravel_internal_key}" \
+  -e "JWT_SECRET_PREVIOUS=${jwt_secret_previous}" \
+  -e "LARAVEL_INTERNAL_KEY_PREVIOUS=${laravel_internal_key_previous}" \
+  -e "INTERNAL_API_KEY_PREVIOUS=${internal_api_key_previous}" \
   -e "SESSION_SECRET=${session_secret}" \
   -e "CLOUDFLARE_TURN_API_KEY=${cloudflare_turn_api_key}" \
   -e "REDIS_PASSWORD=${redis_password}" \

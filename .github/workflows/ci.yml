@@ -16,7 +16,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
+    - name: Guard against tracked Terraform plan/state artifacts
+      run: |
+        matches=$(git ls-files | grep -Ei '(^|/)tfplan|\.tfstate' || true)
+        if [ -n "$matches" ]; then
+          echo "$matches"
+          echo "::error::Terraform plan/state artifacts are tracked in git. See docs/issues/secrets-repo-cleanup/05-untrack-tfplan-and-add-commit-guard.md"
+          exit 1
+        fi
+
     - name: Use Node.js ${{ matrix.node-version }}
       uses: actions/setup-node@v4
       with:

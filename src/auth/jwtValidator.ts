@@ -16,6 +16,7 @@ import { UserSchema } from "./types.js";
 import type { User } from "./types.js";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { hashToken } from "@src/shared/crypto.js";
+import { parsePreviousKeys } from "@src/shared/keyRotation.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 /**
@@ -55,23 +56,43 @@ export async function verifyJwt(
   const signatureB64 = parts[2]!;
 
   // 2. Verify signature (HMAC-SHA256, timing-safe)
+  //
+  // Tries the current secret first, then any rotation-overlap secrets from
+  // JWT_SECRET_PREVIOUS. During a rotation Laravel keeps minting with the old
+  // secret until its console edit lands, while this fleet may already be
+  // running the new one — without the overlap every such token is rejected and
+  // the user is thrown off audio. The list is empty outside a rotation.
   try {
     const signingInput = `${headerB64}.${payloadB64}`;
-    const expectedSignature = createHmac("sha256", config.JWT_SECRET)
-      .update(signingInput)
-      .digest();
-
     const receivedSignature = base64UrlDecode(signatureB64);
 
-    if (
-      expectedSignature.length !== receivedSignature.length ||
-      !timingSafeEqual(expectedSignature, receivedSignature)
-    ) {
+    const candidateSecrets = [
+      config.JWT_SECRET,
+      ...parsePreviousKeys(config.JWT_SECRET_PREVIOUS),
+    ];
+
+    // Not short-circuited: every candidate is checked so verification time
+    // does not reveal which secret matched.
+    let signatureValid = false;
+    for (const secret of candidateSecrets) {
+      const expectedSignature = createHmac("sha256", secret)
+        .update(signingInput)
+        .digest();
+
+      if (
+        expectedSignature.length === receivedSignature.length &&
+        timingSafeEqual(expectedSignature, receivedSignature)
+      ) {
+        signatureValid = true;
+      }
+    }
+
+    if (!signatureValid) {
       logger.warn(
         {
           payloadHead: payloadB64.slice(0, 12),
-          expectedLen: expectedSignature.length,
           receivedLen: receivedSignature.length,
+          candidatesTried: candidateSecrets.length,
         },
         "JWT: Signature verification failed",
       );

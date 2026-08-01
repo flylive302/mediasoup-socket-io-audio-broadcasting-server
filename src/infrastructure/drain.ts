@@ -15,6 +15,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import { config } from "@src/config/index.js";
 import { logger } from "./logger.js";
+import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
 
 // ─── Drain State ────────────────────────────────────────────────────
 
@@ -187,7 +188,7 @@ export const createAdminRoutes = (
     fastify.post("/admin/drain", async (request, reply) => {
       // Auth check
       const internalKey = request.headers["x-internal-key"] as string | undefined;
-      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+      if (!matchesRotatableKey(internalKey, config.LARAVEL_INTERNAL_KEY, parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS))) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 
@@ -226,7 +227,7 @@ export const createAdminRoutes = (
      */
     fastify.get("/admin/status", async (request, reply) => {
       const internalKey = request.headers["x-internal-key"] as string | undefined;
-      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+      if (!matchesRotatableKey(internalKey, config.LARAVEL_INTERNAL_KEY, parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS))) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 

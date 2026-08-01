@@ -244,6 +244,36 @@ variable "jwt_secret" {
   sensitive   = true
 }
 
+# --- Secret-rotation overlap -------------------------------------------------
+# Comma-separated OUTGOING secrets that verifiers keep accepting while a
+# rotation is in flight. Laravel flips instantly; this fleet takes a ~35min
+# drain-gated roll — without an overlap everything in that gap is rejected, and
+# dropped realtime events cannot be replayed.
+# Default "" = no rotation in progress, behaviour identical to a single key.
+# Reset to "" once the roll completes: while set, the old secret still works.
+# Procedure: docs/issues/secrets-repo-cleanup/01b-coordinated-rotation-runbook.md
+
+variable "laravel_internal_key_previous" {
+  description = "Rotation overlap for laravel_internal_key. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "jwt_secret_previous" {
+  description = "Rotation overlap for jwt_secret. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "internal_api_key_previous" {
+  description = "Rotation overlap for the cascade INTERNAL_API_KEY. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "session_secret" {
   description = "Express session secret."
   type        = string

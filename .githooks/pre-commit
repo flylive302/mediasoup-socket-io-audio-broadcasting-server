@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# Pre-commit guard: block Terraform plan/state artifacts from ever being committed.
+#
+# Why: a Terraform plan file (tfplan*) is a ZIP archive that can embed CLEARTEXT
+# production secrets pulled into the plan from state (private keys, tokens, etc).
+# Five such files were committed in the past because .gitignore alone does not
+# protect a path once it's already tracked, and the old ignore rule was scoped to
+# the wrong directory anyway. See docs/issues/secrets-repo-cleanup/05-untrack-tfplan-and-add-commit-guard.md
+#
+# Wired up automatically per-clone via the "prepare" script in package.json,
+# which runs: git config core.hooksPath .githooks
+#
+# Detection is two independent checks, either one blocks:
+#   (a) filename pattern  — tfplan*, *.tfstate, *.tfstate.*
+#   (b) content sniff     — first 4 bytes are the ZIP magic number (PK\x03\x04),
+#                            which catches a plan file saved under an innocuous name.
+#                            The sniff never prints file contents, only a verdict.
+#
+# *.tfvars files are WARNED on (not blocked) — some are legitimately safe
+# (e.g. terraform-vultr/ci/*.tfvars, which take values from CI secrets, not
+# hold them), so this stays a human judgement call.
+#
+# Deliberate bypass (NEVER use this for a real tfplan/tfstate file):
+#   git commit --no-verify
+
+set -euo pipefail
+
+is_zip_magic() {
+  # Reads only the first 4 bytes of the file and checks them against the ZIP
+  # local-file-header magic number. Prints nothing but a true/false verdict.
+  local path="$1"
+  local magic
+  magic=$(head -c 4 -- "$path" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+  [ "$magic" = "504b0304" ]
+}
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACM || true)
+
+if [ -z "$staged_files" ]; then
+  exit 0
+fi
+
+blocked=0
+
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  [ -f "$file" ] || continue
+
+  base=$(basename -- "$file")
+  reason=""
+
+  case "$base" in
+    tfplan*)
+      reason="filename matches tfplan*"
+      ;;
+    *.tfstate | *.tfstate.*)
+      reason="filename matches *.tfstate / *.tfstate.*"
+      ;;
+  esac
+
+  if [ -z "$reason" ] && is_zip_magic "$file"; then
+    reason="content sniff: file begins with ZIP magic bytes (PK\\x03\\x04) — looks like a Terraform plan archive saved under a non-obvious name"
+  fi
+
+  if [ -n "$reason" ]; then
+    {
+      echo ""
+      echo "COMMIT BLOCKED: '$file' looks like a Terraform plan/state artifact."
+      echo "  Reason: $reason"
+      echo "  These can embed cleartext production secrets (private keys, tokens) pulled from Terraform state."
+      echo "  Unstage it:            git restore --staged -- \"$file\""
+      echo "  Deliberate bypass (never for a real tfplan/tfstate file): git commit --no-verify"
+      echo ""
+    } >&2
+    blocked=1
+    continue
+  fi
+
+  case "$base" in
+    *.tfvars)
+      echo "WARNING: '$file' is a .tfvars file — these commonly hold secrets. Double-check before committing." >&2
+      ;;
+  esac
+done <<<"$staged_files"
+
+if [ "$blocked" -eq 1 ]; then
+  exit 1
+fi
+
+exit 0

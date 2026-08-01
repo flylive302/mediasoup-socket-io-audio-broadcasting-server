@@ -83,6 +83,28 @@ variable "jwt_secret" {
   sensitive = true
 }
 
+# Rotation-overlap secrets — comma-separated OUTGOING values that verifiers keep
+# accepting during a rotation. Empty outside one. See the root variables.tf for
+# the full rationale.
+
+variable "laravel_internal_key_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "jwt_secret_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "internal_api_key_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
 variable "jwt_max_age_seconds" {
   type    = number
   default = 86400

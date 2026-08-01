@@ -14,6 +14,7 @@ import type { LaravelEvent } from "@src/integrations/laravel/types.js";
 import { config } from "@src/config/index.js";
 import { withCorrelation } from "./correlation.js";
 import { z } from "zod";
+import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
 
 /** Zod schema — matches the existing LaravelEventSchema in event-subscriber.ts */
 const EventPayloadSchema = z.object({
@@ -101,7 +102,7 @@ export const createEventIngestRoutes = (
         (request.headers["x-internal-key"] as string | undefined) ??
         (request.query as Record<string, string>)?.key;
 
-      if (internalKey !== config.LARAVEL_INTERNAL_KEY) {
+      if (!matchesRotatableKey(internalKey, config.LARAVEL_INTERNAL_KEY, parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS))) {
         return reply
           .code(401)
           .send({ status: "error", message: "Unauthorized" });

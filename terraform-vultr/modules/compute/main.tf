@@ -93,12 +93,18 @@ resource "vultr_instance" "main" {
     # msab-sentry §5: image_tag doubles as SENTRY_RELEASE, environment as
     # SENTRY_ENVIRONMENT, in the .env heredoc. image_tag MUST match the
     # sha-<commit8> the image was built + sourcemap-uploaded under.
-    image_tag               = var.image_tag
-    environment             = var.environment
-    sentry_dsn              = var.sentry_dsn
-    ghcr_pull_token         = var.ghcr_pull_token
-    laravel_internal_key    = var.laravel_internal_key
-    jwt_secret              = var.jwt_secret
+    image_tag            = var.image_tag
+    environment          = var.environment
+    sentry_dsn           = var.sentry_dsn
+    ghcr_pull_token      = var.ghcr_pull_token
+    laravel_internal_key = var.laravel_internal_key
+    jwt_secret           = var.jwt_secret
+
+    # Rotation overlap — empty outside a rotation.
+    laravel_internal_key_previous = var.laravel_internal_key_previous
+    jwt_secret_previous           = var.jwt_secret_previous
+    internal_api_key_previous     = var.internal_api_key_previous
+
     jwt_max_age_seconds     = var.jwt_max_age_seconds
     session_secret          = var.session_secret
     laravel_api_url         = var.laravel_api_url

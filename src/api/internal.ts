@@ -26,6 +26,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import { reactError } from "@src/shared/react-error.js";
+import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
 
 // ─── Request Body Types ──────────────────────────────────────────
 
@@ -113,7 +114,13 @@ export const createInternalRoutes = (
       }
 
       const key = request.headers["x-internal-key"] as string | undefined;
-      if (key !== config.INTERNAL_API_KEY) {
+      if (
+        !matchesRotatableKey(
+          key,
+          config.INTERNAL_API_KEY,
+          parsePreviousKeys(config.INTERNAL_API_KEY_PREVIOUS),
+        )
+      ) {
         return reply.code(401).send({
           status: "error",
           message: "Unauthorized",

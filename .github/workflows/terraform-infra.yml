@@ -48,6 +48,11 @@ jobs:
       IMAGE_TAG: ${{ inputs.image_tag }}
       TF_VAR_laravel_internal_key: ${{ secrets.TF_VAR_laravel_internal_key }}
       TF_VAR_jwt_secret: ${{ secrets.TF_VAR_jwt_secret }}
+      # Rotation overlap — unset outside a rotation, resolves to "".
+      # See docs/issues/secrets-repo-cleanup/01b-coordinated-rotation-runbook.md
+      TF_VAR_laravel_internal_key_previous: ${{ secrets.TF_VAR_laravel_internal_key_previous }}
+      TF_VAR_jwt_secret_previous: ${{ secrets.TF_VAR_jwt_secret_previous }}
+      TF_VAR_internal_api_key_previous: ${{ secrets.TF_VAR_internal_api_key_previous }}
       TF_VAR_session_secret: ${{ secrets.TF_VAR_session_secret }}
       TF_VAR_ghcr_pull_token: ${{ secrets.TF_VAR_ghcr_pull_token }}
       TF_VAR_lb_ssl_certificate: ${{ secrets.TF_VAR_lb_ssl_certificate }}

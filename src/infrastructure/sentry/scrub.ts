@@ -18,6 +18,7 @@
  */
 import type { ErrorEvent } from "@sentry/node";
 import { config } from "@src/config/index.js";
+import { parsePreviousKeys } from "@src/shared/keyRotation.js";
 
 const JWT_PATTERN =
   /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/;
@@ -42,6 +43,13 @@ function getDefaultSecrets(): readonly string[] {
     config.LARAVEL_INTERNAL_KEY,
     config.REDIS_PASSWORD,
     config.INTERNAL_API_KEY,
+    // Rotation-overlap secrets are live secrets for the duration of a
+    // rotation — an outgoing value that leaks into an error report is just as
+    // exposed as the current one, and this whole epic exists because secrets
+    // reached a place they should not have.
+    ...parsePreviousKeys(config.JWT_SECRET_PREVIOUS),
+    ...parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS),
+    ...parsePreviousKeys(config.INTERNAL_API_KEY_PREVIOUS),
     config.CLOUDFLARE_TURN_API_KEY,
     config.CLOUDFLARE_TURN_KEY_ID,
     config.HLS_R2_ACCESS_KEY_ID,

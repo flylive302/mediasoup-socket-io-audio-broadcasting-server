@@ -40,6 +40,13 @@ const configSchema = z.object({
 
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),
+  // Rotation overlap only. Comma-separated OUTGOING secrets that stay valid for
+  // signature verification while a rotation is in flight — Laravel and MSAB
+  // cannot flip at the same instant (console edit vs ~35min fleet roll), and
+  // without an overlap every token signed with the old secret is rejected in
+  // the gap. Unset outside a rotation; see
+  // docs/issues/secrets-repo-cleanup/01b-coordinated-rotation-runbook.md
+  JWT_SECRET_PREVIOUS: z.string().default(""),
   // F-56: 24h, matching the Laravel-issued JWT lifetime. Two uses: (1) the no-exp
   // max-age ceiling in jwtValidator (Laravel always sets exp, so rarely hit), and
   // (2) the TTL for `auth:user_revoked:*` Redis keys in the event-router and backfill
@@ -49,6 +56,8 @@ const configSchema = z.object({
   // Laravel Integration
   LARAVEL_API_URL: z.string().url(),
   LARAVEL_INTERNAL_KEY: z.string().min(32), // For server-to-server auth
+  // Rotation overlap only — see JWT_SECRET_PREVIOUS above. Comma-separated.
+  LARAVEL_INTERNAL_KEY_PREVIOUS: z.string().default(""),
   LARAVEL_API_TIMEOUT_MS: z.coerce.number().default(30_000), // 30 seconds
 
   // MediaSoup
@@ -201,6 +210,8 @@ const configSchema = z.object({
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
   INTERNAL_API_KEY: z.string().default(""),                // Shared secret for instance-to-instance auth
+  // Rotation overlap only — see JWT_SECRET_PREVIOUS above. Comma-separated.
+  INTERNAL_API_KEY_PREVIOUS: z.string().default(""),
   PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
 
   // realtime-09: LL-HLS broadcast publish tier. When a Room flips to broadcast
