@@ -6,6 +6,21 @@ import {
   observeProducerQuality,
 } from "./quality/scoreObservers.js";
 import type { ClientLeg } from "./quality/scoreRegistry.js";
+import type { QualityDirection } from "./quality/qualityAggregator.js";
+
+/**
+ * One live client leg, ready for ticket 02's statistics sweep.
+ *
+ * The sweep needs the mediasoup handle (only it can answer `getStats()`) plus
+ * the identity the handle does not carry. Relay and egress legs never produce
+ * one of these — see `listClientLegs`.
+ */
+export interface ClientLegHandle {
+  readonly streamId: string;
+  readonly direction: QualityDirection;
+  readonly leg: ClientLeg;
+  readonly stream: mediasoup.types.Consumer | mediasoup.types.Producer;
+}
 
 export class RouterManager {
   public router: mediasoup.types.Router | null = null;
@@ -22,6 +37,12 @@ export class RouterManager {
   private readonly consumers = new Map<string, mediasoup.types.Consumer>();
   // Track producers for mute/close
   private readonly producers = new Map<string, mediasoup.types.Producer>();
+
+  // observability-audio-quality 02: which registered streams belong to a real
+  // participant. Default-deny — a stream is absent unless its caller passed an
+  // explicit ClientLeg, exactly as ticket 01 decided. Torn down on
+  // `observer.on("close")`, the only close path that fires everywhere.
+  private readonly clientLegs = new Map<string, ClientLeg>();
 
 
 
@@ -55,6 +76,7 @@ export class RouterManager {
     this.transports.clear();
     this.consumers.clear();
     this.producers.clear();
+    this.clientLegs.clear();
 
     if (this.audioObserver) {
       this.audioObserver.close();
@@ -137,7 +159,11 @@ export class RouterManager {
     consumer.on("transportclose", () => this.consumers.delete(consumer.id));
     consumer.on("producerclose", () => this.consumers.delete(consumer.id));
 
-    if (clientLeg) observeConsumerQuality(consumer, clientLeg);
+    if (clientLeg) {
+      this.clientLegs.set(consumer.id, clientLeg);
+      consumer.observer.on("close", () => this.clientLegs.delete(consumer.id));
+      observeConsumerQuality(consumer, clientLeg);
+    }
   }
 
   /**
@@ -161,6 +187,71 @@ export class RouterManager {
     this.producers.set(producer.id, producer);
     producer.on("transportclose", () => this.producers.delete(producer.id));
 
-    if (clientLeg) observeProducerQuality(producer, clientLeg);
+    if (clientLeg) {
+      this.clientLegs.set(producer.id, clientLeg);
+      producer.observer.on("close", () => this.clientLegs.delete(producer.id));
+      observeProducerQuality(producer, clientLeg);
+    }
+  }
+
+  /**
+   * Read-only enumeration of the live consumer set. The map itself stays
+   * private; this is a copied array.
+   *
+   * ⚠️ CLOSED HANDLES ARE FILTERED, and that is not defensive tidiness.
+   * Registration only wires `transportclose` (and `producerclose` for
+   * consumers), so a bare `producer.close()` — `media.handler.ts:267` and
+   * `:535`, `shared/producer-cleanup.ts:47` — leaves a closed handle in the
+   * map forever. `getStats()` on a closed handle rejects, so an unfiltered
+   * enumeration would make the statistics sweep noisier the longer the
+   * process lives. This is the same class of bug as ticket 01's decision #2.
+   */
+  listConsumers(): mediasoup.types.Consumer[] {
+    return [...this.consumers.values()].filter((consumer) => !consumer.closed);
+  }
+
+  /** Read-only enumeration of the live producer set. See `listConsumers`. */
+  listProducers(): mediasoup.types.Producer[] {
+    return [...this.producers.values()].filter((producer) => !producer.closed);
+  }
+
+  /**
+   * The live legs belonging to real participants, ready to be swept.
+   *
+   * Default-deny: a stream appears only if its registration passed a
+   * `ClientLeg`. The cross-region relay legs (`api/internal.ts` reverse-pipe
+   * finalize, `cascade/edge-pipe-lifecycle.ts` forward-pipe) register without
+   * one and are therefore invisible here — deliberately, because a percentile
+   * that silently mixed relay traffic into participant traffic would be worse
+   * than no percentile at all.
+   */
+  listClientLegs(): ClientLegHandle[] {
+    const handles: ClientLegHandle[] = [];
+
+    for (const producer of this.listProducers()) {
+      const leg = this.clientLegs.get(producer.id);
+      if (leg) {
+        handles.push({
+          streamId: producer.id,
+          direction: "sending",
+          leg,
+          stream: producer,
+        });
+      }
+    }
+
+    for (const consumer of this.listConsumers()) {
+      const leg = this.clientLegs.get(consumer.id);
+      if (leg) {
+        handles.push({
+          streamId: consumer.id,
+          direction: "receiving",
+          leg,
+          stream: consumer,
+        });
+      }
+    }
+
+    return handles;
   }
 }

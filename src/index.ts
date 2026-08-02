@@ -5,6 +5,7 @@ import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
 import { startQualitySampler, stopQualitySampler } from "./domains/media/quality/qualitySampler.js";
+import { startRtpStatisticsSweeper, stopRtpStatisticsSweeper } from "./domains/media/quality/rtpStatisticsSweeper.js";
 import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain.js";
 import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
@@ -91,6 +92,11 @@ const start = async () => {
     // resolved INSTANCE_ID, which the publisher reads per tick as a label.
     startQualitySampler();
 
+    // observability-audio-quality 02: poll every live client leg for packet
+    // loss, jitter and RTT on its own, slower interval. Separate from the
+    // sampler above because this one costs a worker round trip PER LEG.
+    startRtpStatisticsSweeper(roomManager);
+
     // Graceful Shutdown Logic
     let isShuttingDown = false;
 
@@ -163,9 +169,10 @@ const start = async () => {
         // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
 
-        // 5. Stop CloudWatch publisher + audio-quality sampler
+        // 5. Stop CloudWatch publisher + audio-quality sampler + RTP sweeper
         stopCloudWatchPublisher();
         stopQualitySampler();
+        stopRtpStatisticsSweeper();
 
         // 6. Close Redis connections (both pub and sub clients)
         const pubClient = getRedisClient();
@@ -211,6 +218,7 @@ const start = async () => {
         presenceService.stop();
         stopCloudWatchPublisher();
         stopQualitySampler();
+        stopRtpStatisticsSweeper();
       },
       flushStatus: () => statusCoalescer.stop(),
       statusPendingCount: () => statusCoalescer.pendingCount(),

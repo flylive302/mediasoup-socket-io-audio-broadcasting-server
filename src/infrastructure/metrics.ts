@@ -320,6 +320,71 @@ export const metrics = {
     labelNames: ["region", "instance", "direction"] as const,
     registers: [metricsRegistry],
   }),
+
+  // observability-audio-quality 02: the deep RTP statistics that say WHY the
+  // score above was low — a network problem looks different from a device
+  // problem. Polled per leg by rtpStatisticsSweeper.ts, published by the same
+  // tick as the score.
+  //
+  // ⚠️ THESE READ THE OPPOSITE WAY TO THE SCORE. Higher is WORSE, so alarm on
+  // p90/max, not on p01/p10.
+  //
+  // 🔴 The same cardinality gate applies: `direction`, `statistic` and
+  // `metric` are closed enumerations, `region` and `instance` are
+  // process-wide. NEVER add a room, user, consumer or producer label.
+  //
+  // Metric names follow the SFU's own field names rather than asserting a
+  // unit, because a series name is as permanent as a label. `roundTripTime`
+  // is documented in milliseconds and says so; `jitter` and `fractionLost`
+  // have no documented unit, so their names claim none.
+  audioRtpFractionLost: new Gauge({
+    name: "flylive_audio_rtp_fraction_lost",
+    help:
+      "RTCP fraction-lost as reported by the SFU (RtpStreamStats.fractionLost), across live client legs. " +
+      "🔴 SCALE IS RAW RTCP 0-255, NOT A 0-1 FRACTION (uint8 in the SFU's own schema) — " +
+      "2.55 is one percent loss, so a threshold written against 0-1 would never fire. " +
+      "HIGHER IS WORSE. COVERS: a participant's own mic/music publish (direction=sending) and " +
+      "audio served to a participant (direction=receiving), while unpaused. " +
+      "DOES NOT COVER: paused/muted legs, cross-region relay legs (origin/edge pipe), " +
+      "same-instance router-to-router pipe legs, or the HLS/FFmpeg broadcast egress mix.",
+    labelNames: ["region", "instance", "direction", "statistic"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  audioRtpJitter: new Gauge({
+    name: "flylive_audio_rtp_jitter",
+    help:
+      "Jitter as reported by the SFU (RtpStreamStats.jitter), in RTP TIMESTAMP TICKS, not milliseconds — " +
+      "divide by the 48000 Hz Opus clock rate (i.e. /48 for ms). HIGHER IS WORSE. " +
+      "🔴 READ direction=sending ONLY. Jitter is computed on RECEIVE, so direction=sending is the " +
+      "SFU's own measurement of a participant's uplink and is the meaningful series. direction=receiving " +
+      "is the send-stream field, which the SFU populates unconditionally and which measured 0 on every " +
+      "bench leg — it does NOT mean the listener experienced no jitter. " +
+      "Same coverage and exclusions as flylive_audio_rtp_fraction_lost.",
+    labelNames: ["region", "instance", "direction", "statistic"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  audioRtpRoundTripTimeMs: new Gauge({
+    name: "flylive_audio_rtp_round_trip_time_ms",
+    help:
+      "RTCP round-trip time in MILLISECONDS (RtpStreamStats.roundTripTime), across live client legs. " +
+      "HIGHER IS WORSE. Reads 0 until the peer has returned an RTCP receiver report on that leg, so " +
+      "treat 0 as 'not yet measured', not as a zero-latency path. " +
+      "Same coverage and exclusions as flylive_audio_rtp_fraction_lost.",
+    labelNames: ["region", "instance", "direction", "statistic"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  // The denominator, per metric: a leg missing roundTripTime still contributes
+  // its fractionLost, so the three counts legitimately differ. Without this,
+  // "the sweep reached nobody" and "the sweep never ran" look identical.
+  audioRtpSamples: new Gauge({
+    name: "flylive_audio_rtp_samples",
+    help: "Live client legs contributing to each flylive_audio_rtp_* metric, by direction",
+    labelNames: ["region", "instance", "direction", "metric"] as const,
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

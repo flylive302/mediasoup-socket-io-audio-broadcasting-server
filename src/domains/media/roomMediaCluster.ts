@@ -16,7 +16,7 @@ import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { reactError } from "@src/shared/react-error.js";
-import { RouterManager } from "./routerManager.js";
+import { RouterManager, type ClientLegHandle } from "./routerManager.js";
 import type { ClientLeg } from "./quality/scoreRegistry.js";
 
 interface DistributionRouter {
@@ -93,6 +93,26 @@ export class RoomMediaCluster {
   /** Total listener count across all distribution routers */
   getListenerCount(): number {
     return this.distributionRouters.reduce((sum, d) => sum + d.listenerCount, 0);
+  }
+
+  /**
+   * observability-audio-quality 02: every live client leg in this cluster.
+   *
+   * BOTH halves are required. Participant producers register on the source
+   * router (`registerProducer`) and participant consumers register on a
+   * distribution router (`consume`), so walking only one of them silently
+   * drops an entire direction from the metric.
+   */
+  listClientLegs(): ClientLegHandle[] {
+    const handles: ClientLegHandle[] = this.sourceRouter
+      ? this.sourceRouter.listClientLegs()
+      : [];
+
+    for (const dist of this.distributionRouters) {
+      handles.push(...dist.routerManager.listClientLegs());
+    }
+
+    return handles;
   }
 
   // ─────────────────────────────────────────────────────────────────

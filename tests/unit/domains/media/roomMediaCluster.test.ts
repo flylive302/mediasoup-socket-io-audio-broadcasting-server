@@ -330,4 +330,81 @@ describe("RoomMediaCluster", () => {
       expect((cluster as any).transportOwnership.size).toBe(0);
     });
   });
+
+  describe("listClientLegs", () => {
+    // createMockRouterManager() (above) has no listClientLegs stub — attach
+    // one per test so each RouterManager instance can return its own set of
+    // handles, without touching the shared helper other describe blocks use.
+    function withClientLegs(
+      rm: ReturnType<typeof createMockRouterManager>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      handles: any[],
+    ) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (rm as any).listClientLegs = vi.fn().mockReturnValue(handles);
+      return rm;
+    }
+
+    it("returns [] for an uninitialised cluster (no source router) rather than throwing", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      // Deliberately NOT calling cluster.initialize().
+
+      expect(cluster.listClientLegs()).toEqual([]);
+    });
+
+    it("collects legs from the source router AND every distribution router, with none dropped or duplicated", async () => {
+      const { RouterManager } = await import("@src/domains/media/routerManager.js");
+
+      const sourceRM = withClientLegs(createMockRouterManager(), [
+        {
+          streamId: "src-p-1",
+          direction: "sending",
+          leg: { roomId: "room-1", userId: "1" },
+          stream: {},
+        },
+      ]);
+      const distRM1 = withClientLegs(createMockRouterManager(), [
+        {
+          streamId: "dist1-c-1",
+          direction: "receiving",
+          leg: { roomId: "room-1", userId: "2" },
+          stream: {},
+        },
+      ]);
+      const distRM2 = withClientLegs(createMockRouterManager(), [
+        {
+          streamId: "dist2-c-1",
+          direction: "receiving",
+          leg: { roomId: "room-1", userId: "3" },
+          stream: {},
+        },
+      ]);
+
+      const instances = [sourceRM, distRM1, distRM2];
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (RouterManager as any).mockImplementation(() => instances[callCount++]);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cluster = new RoomMediaCluster(workerManager as any, mockLogger);
+      await cluster.initialize(); // consumes sourceRM
+
+      // First listener transport creates distRM1 (capacity 500, per the
+      // mocked config at the top of this file).
+      await cluster.createWebRtcTransport(false);
+      // Force distRM1 to capacity so the next listener spins up a second
+      // distribution router instead of reusing the first.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (cluster as any).distributionRouters[0].listenerCount = 500;
+      await cluster.createWebRtcTransport(false); // creates distRM2
+
+      const legs = cluster.listClientLegs();
+
+      expect(legs).toHaveLength(3);
+      expect(legs.map((l) => l.streamId).sort()).toEqual(
+        ["dist1-c-1", "dist2-c-1", "src-p-1"].sort(),
+      );
+    });
+  });
 });

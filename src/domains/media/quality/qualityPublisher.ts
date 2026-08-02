@@ -10,6 +10,8 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import {
   QUALITY_STATISTICS,
   type QualityDistribution,
+  type RtpDistribution,
+  type RtpMetric,
 } from "./qualityAggregator.js";
 
 /**
@@ -44,6 +46,55 @@ export function publishQualityDistributions(
 
     for (const statistic of QUALITY_STATISTICS) {
       metrics.audioQualityScore.set(
+        { region, instance, direction, statistic },
+        distribution.statistics[statistic],
+      );
+    }
+  }
+}
+
+/** The gauge each RTP metric is published on. Closed set, closed enum. */
+const RTP_GAUGES: Readonly<
+  Record<RtpMetric, (typeof metrics)["audioRtpJitter"]>
+> = {
+  fraction_lost: metrics.audioRtpFractionLost,
+  jitter: metrics.audioRtpJitter,
+  round_trip_time: metrics.audioRtpRoundTripTimeMs,
+};
+
+/**
+ * Publish one tick's deep RTP distributions (observability-audio-quality 02).
+ *
+ * 🔴 THE RESET SCOPE IS THE POINT. This resets ONLY the RTP gauges and
+ * `publishQualityDistributions` resets ONLY the score gauges — never a shared
+ * `metricsRegistry.resetMetrics()`. The two halves are fed by different
+ * mechanisms on different intervals (scores are pushed, these are polled), so
+ * a shared reset would let whichever half published last blank the other's
+ * series for the rest of the interval. There is a test for exactly that.
+ */
+export function publishRtpDistributions(
+  distributions: readonly RtpDistribution[],
+): void {
+  metrics.audioRtpFractionLost.reset();
+  metrics.audioRtpJitter.reset();
+  metrics.audioRtpRoundTripTimeMs.reset();
+  metrics.audioRtpSamples.reset();
+
+  const region = config.AWS_REGION;
+  const instance = config.INSTANCE_ID;
+
+  for (const distribution of distributions) {
+    const { direction, metric } = distribution;
+
+    metrics.audioRtpSamples.set(
+      { region, instance, direction, metric },
+      distribution.sampleCount,
+    );
+
+    const gauge = RTP_GAUGES[metric];
+
+    for (const statistic of QUALITY_STATISTICS) {
+      gauge.set(
         { region, instance, direction, statistic },
         distribution.statistics[statistic],
       );

@@ -5,6 +5,7 @@ import { reactError } from "@src/shared/react-error.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import type { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
+import type { ClientLegHandle } from "@src/domains/media/routerManager.js";
 import { RoomStateRepository } from "./roomState.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { ActiveSpeakerDetector } from "@src/domains/media/activeSpeaker.js";
@@ -317,6 +318,19 @@ export class RoomManager {
    */
   private syncRoomGauge(): void {
     metrics.roomsActive.set(this.rooms.size);
+  }
+
+  /**
+   * observability-audio-quality 02: every live client leg this instance
+   * hosts, across every room. The statistics sweep's entry point — it holds
+   * no room state of its own, so this is the only walk that sees them all.
+   */
+  listClientLegs(): ClientLegHandle[] {
+    const handles: ClientLegHandle[] = [];
+    for (const cluster of this.rooms.values()) {
+      handles.push(...cluster.listClientLegs());
+    }
+    return handles;
   }
 
   /** Max listeners in any single room on this instance (for CloudWatch) */

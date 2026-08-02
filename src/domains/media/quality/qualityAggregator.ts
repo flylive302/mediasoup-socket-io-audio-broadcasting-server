@@ -50,6 +50,61 @@ export const QUALITY_STATISTICS = [
 
 export type QualityStatistic = (typeof QUALITY_STATISTICS)[number];
 
+/**
+ * The deep RTP statistics ticket 02 sweeps — the numbers that say *why* audio
+ * was bad, where the score only says *that* it was.
+ *
+ * Named after the SFU's own field names, NOT after a unit. `roundTripTime` is
+ * documented in milliseconds so the gauge may say so; `jitter` and
+ * `fractionLost` have no documented unit, so their metric names must not
+ * imply one. A series name is as permanent as a label.
+ *
+ * ⚠️ These read the OPPOSITE way to the score: for loss, jitter and RTT
+ * **higher is worse**, so the interesting tail is `p90`/`max` — the mirror of
+ * the score's `p01`/`p10`.
+ */
+export const RTP_METRICS = [
+  "fraction_lost",
+  "jitter",
+  "round_trip_time",
+] as const;
+
+export type RtpMetric = (typeof RTP_METRICS)[number];
+
+/**
+ * One live client leg's deep statistics, pulled by the sweep.
+ *
+ * Every statistic is optional and independently so: the SFU omits `jitter` on
+ * a send stream, and `roundTripTime` is absent until RTCP has completed a
+ * round trip. An absent statistic is left out of its distribution entirely —
+ * never defaulted to 0, which for loss and RTT would read as *perfect* and is
+ * the same trap ticket 01 avoided at the other end of the scale.
+ *
+ * `roomId` / `userId` are carried under the same rule as `QualitySample`:
+ * in-memory only, and the cardinality test proves they never reach a label.
+ */
+export interface RtpStatisticsSample {
+  /** Consumer or producer id. In-memory key only — NEVER a metric label. */
+  readonly streamId: string;
+  readonly direction: QualityDirection;
+  /** Log path only — NEVER a metric label. */
+  readonly roomId: string;
+  /** Log path only — NEVER a metric label. */
+  readonly userId: string;
+  readonly fractionLost?: number;
+  readonly jitter?: number;
+  /** Milliseconds. */
+  readonly roundTripTime?: number;
+}
+
+/** One RTP metric's distribution in one direction. Carries no identity. */
+export interface RtpDistribution {
+  readonly metric: RtpMetric;
+  readonly direction: QualityDirection;
+  readonly sampleCount: number;
+  readonly statistics: Readonly<Record<QualityStatistic, number>>;
+}
+
 /** One live client leg's most recent score push. */
 export interface QualitySample {
   /** Consumer or producer id. In-memory key only — NEVER a metric label. */
@@ -88,12 +143,23 @@ export interface QualityEvent {
 
 export interface QualityAggregate {
   readonly distributions: readonly QualityDistribution[];
+  /** Ticket 02. Empty until a statistics sweep has run at least once. */
+  readonly rtpDistributions: readonly RtpDistribution[];
   readonly events: readonly QualityEvent[];
 }
 
 export interface AggregateQualityOptions {
   /** A leg at or below this score is degraded. Ticket 03 moves it to config. */
   readonly degradedAtOrBelow?: number;
+  /**
+   * Ticket 02's pull-sweep results, aggregated by this same function so there
+   * is exactly ONE percentile implementation and ONE direction split in the
+   * epic. Passed as a separate input rather than merged into `samples`
+   * because the two arrive on different intervals from different mechanisms —
+   * scores are pushed by the SFU, these are polled — and a leg present in one
+   * need not be present in the other.
+   */
+  readonly rtpSamples?: readonly RtpStatisticsSample[];
 }
 
 /**
@@ -154,18 +220,83 @@ export function aggregateQuality(
     distributions.push({
       direction,
       sampleCount: scores.length,
-      statistics: {
-        min: scores[0]!,
-        p01: percentile(scores, 1),
-        p10: percentile(scores, 10),
-        p50: percentile(scores, 50),
-        p90: percentile(scores, 90),
-        max: scores[scores.length - 1]!,
-      },
+      statistics: statisticsOf(scores),
     });
   }
 
-  return { distributions, events };
+  return {
+    distributions,
+    rtpDistributions: aggregateRtpStatistics(options.rtpSamples ?? []),
+    events,
+  };
+}
+
+/** How each RTP metric is read off a sample. */
+const RTP_READERS: Readonly<
+  Record<RtpMetric, (sample: RtpStatisticsSample) => number | undefined>
+> = {
+  fraction_lost: (sample) => sample.fractionLost,
+  jitter: (sample) => sample.jitter,
+  round_trip_time: (sample) => sample.roundTripTime,
+};
+
+/**
+ * Same shape as the score half above, one distribution per (metric,
+ * direction) pair that actually has values.
+ *
+ * Each metric is counted independently — a leg missing `roundTripTime` still
+ * contributes its `fractionLost` — so `sampleCount` legitimately differs
+ * between metrics of the same direction. That is why the denominator gauge is
+ * labelled by metric.
+ */
+function aggregateRtpStatistics(
+  samples: readonly RtpStatisticsSample[],
+): RtpDistribution[] {
+  const distributions: RtpDistribution[] = [];
+
+  // Fixed metric and direction lists, not the sample order, so output order is
+  // stable regardless of the order legs happened to be swept.
+  for (const metric of RTP_METRICS) {
+    const read = RTP_READERS[metric];
+
+    for (const direction of QUALITY_DIRECTIONS) {
+      const values: number[] = [];
+
+      for (const sample of samples) {
+        if (sample.direction !== direction) continue;
+        const value = read(sample);
+        if (typeof value !== "number" || !Number.isFinite(value)) continue;
+        values.push(value);
+      }
+
+      if (values.length === 0) continue;
+
+      values.sort((a, b) => a - b);
+
+      distributions.push({
+        metric,
+        direction,
+        sampleCount: values.length,
+        statistics: statisticsOf(values),
+      });
+    }
+  }
+
+  return distributions;
+}
+
+/** The fixed statistic set over an ascending-sorted, non-empty array. */
+function statisticsOf(
+  sortedAscending: readonly number[],
+): Record<QualityStatistic, number> {
+  return {
+    min: sortedAscending[0]!,
+    p01: percentile(sortedAscending, 1),
+    p10: percentile(sortedAscending, 10),
+    p50: percentile(sortedAscending, 50),
+    p90: percentile(sortedAscending, 90),
+    max: sortedAscending[sortedAscending.length - 1]!,
+  };
 }
 
 /**

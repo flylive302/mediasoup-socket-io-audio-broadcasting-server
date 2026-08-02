@@ -50,6 +50,38 @@ function createMockWorker() {
   };
 }
 
+// observability-audio-quality 02: streams registered WITH a clientLeg go
+// through observeProducerQuality / observeConsumerQuality, which attach both
+// `.on(...)` and `.observer.on(...)` handlers and read `.paused` / `.score`.
+function createMockProducerWithLeg(id: string) {
+  return {
+    id,
+    on: vi.fn(),
+    observer: { on: vi.fn() },
+    paused: false,
+    closed: false,
+    score: [{ ssrc: 1, score: 10 }],
+  };
+}
+
+function createMockConsumerWithLeg(id: string) {
+  return {
+    id,
+    on: vi.fn(),
+    observer: { on: vi.fn() },
+    paused: false,
+    producerPaused: false,
+    closed: false,
+    score: { score: 10 },
+  };
+}
+
+// A stream registered WITHOUT a clientLeg never reaches observeXQuality, so
+// it only needs what registerProducer/registerConsumer themselves touch.
+function createMockStreamNoLeg(id: string) {
+  return { id, on: vi.fn(), closed: false };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockLogger: any = {
   info: vi.fn(),
@@ -260,6 +292,147 @@ describe("RouterManager", () => {
       expect(rm.getTransport("t-6")).toBeUndefined();
       expect(rm.getProducer("p-1")).toBeUndefined();
       expect(rm.getConsumer("c-1")).toBeUndefined();
+    });
+  });
+
+  describe("client leg enumeration", () => {
+    const producerLeg = { roomId: "room-A", userId: "1" };
+    const consumerLeg = { roomId: "room-B", userId: "2" };
+
+    it("listProducers() and listConsumers() return the registered live streams", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      const consumer = createMockConsumerWithLeg("c-1");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerConsumer(consumer as any, consumerLeg);
+
+      expect(rm.listProducers()).toEqual([producer]);
+      expect(rm.listConsumers()).toEqual([consumer]);
+    });
+
+    it("excludes a closed producer from listProducers() and listClientLegs()", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+
+      // Registration only wires `transportclose` — a bare `.close()` leaves
+      // the handle in the private map forever unless list*() filters it.
+      producer.closed = true;
+
+      expect(rm.listProducers()).toEqual([]);
+      expect(rm.listClientLegs()).toEqual([]);
+    });
+
+    it("excludes a closed consumer from listConsumers() and listClientLegs()", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const consumer = createMockConsumerWithLeg("c-1");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerConsumer(consumer as any, consumerLeg);
+
+      consumer.closed = true;
+
+      expect(rm.listConsumers()).toEqual([]);
+      expect(rm.listClientLegs()).toEqual([]);
+    });
+
+    it("default-deny: a stream registered without a clientLeg is listed but not enumerated as a client leg", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockStreamNoLeg("p-1");
+      const consumer = createMockStreamNoLeg("c-1");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerConsumer(consumer as any);
+
+      expect(rm.listProducers()).toEqual([producer]);
+      expect(rm.listConsumers()).toEqual([consumer]);
+      expect(rm.listClientLegs()).toEqual([]);
+    });
+
+    it("maps a producer to 'sending' and a consumer to 'receiving', carrying the exact leg and streamId", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      const consumer = createMockConsumerWithLeg("c-1");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerConsumer(consumer as any, consumerLeg);
+
+      const legs = rm.listClientLegs();
+      const sendHandle = legs.find((l) => l.direction === "sending");
+      const recvHandle = legs.find((l) => l.direction === "receiving");
+
+      expect(sendHandle).toMatchObject({
+        streamId: "p-1",
+        direction: "sending",
+        leg: producerLeg,
+      });
+      expect(recvHandle).toMatchObject({
+        streamId: "c-1",
+        direction: "receiving",
+        leg: consumerLeg,
+      });
+    });
+
+    it("returns handles whose stream is the exact object that was registered", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      const consumer = createMockConsumerWithLeg("c-1");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerConsumer(consumer as any, consumerLeg);
+
+      const legs = rm.listClientLegs();
+      expect(legs.find((l) => l.streamId === "p-1")?.stream).toBe(producer);
+      expect(legs.find((l) => l.streamId === "c-1")?.stream).toBe(consumer);
+    });
+
+    it("drops a leg from listClientLegs() when its observer fires 'close'", () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+
+      expect(rm.listClientLegs()).toHaveLength(1);
+
+      // More than one "close" handler may be registered on the same observer
+      // (RouterManager's own cleanup + scoreObservers' teardown) — invoke all.
+      const closeHandlers = producer.observer.on.mock.calls
+        .filter(([event]) => event === "close")
+        .map(([, handler]) => handler as () => void);
+      expect(closeHandlers.length).toBeGreaterThan(0);
+      closeHandlers.forEach((handler) => handler());
+
+      expect(rm.listClientLegs()).toEqual([]);
+    });
+
+    it("close() clears the client-leg map", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rm = new RouterManager(worker as any, mockLogger);
+      const producer = createMockProducerWithLeg("p-1");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rm.registerProducer(producer as any, producerLeg);
+
+      expect(rm.listClientLegs()).toHaveLength(1);
+
+      await rm.close();
+
+      expect(rm.listClientLegs()).toEqual([]);
     });
   });
 });

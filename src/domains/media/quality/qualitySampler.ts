@@ -11,7 +11,11 @@ import {
   aggregateQuality,
   type QualityAggregate,
 } from "./qualityAggregator.js";
-import { publishQualityDistributions } from "./qualityPublisher.js";
+import {
+  publishQualityDistributions,
+  publishRtpDistributions,
+} from "./qualityPublisher.js";
+import { rtpStatisticsRegistry } from "./rtpStatisticsRegistry.js";
 import { scoreRegistry } from "./scoreRegistry.js";
 
 let timer: NodeJS.Timeout | null = null;
@@ -19,12 +23,26 @@ let timer: NodeJS.Timeout | null = null;
 /**
  * One tick: snapshot → aggregate → publish.
  *
+ * BOTH halves go through ONE `aggregateQuality` call (ticket 02's AC: no
+ * second aggregation path). The pushed scores and the polled RTP statistics
+ * arrive by different mechanisms on different intervals, but they share one
+ * percentile implementation, one direction split and one label contract.
+ *
+ * The RTP snapshot is whatever the last sweep produced, re-published every
+ * tick. The sweep is slower than this tick on purpose, and a series that
+ * blinked out between sweeps would read as "the fleet went quiet".
+ *
  * Returns the whole aggregate, including the quality events that ticket 03
  * will write to the log stream. Nothing consumes `events` yet.
  */
 export function runQualitySamplingTick(): QualityAggregate {
-  const aggregate = aggregateQuality(scoreRegistry.snapshot());
+  const aggregate = aggregateQuality(scoreRegistry.snapshot(), {
+    rtpSamples: rtpStatisticsRegistry.snapshot(),
+  });
+
   publishQualityDistributions(aggregate.distributions);
+  publishRtpDistributions(aggregate.rtpDistributions);
+
   return aggregate;
 }
 

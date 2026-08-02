@@ -5,6 +5,9 @@ import {
   aggregateQuality,
   type QualityDirection,
   type QualitySample,
+  type RtpStatisticsSample,
+  type RtpDistribution,
+  type RtpMetric,
 } from "@src/domains/media/quality/qualityAggregator.js";
 
 const sample = (
@@ -167,6 +170,162 @@ describe("aggregateQuality", () => {
       expect(serialised).not.toContain("room");
       expect(serialised).not.toContain("user");
       expect(serialised).not.toContain("stream");
+    });
+  });
+
+  describe("RTP statistics distributions", () => {
+    const rtpSample = (
+      overrides: Partial<RtpStatisticsSample> = {},
+    ): RtpStatisticsSample => ({
+      streamId: `stream-${Math.random().toString(36).slice(2)}`,
+      direction: "receiving",
+      roomId: "room-1",
+      userId: "42",
+      ...overrides,
+    });
+
+    it("is [] when no rtpSamples are passed, and leaves distributions/events unaffected", () => {
+      const result = aggregateQuality(scores([9, 3]));
+
+      expect(result.rtpDistributions).toEqual([]);
+      // Score-only behaviour is untouched: one direction, one degraded event.
+      expect(result.distributions).toHaveLength(1);
+      expect(result.events).toHaveLength(1);
+    });
+
+    it("computes rtpDistributions even when samples is empty — the two inputs are independent", () => {
+      const result = aggregateQuality([], {
+        rtpSamples: [rtpSample({ fractionLost: 0.1 })],
+      });
+
+      expect(result.distributions).toEqual([]);
+      expect(result.rtpDistributions.length).toBeGreaterThan(0);
+    });
+
+    it("computes percentiles for one RTP metric using the same nearest-rank rule as the score aggregator", () => {
+      // Same 1..10 shuffled set as the "percentile boundaries" describe above,
+      // so the hand-computed nearest-rank values are directly comparable.
+      const values = [5, 3, 9, 1, 7, 10, 2, 8, 4, 6];
+      const rtpSamples = values.map((v) =>
+        rtpSample({ direction: "sending", fractionLost: v }),
+      );
+
+      const result = aggregateQuality([], { rtpSamples });
+      const dist = result.rtpDistributions.find(
+        (d) => d.metric === "fraction_lost" && d.direction === "sending",
+      );
+
+      expect(dist).toBeDefined();
+      expect(dist!.statistics.min).toBe(1);
+      expect(dist!.statistics.p01).toBe(1); // ceil(0.1) - 1 = 0
+      expect(dist!.statistics.p10).toBe(1); // ceil(1.0) - 1 = 0
+      expect(dist!.statistics.p50).toBe(5); // ceil(5.0) - 1 = 4
+      expect(dist!.statistics.p90).toBe(9); // ceil(9.0) - 1 = 8
+      expect(dist!.statistics.max).toBe(10);
+    });
+
+    it("counts each metric independently — legs missing a field still contribute the fields they have", () => {
+      const rtpSamples: RtpStatisticsSample[] = [
+        rtpSample({ fractionLost: 0.1, jitter: 5, roundTripTime: 20 }),
+        rtpSample({ fractionLost: 0.2, jitter: 8 }),
+        rtpSample({ fractionLost: 0.3 }),
+      ];
+
+      const result = aggregateQuality([], { rtpSamples });
+      const byMetric = (metric: RtpMetric) =>
+        result.rtpDistributions.find(
+          (d) => d.metric === metric && d.direction === "receiving",
+        );
+
+      expect(byMetric("fraction_lost")?.sampleCount).toBe(3);
+      expect(byMetric("jitter")?.sampleCount).toBe(2);
+      expect(byMetric("round_trip_time")?.sampleCount).toBe(1);
+    });
+
+    it("omits a (metric, direction) pair with zero values rather than reporting 0", () => {
+      // 0 would read as *perfect* for loss and RTT — must be absent, not 0.
+      const result = aggregateQuality([], {
+        rtpSamples: [rtpSample({ direction: "sending", fractionLost: 0.1 })],
+      });
+
+      const jitterSending = result.rtpDistributions.find(
+        (d) => d.metric === "jitter" && d.direction === "sending",
+      );
+      const rttSending = result.rtpDistributions.find(
+        (d) => d.metric === "round_trip_time" && d.direction === "sending",
+      );
+
+      expect(jitterSending).toBeUndefined();
+      expect(rttSending).toBeUndefined();
+    });
+
+    it("skips non-finite values, omitting the entry entirely if nothing finite remains", () => {
+      const result = aggregateQuality([], {
+        rtpSamples: [
+          rtpSample({ fractionLost: Number.NaN }),
+          rtpSample({ fractionLost: Number.POSITIVE_INFINITY }),
+          rtpSample({ jitter: 4 }),
+        ],
+      });
+
+      const fractionLost = result.rtpDistributions.find(
+        (d) => d.metric === "fraction_lost" && d.direction === "receiving",
+      );
+      const jitter = result.rtpDistributions.find(
+        (d) => d.metric === "jitter" && d.direction === "receiving",
+      );
+
+      expect(fractionLost).toBeUndefined();
+      expect(jitter?.sampleCount).toBe(1);
+    });
+
+    it("represents both directions and keeps output order stable regardless of input order", () => {
+      const sendingSample = rtpSample({
+        direction: "sending",
+        fractionLost: 0.1,
+        jitter: 1,
+        roundTripTime: 10,
+      });
+      const receivingSample = rtpSample({
+        direction: "receiving",
+        fractionLost: 0.2,
+        jitter: 2,
+        roundTripTime: 20,
+      });
+
+      const resultA = aggregateQuality([], {
+        rtpSamples: [sendingSample, receivingSample],
+      });
+      const resultB = aggregateQuality([], {
+        rtpSamples: [receivingSample, sendingSample],
+      });
+
+      const shape = (dists: readonly RtpDistribution[]) =>
+        dists.map((d) => `${d.metric}:${d.direction}`);
+
+      expect(shape(resultA.rtpDistributions)).toEqual([
+        "fraction_lost:sending",
+        "fraction_lost:receiving",
+        "jitter:sending",
+        "jitter:receiving",
+        "round_trip_time:sending",
+        "round_trip_time:receiving",
+      ]);
+      expect(shape(resultB.rtpDistributions)).toEqual(
+        shape(resultA.rtpDistributions),
+      );
+    });
+
+    it("carries no room, user or stream identity on a distribution entry", () => {
+      const result = aggregateQuality([], {
+        rtpSamples: [rtpSample({ fractionLost: 0.1 })],
+      });
+      const [dist] = result.rtpDistributions;
+
+      expect(dist).toBeDefined();
+      expect(Object.keys(dist!).sort()).toEqual(
+        ["metric", "direction", "sampleCount", "statistics"].sort(),
+      );
     });
   });
 });

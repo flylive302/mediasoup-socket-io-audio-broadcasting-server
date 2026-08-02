@@ -17,6 +17,7 @@ import {
 } from "@src/infrastructure/metrics.js";
 import { runQualitySamplingTick } from "@src/domains/media/quality/qualitySampler.js";
 import { scoreRegistry } from "@src/domains/media/quality/scoreRegistry.js";
+import { rtpStatisticsRegistry } from "@src/domains/media/quality/rtpStatisticsRegistry.js";
 
 /**
  * Values distinctive enough that finding any of them in the scrape body is
@@ -85,22 +86,54 @@ const labelKeysIn = (body: string): Set<string> => {
   return keys;
 };
 
+/**
+ * Ticket 02's sweep results, carrying the same canaries. `RtpStatisticsSample`
+ * deliberately holds roomId/userId for a future log path, so the scrape must
+ * prove they never survive into a label.
+ */
+const canaryRtpSamples = [
+  {
+    streamId: CANARY_STREAM,
+    direction: "sending" as const,
+    roomId: CANARY_ROOM,
+    userId: CANARY_USER,
+    fractionLost: 4,
+    jitter: 6,
+    roundTripTime: 31.5,
+  },
+  {
+    streamId: `${CANARY_STREAM}-2`,
+    direction: "receiving" as const,
+    roomId: CANARY_ROOM,
+    userId: CANARY_USER,
+    fractionLost: 1,
+    roundTripTime: 12.25,
+  },
+];
+
+const resetQualityState = () => {
+  scoreRegistry.clear();
+  rtpStatisticsRegistry.clear();
+  metrics.audioQualityScore.reset();
+  metrics.audioQualitySamples.reset();
+  metrics.audioRtpFractionLost.reset();
+  metrics.audioRtpJitter.reset();
+  metrics.audioRtpRoundTripTimeMs.reset();
+  metrics.audioRtpSamples.reset();
+};
+
 describe("audio-quality metrics cardinality", () => {
   let originalInstanceId: string;
 
   beforeEach(() => {
     originalInstanceId = config.INSTANCE_ID;
     config.INSTANCE_ID = "i-test-instance";
-    scoreRegistry.clear();
-    metrics.audioQualityScore.reset();
-    metrics.audioQualitySamples.reset();
+    resetQualityState();
   });
 
   afterEach(() => {
     config.INSTANCE_ID = originalInstanceId;
-    scoreRegistry.clear();
-    metrics.audioQualityScore.reset();
-    metrics.audioQualitySamples.reset();
+    resetQualityState();
   });
 
   it("publishes no series keyed by room, user, consumer or producer", async () => {
@@ -118,12 +151,22 @@ describe("audio-quality metrics cardinality", () => {
       roomId: CANARY_ROOM,
       userId: CANARY_USER,
     });
+    rtpStatisticsRegistry.replace(canaryRtpSamples);
 
     runQualitySamplingTick();
 
     const app = await buildApp();
     const body = await scrape(app);
     await app.close();
+
+    // GUARD AGAINST A VACUOUS PASS: this assertion has to fail if ticket 02's
+    // series are absent from the scrape, otherwise everything below proves
+    // only that metrics nobody published leaked nothing.
+    expect(body).toContain("flylive_audio_quality_score{");
+    expect(body).toContain("flylive_audio_rtp_fraction_lost{");
+    expect(body).toContain("flylive_audio_rtp_jitter{");
+    expect(body).toContain("flylive_audio_rtp_round_trip_time_ms{");
+    expect(body).toContain("flylive_audio_rtp_samples{");
 
     // No forbidden label key anywhere in the scrape — including the default
     // Node metrics, which share this registry.
@@ -169,6 +212,50 @@ describe("audio-quality metrics cardinality", () => {
       'flylive_audio_quality_samples{region="' +
         config.AWS_REGION +
         '",instance="i-test-instance",direction="sending"} 1',
+    );
+  });
+
+  it("exposes the RTP statistics with only region, instance, direction and statistic", async () => {
+    rtpStatisticsRegistry.replace(canaryRtpSamples);
+
+    runQualitySamplingTick();
+
+    const app = await buildApp();
+    const body = await scrape(app);
+    await app.close();
+
+    const series = body
+      .split("\n")
+      .filter((line) =>
+        line.startsWith("flylive_audio_rtp_round_trip_time_ms{"),
+      );
+
+    // Both directions reported RTT, six statistics each.
+    expect(series.length).toBe(12);
+    for (const line of series) {
+      expect(line).toContain(`region="${config.AWS_REGION}"`);
+      expect(line).toContain('instance="i-test-instance"');
+      expect(line).toMatch(/direction="(sending|receiving)"/);
+      expect(line).toMatch(/statistic="(min|p01|p10|p50|p90|max)"/);
+    }
+
+    // Only the sending leg reported jitter — the receiving one must not be
+    // invented as zero, which for jitter would read as PERFECT.
+    const jitter = body
+      .split("\n")
+      .filter((line) => line.startsWith("flylive_audio_rtp_jitter{"));
+    expect(jitter.length).toBe(6);
+    for (const line of jitter) {
+      expect(line).toContain('direction="sending"');
+    }
+
+    // The denominator is labelled by metric, because the counts differ.
+    expect(body).toContain("flylive_audio_rtp_samples{");
+    expect(body).toMatch(
+      /flylive_audio_rtp_samples\{[^}]*metric="jitter"[^}]*\} 1/,
+    );
+    expect(body).toMatch(
+      /flylive_audio_rtp_samples\{[^}]*direction="sending"[^}]*metric="fraction_lost"[^}]*\} 1/,
     );
   });
 

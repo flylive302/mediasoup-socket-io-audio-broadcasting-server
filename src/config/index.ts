@@ -287,6 +287,26 @@ const configSchema = z.object({
     .positive()
     .default(15_000),
 
+  // observability-audio-quality 02: how often the deep RTP statistics sweep
+  // polls every live client leg for packet loss, jitter and round-trip time.
+  //
+  // 🔴 DELIBERATELY SEPARATE FROM, AND SLOWER THAN, THE SAMPLER ABOVE. That
+  // one only re-publishes scores the SFU already pushed, so it costs nothing
+  // per leg. This one makes a round trip into the media worker PER LEG, so
+  // its cost scales with live capacity. Slower than the scrape interval is
+  // fine — the last sweep's numbers are held and re-published on every
+  // publish tick rather than the series disappearing in between.
+  AUDIO_RTP_SWEEP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60_000),
+
+  // Maximum stats round trips outstanding at once. A full-fan-out sweep would
+  // fire one request per live leg down a single worker channel and degrade
+  // the audio it is measuring; this is the ceiling that prevents it.
+  AUDIO_RTP_SWEEP_CONCURRENCY: z.coerce.number().int().positive().default(16),
+
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
