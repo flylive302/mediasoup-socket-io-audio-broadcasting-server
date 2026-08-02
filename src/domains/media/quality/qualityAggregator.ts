@@ -129,16 +129,35 @@ export interface QualityDistribution {
 }
 
 /**
- * A single degraded client leg, ready for ticket 03 to write to the log
- * stream. Discrete, so it creates no time series and costs no cardinality.
- * Nothing consumes this yet.
+ * A single degraded client leg, written to the log stream by ticket 03's
+ * `qualityEventLogger`. Discrete, so it creates no time series and costs no
+ * cardinality — this is the resolution of the tension between "an engineer
+ * must be able to search by room" and ticket 01's cardinality rule.
+ *
+ * Carries ticket 02's deep statistics when the sweep has them for this leg,
+ * because the score says only *that* audio was bad and the whole point of 02
+ * is to say *why*. An event without them is still valid — the sweep runs on a
+ * slower interval and may not have seen a leg that has already scored.
+ *
+ * ⚠️ The RTP values are the LAST SWEEP's, so they can be up to
+ * `AUDIO_RTP_SWEEP_INTERVAL_MS` older than the score beside them. Same leg,
+ * not necessarily the same instant. Units are the SFU's own and are NOT what
+ * their names suggest — see `RtpStatisticsSample` and the gauge help text.
  */
 export interface QualityEvent {
+  /** The degraded consumer or producer. Log path only — never a label. */
+  readonly streamId: string;
   readonly roomId: string;
   readonly userId: string;
   readonly direction: QualityDirection;
   readonly score: number;
   readonly threshold: number;
+  /** Raw RTCP 0-255 byte, NOT a 0-1 fraction. Absent if not swept. */
+  readonly fractionLost?: number;
+  /** RTP timestamp ticks, NOT milliseconds. Absent if not swept. */
+  readonly jitter?: number;
+  /** Milliseconds. Absent if not swept, or 0 before RTCP completes a trip. */
+  readonly roundTripTime?: number;
 }
 
 export interface QualityAggregate {
@@ -182,6 +201,20 @@ export function aggregateQuality(
   options: AggregateQualityOptions = {},
 ): QualityAggregate {
   const degradedAtOrBelow = options.degradedAtOrBelow ?? DEFAULT_DEGRADED_SCORE;
+  const rtpSamples = options.rtpSamples ?? [];
+
+  // Indexed once, not searched per degraded leg: during an incident nearly
+  // every leg is degraded and a linear scan per event would be quadratic.
+  //
+  // Keyed by `streamId` ALONE, with no direction check, and that is safe
+  // rather than sloppy: a stream id is one mediasoup consumer or producer, and
+  // both registries derive `direction` from that same handle. Two samples
+  // sharing an id therefore always agree on direction, so a check could never
+  // fire. If ids ever stop being per-leg unique, this is the join to revisit.
+  const rtpByStreamId = new Map<string, RtpStatisticsSample>();
+  for (const sample of rtpSamples) {
+    rtpByStreamId.set(sample.streamId, sample);
+  }
 
   const scoresByDirection = new Map<QualityDirection, number[]>();
   const events: QualityEvent[] = [];
@@ -197,13 +230,13 @@ export function aggregateQuality(
     scores.push(sample.score);
 
     if (sample.score <= degradedAtOrBelow) {
-      events.push({
-        roomId: sample.roomId,
-        userId: sample.userId,
-        direction: sample.direction,
-        score: sample.score,
-        threshold: degradedAtOrBelow,
-      });
+      events.push(
+        buildQualityEvent(
+          sample,
+          degradedAtOrBelow,
+          rtpByStreamId.get(sample.streamId),
+        ),
+      );
     }
   }
 
@@ -226,9 +259,47 @@ export function aggregateQuality(
 
   return {
     distributions,
-    rtpDistributions: aggregateRtpStatistics(options.rtpSamples ?? []),
+    rtpDistributions: aggregateRtpStatistics(rtpSamples),
     events,
   };
+}
+
+/**
+ * One degraded leg's event, with the sweep's numbers attached when it has
+ * them.
+ *
+ * A non-finite statistic is omitted rather than written as-is: the log path
+ * has the same "absent is not zero" rule as the metric path, because for loss
+ * and round-trip time a zero reads as *perfect* and would send an engineer
+ * looking at the wrong layer.
+ */
+function buildQualityEvent(
+  sample: QualitySample,
+  threshold: number,
+  rtp: RtpStatisticsSample | undefined,
+): QualityEvent {
+  return {
+    streamId: sample.streamId,
+    roomId: sample.roomId,
+    userId: sample.userId,
+    direction: sample.direction,
+    score: sample.score,
+    threshold,
+    ...(finite(rtp?.fractionLost) !== undefined && {
+      fractionLost: rtp!.fractionLost,
+    }),
+    ...(finite(rtp?.jitter) !== undefined && { jitter: rtp!.jitter }),
+    ...(finite(rtp?.roundTripTime) !== undefined && {
+      roundTripTime: rtp!.roundTripTime,
+    }),
+  };
+}
+
+/** Keep only finite numbers — an absent statistic must stay absent. */
+function finite(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 /** How each RTP metric is read off a sample. */

@@ -48,6 +48,33 @@ const FORBIDDEN_LABEL_KEYS = [
   "socket_id",
 ];
 
+/**
+ * Every `flylive_audio_*` series that is allowed to exist.
+ *
+ * ⛔ ADDING A NAME HERE IS A DELIBERATE ACT. Ticket 03 publishes its
+ * room-scoped detail to the LOG STREAM precisely so it adds none — a
+ * histogram or counter keyed by room would reintroduce the cardinality bomb
+ * at a coarser grain, which is the exact trade the ticket exists to refuse.
+ */
+const ALLOWED_AUDIO_SERIES = [
+  "flylive_audio_quality_score",
+  "flylive_audio_quality_samples",
+  "flylive_audio_rtp_fraction_lost",
+  "flylive_audio_rtp_jitter",
+  "flylive_audio_rtp_round_trip_time_ms",
+  "flylive_audio_rtp_samples",
+];
+
+/** Distinct `flylive_audio_*` series names present in an exposition. */
+const audioSeriesIn = (body: string): string[] => {
+  const names = new Set<string>();
+  for (const line of body.split("\n")) {
+    const match = line.match(/^(flylive_audio_[a-z0-9_]+)[{ ]/);
+    if (match) names.add(match[1]!);
+  }
+  return [...names].sort();
+};
+
 const roomManagerStub = { getRoomCount: () => 0 } as never;
 const workerManagerStub = {
   getWorkerStats: () => [],
@@ -281,6 +308,37 @@ describe("audio-quality metrics cardinality", () => {
 
     expect(afterDrain).not.toContain("flylive_audio_quality_score{");
     expect(afterDrain).not.toContain("flylive_audio_quality_samples{");
+  });
+
+  it("introduces no new series when ticket 03 writes its quality events", async () => {
+    // Degraded in BOTH directions, so every event path in the aggregator runs
+    // and any series 03 might have added would be published by this tick.
+    scoreRegistry.record({
+      streamId: CANARY_STREAM,
+      direction: "sending",
+      score: 1,
+      roomId: CANARY_ROOM,
+      userId: CANARY_USER,
+    });
+    scoreRegistry.record({
+      streamId: `${CANARY_STREAM}-2`,
+      direction: "receiving",
+      score: 0,
+      roomId: CANARY_ROOM,
+      userId: CANARY_USER,
+    });
+    rtpStatisticsRegistry.replace(canaryRtpSamples);
+
+    runQualitySamplingTick();
+
+    const app = await buildApp();
+    const body = await scrape(app);
+    await app.close();
+
+    // Guard against a vacuous pass — an empty set would satisfy a subset check.
+    const published = audioSeriesIn(body);
+    expect(published.length).toBeGreaterThan(0);
+    expect(published).toEqual([...ALLOWED_AUDIO_SERIES].sort());
   });
 
   it("rejects an unauthenticated scrape", async () => {

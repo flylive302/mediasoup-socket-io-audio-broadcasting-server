@@ -307,6 +307,41 @@ const configSchema = z.object({
   // the audio it is measuring; this is the ceiling that prevents it.
   AUDIO_RTP_SWEEP_CONCURRENCY: z.coerce.number().int().positive().default(16),
 
+  // observability-audio-quality 03: the score at or below which a client leg
+  // counts as degraded and earns a log event on the complaint path.
+  // mediasoup scores 0-10 with 10 best; sustained values at or below 5 are the
+  // range where a listener actually notices. Mirrors DEFAULT_DEGRADED_SCORE in
+  // qualityAggregator.ts, which stays the fallback for direct callers of that
+  // pure function — config must not be imported into the test seam.
+  AUDIO_QUALITY_DEGRADED_SCORE: z.coerce.number().min(0).max(10).default(5),
+
+  // Minimum gap between two log events for the SAME client leg.
+  //
+  // 🔴 THIS IS WHAT MAKES A LOG-BASED COMPLAINT PATH VIABLE. A degraded leg is
+  // degraded on every sampler tick, so without it one bad participant writes a
+  // line every AUDIO_QUALITY_SAMPLE_INTERVAL_MS for as long as they stay in
+  // the room. 60s keeps roughly one line per minute per leg — enough
+  // resolution to bound when a degradation started and stopped, which is the
+  // question a complaint actually asks.
+  AUDIO_QUALITY_EVENT_MIN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60_000),
+
+  // Hard ceiling on quality events written per tick, across every leg.
+  //
+  // The interval above bounds one leg over TIME; this bounds the instance over
+  // BREADTH, because the incidents worth logging degrade every leg at once.
+  // Events are written worst-score-first and the remainder is collapsed into a
+  // single summary line. Same principle as the sweep concurrency cap: the
+  // instrument must not become the incident.
+  AUDIO_QUALITY_EVENT_MAX_PER_TICK: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(50),
+
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge

@@ -64,9 +64,7 @@ describe("aggregateQuality", () => {
   describe("percentile boundaries", () => {
     it("uses nearest-rank, so every statistic is an observed value", () => {
       // 1..10 ascending. Nearest-rank index = ceil(p/100 * n) - 1.
-      const result = aggregateQuality(
-        scores([5, 3, 9, 1, 7, 10, 2, 8, 4, 6]),
-      );
+      const result = aggregateQuality(scores([5, 3, 9, 1, 7, 10, 2, 8, 4, 6]));
       const stats = forDirection(result, "receiving")!.statistics;
 
       expect(stats.min).toBe(1);
@@ -137,6 +135,7 @@ describe("aggregateQuality", () => {
       ]);
 
       expect(result.events[0]).toEqual({
+        streamId: "consumer-abc",
         roomId: "room-77",
         userId: "901",
         direction: "receiving",
@@ -326,6 +325,162 @@ describe("aggregateQuality", () => {
       expect(Object.keys(dist!).sort()).toEqual(
         ["metric", "direction", "sampleCount", "statistics"].sort(),
       );
+    });
+  });
+
+  describe("streamId and the rtpSamples join on events", () => {
+    const qualitySample = (
+      streamId: string,
+      score: number,
+      direction: QualityDirection = "receiving",
+    ): QualitySample => ({
+      streamId,
+      direction,
+      score,
+      roomId: "room-1",
+      userId: "42",
+    });
+
+    const rtpFor = (
+      streamId: string,
+      overrides: Partial<RtpStatisticsSample> = {},
+    ): RtpStatisticsSample => ({
+      streamId,
+      direction: "receiving",
+      roomId: "room-1",
+      userId: "42",
+      ...overrides,
+    });
+
+    it("carries the streamId of the degraded leg on its event", () => {
+      const result = aggregateQuality([qualitySample("consumer-abc", 2)]);
+      expect(result.events[0]?.streamId).toBe("consumer-abc");
+    });
+
+    it("attaches the matching rtp sample's fractionLost, jitter and roundTripTime by streamId", () => {
+      // Two degraded legs, two rtp samples — proves the join picks each
+      // leg's OWN sample rather than the first one in the array.
+      const result = aggregateQuality(
+        [qualitySample("consumer-a", 1), qualitySample("consumer-b", 2)],
+        {
+          rtpSamples: [
+            rtpFor("consumer-a", {
+              fractionLost: 0.1,
+              jitter: 5,
+              roundTripTime: 20,
+            }),
+            rtpFor("consumer-b", {
+              fractionLost: 0.4,
+              jitter: 9,
+              roundTripTime: 50,
+            }),
+          ],
+        },
+      );
+
+      const eventA = result.events.find((e) => e.streamId === "consumer-a");
+      const eventB = result.events.find((e) => e.streamId === "consumer-b");
+
+      expect(eventA).toMatchObject({
+        fractionLost: 0.1,
+        jitter: 5,
+        roundTripTime: 20,
+      });
+      expect(eventB).toMatchObject({
+        fractionLost: 0.4,
+        jitter: 9,
+        roundTripTime: 50,
+      });
+    });
+
+    it("has no fractionLost, jitter or roundTripTime keys when no rtp sample matches the degraded leg's streamId", () => {
+      const result = aggregateQuality([qualitySample("consumer-abc", 2)], {
+        rtpSamples: [
+          rtpFor("some-other-stream", {
+            fractionLost: 0.1,
+            jitter: 5,
+            roundTripTime: 20,
+          }),
+        ],
+      });
+
+      const event = result.events[0]!;
+      // The keys must be OMITTED, not present-and-undefined.
+      expect(event).not.toHaveProperty("fractionLost");
+      expect(event).not.toHaveProperty("jitter");
+      expect(event).not.toHaveProperty("roundTripTime");
+    });
+
+    it("omits a statistic that's absent on the matching rtp sample rather than writing it through", () => {
+      const result = aggregateQuality([qualitySample("consumer-abc", 2)], {
+        rtpSamples: [
+          // jitter intentionally absent
+          rtpFor("consumer-abc", { fractionLost: 0.1, roundTripTime: 20 }),
+        ],
+      });
+
+      const event = result.events[0]!;
+      expect(event.fractionLost).toBe(0.1);
+      expect(event.roundTripTime).toBe(20);
+      expect(event).not.toHaveProperty("jitter");
+    });
+
+    it("omits a statistic that's non-finite on the matching rtp sample rather than writing it through", () => {
+      // NaN fractionLost is the dangerous case: a written-through garbage
+      // value would read as PERFECT (0 loss), not as "no data".
+      const result = aggregateQuality([qualitySample("consumer-abc", 2)], {
+        rtpSamples: [
+          rtpFor("consumer-abc", {
+            fractionLost: Number.NaN,
+            jitter: Number.POSITIVE_INFINITY,
+            roundTripTime: 20,
+          }),
+        ],
+      });
+
+      const event = result.events[0]!;
+      expect(event.roundTripTime).toBe(20);
+      expect(event).not.toHaveProperty("fractionLost");
+      expect(event).not.toHaveProperty("jitter");
+    });
+
+    it("produces no event for an rtp sample whose streamId matches a healthy leg", () => {
+      const result = aggregateQuality([qualitySample("consumer-healthy", 9)], {
+        rtpSamples: [rtpFor("consumer-healthy", { fractionLost: 0.1 })],
+      });
+
+      expect(result.events).toEqual([]);
+      // Proves the sample was actually read by the join, not merely
+      // ignored — the join must not manufacture events either way.
+      expect(result.rtpDistributions.length).toBeGreaterThan(0);
+    });
+
+    it("computes the same rtpDistributions whether or not the matching leg is degraded", () => {
+      const rtpSamples: RtpStatisticsSample[] = [
+        rtpFor("consumer-x", {
+          fractionLost: 0.2,
+          jitter: 4,
+          roundTripTime: 30,
+        }),
+      ];
+
+      const degraded = aggregateQuality([qualitySample("consumer-x", 2)], {
+        rtpSamples,
+      });
+      const healthy = aggregateQuality([qualitySample("consumer-x", 9)], {
+        rtpSamples,
+      });
+
+      expect(degraded.rtpDistributions).toEqual(healthy.rtpDistributions);
+    });
+
+    it("reflects a degradedAtOrBelow override on the event's threshold, not the default", () => {
+      const result = aggregateQuality([qualitySample("consumer-abc", 8)], {
+        degradedAtOrBelow: 9,
+      });
+
+      expect(result.events[0]?.threshold).toBe(9);
+      expect(result.events[0]?.threshold).not.toBe(DEFAULT_DEGRADED_SCORE);
     });
   });
 });

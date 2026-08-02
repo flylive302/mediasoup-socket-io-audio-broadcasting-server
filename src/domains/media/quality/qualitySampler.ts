@@ -11,6 +11,7 @@ import {
   aggregateQuality,
   type QualityAggregate,
 } from "./qualityAggregator.js";
+import { logQualityEvents } from "./qualityEventLogger.js";
 import {
   publishQualityDistributions,
   publishRtpDistributions,
@@ -32,16 +33,26 @@ let timer: NodeJS.Timeout | null = null;
  * tick. The sweep is slower than this tick on purpose, and a series that
  * blinked out between sweeps would read as "the fleet went quiet".
  *
- * Returns the whole aggregate, including the quality events that ticket 03
- * will write to the log stream. Nothing consumes `events` yet.
+ * Returns the whole aggregate, including the quality events written to the log
+ * stream by ticket 03.
  */
 export function runQualitySamplingTick(): QualityAggregate {
   const aggregate = aggregateQuality(scoreRegistry.snapshot(), {
+    degradedAtOrBelow: config.AUDIO_QUALITY_DEGRADED_SCORE,
     rtpSamples: rtpStatisticsRegistry.snapshot(),
   });
 
   publishQualityDistributions(aggregate.distributions);
   publishRtpDistributions(aggregate.rtpDistributions);
+
+  // REACT (ticket 03) — the complaint path. Writes logs only, never metrics,
+  // and is wrapped because a REACT failure must not cost the fleet its
+  // percentiles: the gauges above are already set by this point.
+  try {
+    logQualityEvents(aggregate.events);
+  } catch (err) {
+    logger.error({ err }, "Audio-quality event logging failed");
+  }
 
   return aggregate;
 }
