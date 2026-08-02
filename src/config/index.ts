@@ -276,6 +276,17 @@ const configSchema = z.object({
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
 
+  // observability-audio-quality 01: how often the audio-quality sampler
+  // snapshots live client legs and republishes the percentile gauges.
+  // Scores themselves are pushed by the SFU as they change, so this only
+  // controls scrape freshness, not measurement cost. 15s sits comfortably
+  // under a typical 30-60s Prometheus scrape so no tick is ever missed.
+  AUDIO_QUALITY_SAMPLE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15_000),
+
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
   CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge

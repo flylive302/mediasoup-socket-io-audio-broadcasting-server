@@ -251,7 +251,14 @@ const audioProduceHandler = createHandler(
     // of leaving a half-piped speaker some listeners can't hear.
     if (cluster) {
       try {
-        await cluster.registerProducer(producer);
+        // The ClientLeg opts this producer into audio-quality sampling
+        // (observability-audio-quality 01). Only real participant legs pass
+        // one; relay pipe producers deliberately do not. roomId/userId are
+        // used for ticket 03's log path and are NEVER metric labels.
+        await cluster.registerProducer(producer, {
+          roomId,
+          userId: String(socket.data.user.id),
+        });
       } catch (err) {
         logger.error(
           { err, roomId, producerId: producer.id },
@@ -332,7 +339,7 @@ const audioProduceHandler = createHandler(
 const audioConsumeHandler = createHandler(
   "audio:consume",
   audioConsumeSchema,
-  async (payload, _socket, context) => {
+  async (payload, socket, context) => {
     const { roomId, transportId, producerId, rtpCapabilities } = payload;
     const cluster = context.roomManager.getRoom(roomId);
     if (!cluster) {
@@ -352,10 +359,13 @@ const audioConsumeHandler = createHandler(
     }
 
     // cluster.consume() resolves piped producer ID and creates consumer
+    // As on the produce path: the ClientLeg opts this listener leg into
+    // audio-quality sampling and carries no metric-label identity.
     const consumer = await cluster.consume(
       transportId,
       producerId,
       rtpCapabilities as mediasoup.types.RtpCapabilities,
+      { roomId, userId: String(socket.data.user.id) },
     );
 
     return {

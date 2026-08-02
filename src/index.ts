@@ -4,6 +4,7 @@ import { config, initializeConfig } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
 import { getRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
+import { startQualitySampler, stopQualitySampler } from "./domains/media/quality/qualitySampler.js";
 import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain.js";
 import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
@@ -85,6 +86,11 @@ const start = async () => {
     // Start CloudWatch metrics publisher (disabled in dev)
     await startCloudWatchPublisher(roomManager, workerManager);
 
+    // observability-audio-quality 01: republish the fleet audio-quality
+    // percentiles on their own interval. Started after initializeConfig() has
+    // resolved INSTANCE_ID, which the publisher reads per tick as a label.
+    startQualitySampler();
+
     // Graceful Shutdown Logic
     let isShuttingDown = false;
 
@@ -157,8 +163,9 @@ const start = async () => {
         // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
 
-        // 5. Stop CloudWatch publisher
+        // 5. Stop CloudWatch publisher + audio-quality sampler
         stopCloudWatchPublisher();
+        stopQualitySampler();
 
         // 6. Close Redis connections (both pub and sub clients)
         const pubClient = getRedisClient();
@@ -203,6 +210,7 @@ const start = async () => {
         revocationPoller.stop();
         presenceService.stop();
         stopCloudWatchPublisher();
+        stopQualitySampler();
       },
       flushStatus: () => statusCoalescer.stop(),
       statusPendingCount: () => statusCoalescer.pendingCount(),

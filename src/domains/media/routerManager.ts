@@ -1,6 +1,11 @@
 import * as mediasoup from "mediasoup";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { mediasoupConfig } from "@src/config/mediasoup.js";
+import {
+  observeConsumerQuality,
+  observeProducerQuality,
+} from "./quality/scoreObservers.js";
+import type { ClientLeg } from "./quality/scoreRegistry.js";
 
 export class RouterManager {
   public router: mediasoup.types.Router | null = null;
@@ -117,10 +122,22 @@ export class RouterManager {
     return this.consumers.get(consumerId);
   }
 
-  registerConsumer(consumer: mediasoup.types.Consumer) {
+  /**
+   * @param clientLeg pass ONLY for a real participant leg — a browser being
+   * served audio. Omitting it excludes the consumer from audio-quality
+   * sampling (observability-audio-quality 01). Default-deny: a relay or
+   * egress consumer that is later routed through here stays out of the
+   * metric unless someone deliberately opts it in.
+   */
+  registerConsumer(
+    consumer: mediasoup.types.Consumer,
+    clientLeg?: ClientLeg,
+  ) {
     this.consumers.set(consumer.id, consumer);
     consumer.on("transportclose", () => this.consumers.delete(consumer.id));
     consumer.on("producerclose", () => this.consumers.delete(consumer.id));
+
+    if (clientLeg) observeConsumerQuality(consumer, clientLeg);
   }
 
   /**
@@ -130,8 +147,20 @@ export class RouterManager {
     return this.producers.get(producerId);
   }
 
-  registerProducer(producer: mediasoup.types.Producer) {
+  /**
+   * @param clientLeg pass ONLY for a real participant leg — a mic or music
+   * producer created on that participant's own transport. The two relay
+   * registration sites (`api/internal.ts` reverse-pipe finalize and
+   * `cascade/edge-pipe-lifecycle.ts` forward-pipe) deliberately omit it, so
+   * pipe legs never enter the audio-quality metric.
+   */
+  registerProducer(
+    producer: mediasoup.types.Producer,
+    clientLeg?: ClientLeg,
+  ) {
     this.producers.set(producer.id, producer);
     producer.on("transportclose", () => this.producers.delete(producer.id));
+
+    if (clientLeg) observeProducerQuality(producer, clientLeg);
   }
 }

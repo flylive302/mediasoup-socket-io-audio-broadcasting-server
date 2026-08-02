@@ -284,6 +284,42 @@ export const metrics = {
     labelNames: ["subsystem", "operation"] as const,
     registers: [metricsRegistry],
   }),
+
+  // observability-audio-quality 01: the live distribution of the SFU's own
+  // 0–10 audio quality score across the fleet. Higher is better, so the
+  // interesting tail is the LOW end — alarm on p01/p10, not on p90.
+  //
+  // 🔴 CARDINALITY GATE. These are the first metrics in MSAB with a dimension
+  // that could be keyed to a live, growing entity set, and they are not:
+  // `direction` and `statistic` are closed enumerations, `region` and
+  // `instance` are process-wide. NEVER add a room, user, consumer, producer
+  // or `source` (mic/music) label here — per-listener series at target
+  // concurrency produce a series count no monitoring plan absorbs. Room- and
+  // user-scoped detail goes to the log stream instead (ticket 03).
+  //
+  // Written ONLY by qualityPublisher.ts, which resets before each tick so a
+  // direction that went quiet stops publishing rather than freezing its last
+  // value forever.
+  audioQualityScore: new Gauge({
+    name: "flylive_audio_quality_score",
+    help:
+      "SFU audio quality score (0-10, higher is better) across live client legs. " +
+      "COVERS: a participant's own mic/music publish (direction=sending) and " +
+      "audio served to a participant (direction=receiving), while unpaused. " +
+      "DOES NOT COVER: paused/muted legs, cross-instance origin/edge pipe legs, " +
+      "same-instance router-to-router pipe legs, or the HLS/FFmpeg broadcast egress mix.",
+    labelNames: ["region", "instance", "direction", "statistic"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  // The denominator for the percentiles above. Published so a zero is
+  // explicit — without it, "no samples" and "not scraped" look identical.
+  audioQualitySamples: new Gauge({
+    name: "flylive_audio_quality_samples",
+    help: "Live client legs contributing to flylive_audio_quality_score, by direction",
+    labelNames: ["region", "instance", "direction"] as const,
+    registers: [metricsRegistry],
+  }),
 };
 
 /**

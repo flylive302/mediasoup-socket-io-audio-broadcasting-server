@@ -17,6 +17,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { reactError } from "@src/shared/react-error.js";
 import { RouterManager } from "./routerManager.js";
+import type { ClientLeg } from "./quality/scoreRegistry.js";
 
 interface DistributionRouter {
   routerManager: RouterManager;
@@ -196,11 +197,19 @@ export class RoomMediaCluster {
   /**
    * Register a producer on the source router and pipe it to all
    * existing distribution routers.
+   *
+   * @param clientLeg pass ONLY for a real participant's mic/music producer.
+   * The reverse-pipe finalize path (`api/internal.ts`) and the edge
+   * forward-pipe path (`cascade/edge-pipe-lifecycle.ts`) omit it so relay
+   * legs stay out of audio-quality sampling.
    */
-  async registerProducer(producer: mediasoup.types.Producer): Promise<void> {
+  async registerProducer(
+    producer: mediasoup.types.Producer,
+    clientLeg?: ClientLeg,
+  ): Promise<void> {
     if (!this.sourceRouter) throw new Error("Cluster not initialized");
 
-    this.sourceRouter.registerProducer(producer);
+    this.sourceRouter.registerProducer(producer, clientLeg);
     this.sourceProducerIds.add(producer.id);
 
     // Clean up tracking when producer closes
@@ -313,6 +322,7 @@ export class RoomMediaCluster {
     transportId: string,
     sourceProducerId: string,
     rtpCapabilities: mediasoup.types.RtpCapabilities,
+    clientLeg?: ClientLeg,
   ): Promise<mediasoup.types.Consumer> {
     // Find which distribution router owns this transport
     const dist = this.findDistributionRouterForTransport(transportId);
@@ -353,7 +363,7 @@ export class RoomMediaCluster {
     consumer.on("transportclose", cleanup);
     consumer.on("producerclose", cleanup);
 
-    dist.routerManager.registerConsumer(consumer);
+    dist.routerManager.registerConsumer(consumer, clientLeg);
 
     return consumer;
   }
