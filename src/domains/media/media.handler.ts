@@ -230,6 +230,13 @@ const audioProduceHandler = createHandler(
     // coexist for discovery by new joiners — dj-talk-over/01.
     const client = context.clientManager.getClient(socket.id);
     if (client) {
+      // audio-pipe-observability/15: this map entry used to be overwritten
+      // outright. The displaced producer stayed live and cluster-registered —
+      // still piped to the distribution routers, still consumable — so one user
+      // ended up with TWO audible producers and was heard doubled by the whole
+      // room, unreachable by any client-side cleanup.
+      closeDisplacedProducer(client, source, producer.id, socket, roomId, context);
+
       client.producers.set(source, producer.id);
       client.isSpeaker = true;
       logger.debug(
@@ -556,6 +563,77 @@ export function reactOnProducerClose(
     // on the reduced set; a dead RTP input would otherwise freeze amix).
     context.broadcastController.onSpeakerChange(roomId);
   });
+}
+
+/**
+ * REACT — retire the producer a re-produce is about to displace.
+ *
+ * audio-pipe-observability/15. `audio:produce` tracks one producer per
+ * `source`, so a second produce for the same source replaces the map entry. It
+ * used to replace it silently: the first producer stayed open and stayed piped
+ * to every distribution router, so the room heard that speaker twice, and no
+ * client-side fix could reach it — the orphan belongs to the server.
+ *
+ * ⛔ Do NOT "fix" this by rejecting the second produce instead. Seat-reclaim
+ * after a reconnect legitimately re-produces for the same source while the old
+ * entry is still tracked (the old transport has not necessarily closed yet), so
+ * rejecting would leave a reconnecting speaker permanently muted — a worse
+ * failure than the echo.
+ *
+ * 🔴 `producer.close()` fires the observer's `close`, NOT the public
+ * `transportclose`, so `reactOnProducerClose` does not run for this path. Every
+ * side effect it would have done is therefore done here explicitly. The
+ * exception is `onSpeakerChange`, which the produce handler already calls after
+ * this returns — one call covers both the removal and the addition.
+ *
+ * Piped copies on the distribution routers need no action: mediasoup cascades
+ * a source-producer close to its pipe consumers, which closes the piped
+ * producers natively.
+ */
+function closeDisplacedProducer(
+  client: ClientData,
+  source: string,
+  newProducerId: string,
+  socket: Socket,
+  roomId: string,
+  context: AppContext,
+): void {
+  const displacedId = client.producers.get(source);
+  if (!displacedId || displacedId === newProducerId) {
+    return;
+  }
+
+  const displaced = context.roomManager.getRoom(roomId)?.getProducer(displacedId);
+  if (!displaced || displaced.closed) {
+    return;
+  }
+
+  displaced.close();
+
+  logger.info(
+    { userId: client.userId, displacedProducerId: displacedId, newProducerId, source, roomId },
+    "Closed displaced producer on re-produce",
+  );
+
+  // Listeners hold a consumer for the old producer; without this they keep a
+  // live <audio> element that no longer has a producer behind it.
+  emitToRoom(
+    socket,
+    roomId,
+    "audio:producerClosed",
+    { producerId: displacedId, userId: socket.data.user.id as number },
+    context.cascadeRelay,
+  );
+
+  // Mirrors reactOnProducerClose: an edge room opened a reverse pipe for this
+  // producer, and origin only tears its side down when we close ours.
+  if (context.cascadeCoordinator?.isEdgeRoom(roomId)) {
+    context.cascadeCoordinator
+      .closeReversePipe(roomId, displacedId)
+      .catch((err) =>
+        reactError(err, { roomId, edgeProducerId: displacedId }, "closeReversePipe failed for displaced producer"),
+      );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────

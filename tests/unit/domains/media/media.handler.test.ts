@@ -259,6 +259,173 @@ describe("audio:produce — source registry", () => {
   });
 });
 
+// ─── audioProduceHandler: displaced producer cleanup (audio-pipe-observability/15) ─
+
+describe("audio:produce — displaced producer cleanup", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Same shape as the "source registry" harness above, extended with
+  // `cluster.getProducer` — closeDisplacedProducer resolves the live object
+  // through the cluster, not the client map, so the stub must serve it.
+  function makeTransport(producers: Map<string, ReturnType<typeof createMockProducer>>) {
+    let n = 0;
+    return {
+      produce: vi.fn(async () => {
+        n += 1;
+        const producer = createMockProducer(`prod-${n}`);
+        producers.set(producer.id, producer);
+        return producer as unknown as import("mediasoup").types.Producer;
+      }),
+    };
+  }
+
+  function makeContext(
+    transport: ReturnType<typeof makeTransport>,
+    client: { producers: Map<string, string>; isSpeaker: boolean; userId: number },
+    producers: Map<string, ReturnType<typeof createMockProducer>>,
+  ) {
+    const cluster = {
+      getTransport: vi.fn().mockReturnValue(transport),
+      audioObserver: null,
+      registerProducer: vi.fn().mockResolvedValue(undefined),
+      getProducer: vi.fn((id: string) => producers.get(id)),
+    };
+    return {
+      roomManager: { getRoom: vi.fn().mockReturnValue(cluster) },
+      clientManager: { getClient: vi.fn().mockReturnValue(client) },
+      broadcastController: { onSpeakerChange: vi.fn(), isBroadcasting: () => false },
+      cascadeCoordinator: null,
+      cascadeRelay: null,
+    };
+  }
+
+  function registerProduceHandler(socket: import("socket.io").Socket, context: unknown) {
+    let produceHandler: ((payload: unknown) => Promise<unknown>) | undefined;
+    const socketWithOn = {
+      ...socket,
+      on: vi.fn((event: string, handler: (payload: unknown) => Promise<unknown>) => {
+        if (event === "audio:produce") produceHandler = handler;
+      }),
+    } as unknown as import("socket.io").Socket;
+
+    mediaHandler(socketWithOn, context as never);
+    return produceHandler!;
+  }
+
+  const basePayload = {
+    roomId: "room-1",
+    transportId: "123e4567-e89b-12d3-a456-426614174001",
+    kind: "audio",
+    rtpParameters: { codecs: [] },
+  };
+
+  it("closes the first producer when a second produce reuses the same source", async () => {
+    // audio-pipe-observability/15: without this, the second produce silently
+    // overwrote the tracking map and the first producer stayed live+piped —
+    // one user was heard twice by the whole room.
+    const producers = new Map<string, ReturnType<typeof createMockProducer>>();
+    const transport = makeTransport(producers);
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client, producers);
+    const produceHandler = registerProduceHandler(createMockSocket(7), context);
+
+    await produceHandler({ ...basePayload, source: "mic" });
+    const firstProducer = producers.get(client.producers.get("mic")!)!;
+    await produceHandler({ ...basePayload, source: "mic" });
+
+    expect(firstProducer.close).toHaveBeenCalledTimes(1);
+    expect(client.producers.get("mic")).toBe("prod-2");
+  });
+
+  it("emits audio:producerClosed carrying the displaced producer's id, not the new one", async () => {
+    // Proves listeners are told to tear down the OLD producer's consumer —
+    // emitting the new id here would leave dangling <audio> elements.
+    const producers = new Map<string, ReturnType<typeof createMockProducer>>();
+    const transport = makeTransport(producers);
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client, producers);
+    const produceHandler = registerProduceHandler(createMockSocket(7), context);
+
+    await produceHandler({ ...basePayload, source: "mic" });
+    await produceHandler({ ...basePayload, source: "mic" });
+
+    // registerProduceHandler wraps the socket (adds an `on` spy) before handing
+    // it to mediaHandler, so match by identity (id), not full object equality.
+    expect(emitToRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "socket-7" }),
+      "room-1",
+      "audio:producerClosed",
+      expect.objectContaining({ producerId: "prod-1" }),
+      null,
+    );
+  });
+
+  it("a first produce for a source closes nothing and emits no audio:producerClosed", async () => {
+    // Guards against the fix firing on the normal, non-displacing path.
+    const producers = new Map<string, ReturnType<typeof createMockProducer>>();
+    const transport = makeTransport(producers);
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client, producers);
+    const produceHandler = registerProduceHandler(createMockSocket(7), context);
+
+    await produceHandler({ ...basePayload, source: "mic" });
+
+    for (const p of producers.values()) {
+      expect(p.close).not.toHaveBeenCalled();
+    }
+    expect(emitToRoom).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "audio:producerClosed",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("a produce for a different source does not close the other source's producer", async () => {
+    // dj-talk-over/01: mic and music coexist deliberately — displacing one
+    // must not touch the other.
+    const producers = new Map<string, ReturnType<typeof createMockProducer>>();
+    const transport = makeTransport(producers);
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client, producers);
+    const produceHandler = registerProduceHandler(createMockSocket(7), context);
+
+    await produceHandler({ ...basePayload, source: "mic" });
+    const micProducerId = client.producers.get("mic")!;
+    const micProducer = producers.get(micProducerId)!;
+    await produceHandler({ ...basePayload, source: "music" });
+
+    expect(micProducer.close).not.toHaveBeenCalled();
+    expect(client.producers.get("mic")).toBe(micProducerId);
+  });
+
+  it("does not re-close an already-closed displaced producer or emit for it", async () => {
+    // Guards a stale map entry (e.g. the old producer already closed via
+    // transportclose) from a redundant close/emit.
+    const producers = new Map<string, ReturnType<typeof createMockProducer>>();
+    const transport = makeTransport(producers);
+    const client = { producers: new Map<string, string>(), isSpeaker: false, userId: 7 };
+    const context = makeContext(transport, client, producers);
+    const produceHandler = registerProduceHandler(createMockSocket(7), context);
+
+    await produceHandler({ ...basePayload, source: "mic" });
+    const firstProducer = producers.get(client.producers.get("mic")!)!;
+    firstProducer.closed = true;
+
+    await produceHandler({ ...basePayload, source: "mic" });
+
+    expect(firstProducer.close).not.toHaveBeenCalled();
+    expect(emitToRoom).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "audio:producerClosed",
+      expect.objectContaining({ producerId: firstProducer.id }),
+      expect.anything(),
+    );
+  });
+});
+
 // ─── Room-membership gate (platform-security 01) ────────────────────
 //
 // Seam (decided in the ticket, do not substitute): the three media handlers
