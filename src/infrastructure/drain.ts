@@ -8,10 +8,11 @@
  * 4. If lifecycle hook token is present, completes ASG lifecycle action
  *
  * Admin routes:
- *   POST /admin/drain   — enter drain mode
- *   GET  /admin/status  — current instance status
+ *   POST /admin/drain    — enter drain mode
+ *   POST /admin/undrain  — cancel drain mode, return instance to rotation
+ *   GET  /admin/status   — current instance status
  */
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import { config } from "@src/config/index.js";
 import { logger } from "./logger.js";
@@ -157,7 +158,12 @@ function completeDrain(outcome: DrainOutcome, roomsStillOpen: number): void {
 }
 
 /**
- * Reset drain state (for testing)
+ * Reset drain state.
+ *
+ * Shared by two callers: `POST /admin/undrain` (reversing a live drain, e.g.
+ * a scale-in decision cancelled mid-flight) and tests. Clears every drain
+ * var and both timers (poll interval + ceiling timeout) so a cancelled drain
+ * cannot complete or re-flip the instance to drained later.
  */
 export function resetDrain(): void {
   draining = false;
@@ -175,6 +181,22 @@ export function resetDrain(): void {
   }
 }
 
+// ─── Auth ───────────────────────────────────────────────────────────
+
+/**
+ * Shared X-Internal-Key check for all admin routes below. Pure extraction
+ * of the guard that used to be duplicated inline in each handler — same
+ * mechanism (rotation-overlap key match), same env vars.
+ */
+function isAuthorizedAdmin(request: FastifyRequest): boolean {
+  const internalKey = request.headers["x-internal-key"] as string | undefined;
+  return matchesRotatableKey(
+    internalKey,
+    config.LARAVEL_INTERNAL_KEY,
+    parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS),
+  );
+}
+
 // ─── Fastify Admin Routes ───────────────────────────────────────────
 
 export const createAdminRoutes = (
@@ -186,9 +208,7 @@ export const createAdminRoutes = (
      * Enter drain mode. Requires X-Internal-Key header.
      */
     fastify.post("/admin/drain", async (request, reply) => {
-      // Auth check
-      const internalKey = request.headers["x-internal-key"] as string | undefined;
-      if (!matchesRotatableKey(internalKey, config.LARAVEL_INTERNAL_KEY, parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS))) {
+      if (!isAuthorizedAdmin(request)) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 
@@ -222,12 +242,45 @@ export const createAdminRoutes = (
     });
 
     /**
+     * POST /admin/undrain
+     * Cancel drain mode and return the instance to rotation. Reverses
+     * `POST /admin/drain`: clears the draining/drained flags and cancels
+     * both the poll interval and the ceiling timeout, so a drain already
+     * in flight cannot complete out from under the cancellation. Requires
+     * X-Internal-Key header. Idempotent — safe to call repeatedly, and
+     * safe on an instance that was never drained.
+     */
+    fastify.post("/admin/undrain", async (request, reply) => {
+      if (!isAuthorizedAdmin(request)) {
+        return reply.code(401).send({ status: "error", message: "Unauthorized" });
+      }
+
+      const wasDraining = isDraining();
+      const discardedReport = getDrainReport();
+
+      resetDrain();
+
+      logger.info(
+        { wasDraining, discardedReport },
+        "▶️ Drain cancelled — instance returned to rotation",
+      );
+
+      return reply.code(200).send({
+        status: "ok",
+        message: wasDraining ? "Drain cancelled — instance returned to rotation" : "Not draining",
+        draining: false,
+        drained: false,
+        drainOutcome: null,
+        roomsStillOpen: null,
+      });
+    });
+
+    /**
      * GET /admin/status
      * Current instance status. AUDIT-008 FIX: requires X-Internal-Key.
      */
     fastify.get("/admin/status", async (request, reply) => {
-      const internalKey = request.headers["x-internal-key"] as string | undefined;
-      if (!matchesRotatableKey(internalKey, config.LARAVEL_INTERNAL_KEY, parsePreviousKeys(config.LARAVEL_INTERNAL_KEY_PREVIOUS))) {
+      if (!isAuthorizedAdmin(request)) {
         return reply.code(401).send({ status: "error", message: "Unauthorized" });
       }
 
