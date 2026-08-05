@@ -22,7 +22,7 @@ vi.mock("@src/shared/crypto.js", () => ({
 }));
 
 vi.mock("@src/domains/seat/seat.owner.js", () => ({
-  verifyRoomManager: vi.fn().mockResolvedValue({ allowed: true }),
+  verifyRoomModerationTarget: vi.fn().mockResolvedValue({ allowed: true }),
 }));
 
 vi.mock("@src/domains/seat/vip.guard.js", () => ({
@@ -34,6 +34,7 @@ vi.mock("@src/shared/room-emit.js", () => ({
 }));
 
 import { createMuteHandler } from "@src/domains/seat/handlers/mute-unmute.factory.js";
+import { verifyRoomModerationTarget } from "@src/domains/seat/seat.owner.js";
 import { Errors } from "@src/shared/errors.js";
 
 function makeProducer() {
@@ -112,6 +113,58 @@ describe("createMuteHandler — mic-only targeting during music (dj-talk-over)",
     expect(micProducer.resume).toHaveBeenCalledTimes(1);
     expect(musicProducer.pause).not.toHaveBeenCalled();
     expect(musicProducer.resume).not.toHaveBeenCalled();
+  });
+
+  it("rank-gates on the TARGET, not the requester — an admin must not mute the owner", async () => {
+    const { context, socket } = makeContext();
+    const handler = createMuteHandler({
+      event: "seat:mute",
+      muted: true,
+      failError: Errors.MUTE_FAILED,
+      producerAction: "pause",
+      logAction: "muted",
+      producerLogAction: "paused (server-side mute)",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = handler(socket as any, context as any);
+    await fn({ roomId: "room-1", userId: 7 }, vi.fn());
+
+    // socket user 99 is muting user 7. Passing the requester twice, or using
+    // the target-blind `verifyRoomManager`, is the exact regression that let
+    // an admin mute the room owner.
+    expect(verifyRoomModerationTarget).toHaveBeenCalledWith(
+      "room-1",
+      "99",
+      "7",
+      context,
+    );
+  });
+
+  it("aborts the mute when the rank gate refuses — no producer is paused", async () => {
+    const { micProducer, context, socket } = makeContext();
+    vi.mocked(verifyRoomModerationTarget).mockResolvedValueOnce({
+      allowed: false,
+      error: Errors.NOT_AUTHORIZED,
+    });
+
+    const handler = createMuteHandler({
+      event: "seat:mute",
+      muted: true,
+      failError: Errors.MUTE_FAILED,
+      producerAction: "pause",
+      logAction: "muted",
+      producerLogAction: "paused (server-side mute)",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = handler(socket as any, context as any);
+    const cb = vi.fn();
+    await fn({ roomId: "room-1", userId: 7 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: false, error: Errors.NOT_AUTHORIZED });
+    expect(micProducer.pause).not.toHaveBeenCalled();
+    expect(context.seatRepository.setMute).not.toHaveBeenCalled();
   });
 
   it("does not touch the music mutex or emit a music-stop event (mute is voice-only, never music)", async () => {

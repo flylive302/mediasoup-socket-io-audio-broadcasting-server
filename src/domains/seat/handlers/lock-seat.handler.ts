@@ -3,7 +3,10 @@
  */
 import { seatLockSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
-import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import {
+  verifyRoomManager,
+  verifyRoomModerationTarget,
+} from "@src/domains/seat/seat.owner.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
@@ -16,7 +19,25 @@ export const lockSeatHandler = createHandler(
     const userId = String(socket.data.user.id);
     const { roomId, seatIndex } = payload;
 
-    const authorization = await verifyRoomManager(roomId, userId, context);
+    // Locking an OCCUPIED seat evicts whoever sits on it, so in that case lock
+    // is a targeted action and a back door around remove-seat (owner-only):
+    // without a rank check an admin could lock the room owner off the mic.
+    // Locking an empty seat has no victim and stays on the permissive tier.
+    //
+    // The occupant is read a moment before `lockSeat` runs, so a user who takes
+    // the seat inside that window is evicted without a rank check. The window is
+    // milliseconds and the seat must be the exact one being locked; closing it
+    // would mean holding the seat lock across two Laravel round-trips, which is
+    // a worse trade.
+    const occupant = await context.seatRepository.getSeatOccupant(
+      roomId,
+      seatIndex,
+    );
+
+    const authorization = occupant
+      ? await verifyRoomModerationTarget(roomId, userId, occupant, context)
+      : await verifyRoomManager(roomId, userId, context);
+
     if (!authorization.allowed) {
       return { success: false, error: authorization.error };
     }

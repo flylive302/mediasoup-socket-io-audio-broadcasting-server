@@ -5,7 +5,7 @@
  */
 import { seatMuteSchema } from "@src/socket/schemas.js";
 import { createHandler } from "@src/shared/handler.utils.js";
-import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { verifyRoomModerationTarget } from "@src/domains/seat/seat.owner.js";
 import { isVipAntiMuteProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
@@ -28,7 +28,16 @@ export function createMuteHandler(config: MuteConfig) {
       const userId = String(socket.data.user.id);
       const { roomId, userId: targetUserId } = payload;
 
-      const authorization = await verifyRoomManager(roomId, userId, context);
+      // Mute has a victim, so it is rank-gated, not just staff-gated: an admin
+      // may silence plain members but never the owner or a peer admin. Self-mute
+      // does NOT come through here — it is `audio:selfMute` — so gating a peer
+      // admin out cannot lock anyone out of their own microphone.
+      const authorization = await verifyRoomModerationTarget(
+        roomId,
+        userId,
+        String(targetUserId),
+        context,
+      );
       if (!authorization.allowed) {
         return { success: false, error: authorization.error };
       }

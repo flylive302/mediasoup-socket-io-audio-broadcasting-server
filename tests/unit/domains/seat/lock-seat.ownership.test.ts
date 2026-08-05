@@ -24,6 +24,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
 
 vi.mock("@src/domains/seat/seat.owner.js", () => ({
   verifyRoomManager: vi.fn().mockResolvedValue({ allowed: true }),
+  verifyRoomModerationTarget: vi.fn().mockResolvedValue({ allowed: true }),
 }));
 
 vi.mock("@src/shared/room-emit.js", () => ({
@@ -31,6 +32,10 @@ vi.mock("@src/shared/room-emit.js", () => ({
 }));
 
 import { lockSeatHandler } from "@src/domains/seat/handlers/lock-seat.handler.js";
+import {
+  verifyRoomManager,
+  verifyRoomModerationTarget,
+} from "@src/domains/seat/seat.owner.js";
 
 function makeProducer(userId: number) {
   return {
@@ -75,6 +80,8 @@ function makeContext(
   const io = { to: vi.fn(), on: vi.fn() };
   const context = {
     seatRepository: {
+      // Read before the lock so the rank gate knows who is about to be evicted.
+      getSeatOccupant: vi.fn().mockResolvedValue(String(kickedUserId)),
       lockSeat: vi.fn().mockResolvedValue({
         success: true,
         kicked: String(kickedUserId),
@@ -134,6 +141,7 @@ describe("seat:lock — producer ownership (F-45)", () => {
     const io = { to: vi.fn(), on: vi.fn() };
     const context = {
       seatRepository: {
+        getSeatOccupant: vi.fn().mockResolvedValue("7"),
         lockSeat: vi.fn().mockResolvedValue({ success: true, kicked: "7" }),
       },
       clientManager: { getClientsInRoom: vi.fn().mockReturnValue([kickedClient]) },
@@ -183,5 +191,57 @@ describe("seat:lock — producer ownership (F-45)", () => {
     await fn({ roomId: "room-1", seatIndex: 0 });
 
     expect(redis.del).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Locking an occupied seat EVICTS the occupant, which makes it a back door
+ * around remove-seat (owner-only). Without a rank check on the occupant an
+ * admin could lock the room owner off the mic — the same hole that let an
+ * admin mute the owner.
+ */
+describe("seat:lock — occupant rank gate", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rank-gates on the seat's occupant when the seat is taken", async () => {
+    const { context, socket } = makeContext(7, 7);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = lockSeatHandler(socket as any, context as any);
+    await fn({ roomId: "room-1", seatIndex: 0 });
+
+    expect(verifyRoomModerationTarget).toHaveBeenCalledWith("room-1", "99", "7", context);
+    expect(verifyRoomManager).not.toHaveBeenCalled();
+  });
+
+  it("refuses the lock — and never evicts — when the occupant outranks the requester", async () => {
+    const { context, socket } = makeContext(7, 7);
+    vi.mocked(verifyRoomModerationTarget).mockResolvedValueOnce({
+      allowed: false,
+      error: "Not authorized",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = lockSeatHandler(socket as any, context as any);
+    const cb = vi.fn();
+    await fn({ roomId: "room-1", seatIndex: 0 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: false, error: "Not authorized" });
+    expect(context.seatRepository.lockSeat).not.toHaveBeenCalled();
+  });
+
+  it("stays on the permissive tier for an EMPTY seat — locking nobody has no victim", async () => {
+    const { context, socket } = makeContext(7, 7);
+    context.seatRepository.getSeatOccupant.mockResolvedValueOnce(null);
+    context.seatRepository.lockSeat.mockResolvedValueOnce({ success: true, kicked: null });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = lockSeatHandler(socket as any, context as any);
+    const cb = vi.fn();
+    await fn({ roomId: "room-1", seatIndex: 0 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: true });
+    expect(verifyRoomManager).toHaveBeenCalledWith("room-1", "99", context);
+    expect(verifyRoomModerationTarget).not.toHaveBeenCalled();
   });
 });
