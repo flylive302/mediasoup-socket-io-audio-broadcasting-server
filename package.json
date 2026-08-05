@@ -7,7 +7,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks",
+    "prepare": "git config core.hooksPath .githooks || echo 'skipped: git hooks need a git repo (expected in Docker build)'",
     "dev": "tsx watch --import ./src/instrument.ts src/index.ts",
     "build": "tsup src/index.ts src/instrument.ts --format esm --dts --sourcemap",
     "start": "node dist/index.js",
