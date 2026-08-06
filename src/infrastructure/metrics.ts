@@ -123,7 +123,20 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
-  // Laravel API calls
+  // Laravel API calls — observability-audio-quality 14: emitted from LaravelClient's
+  // post()/get() private helpers, which every call to the API already passes through.
+  //
+  // `endpoint`: a bounded route-template label, never a raw path — see
+  // `metricsEndpointLabel()` in laravelClient.ts. Closed set, one entry per internal
+  // route that class calls (gifts/batch, rooms/:id, rooms/:id/status,
+  // rooms/:id/cascade-info, rooms/:id/members/:id/role, users/revoked, plus "unknown"
+  // as a closed fallback bucket for anything that doesn't match a known template).
+  //
+  // `status` (laravelApiCalls only): the response's HTTP status code as a string (e.g.
+  // "200", "404", "500") when Laravel answered at all, or one of two failure buckets when
+  // it didn't — "timeout" (the client's own AbortController fired) or "error" (any other
+  // transport failure: DNS, connection refused, TLS). Failures are counted here, not only
+  // 2xx responses.
   laravelApiCalls: new Counter({
     name: "flylive_laravel_api_calls_total",
     help: "Total Laravel API calls",
@@ -143,7 +156,11 @@ export const metrics = {
   authAttempts: new Counter({
     name: "flylive_auth_attempts_total",
     help: "Authentication attempts",
-    labelNames: ["result"] as const, // success, invalid_token, no_token, cache_hit
+    // result: success, invalid_token, no_token, origin_blocked, error, redis_error
+    // (observability-audio-quality 14: corrected from a documented set of 4 — including
+    // "cache_hit", which is never emitted — to the 6 values actually incremented; see
+    // src/auth/middleware.ts and src/auth/jwtValidator.ts)
+    labelNames: ["result"] as const,
     registers: [metricsRegistry],
   }),
 

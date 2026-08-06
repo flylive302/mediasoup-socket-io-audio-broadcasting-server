@@ -50,11 +50,11 @@ export interface AuthSocketData {
   user: User;
 
   /**
-   * Correlation identifier supplied at the socket handshake, if any.
-   *
-   * Undefined today: nothing populates it yet. `createHandler` already reads it and binds it as
-   * the ambient identifier for the invocation, so observability ticket 10 — which carries the
-   * identifier across the handshake — only has to set it here.
+   * Correlation identifier supplied at the socket handshake, or minted by
+   * `authMiddleware` (via `resolveCorrelationId`) when none was supplied or the
+   * supplied value failed validation. Always set once authentication succeeds
+   * (ticket 10). `createHandler`/`createSimpleHandler` read it and bind it as the
+   * ambient identifier for every invocation on this socket.
    */
   correlationId?: string;
 }

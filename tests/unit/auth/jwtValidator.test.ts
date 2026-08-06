@@ -273,4 +273,73 @@ describe("JwtValidator", () => {
     const user2 = await verifyJwt(expiredToken, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
     expect(user2).toBeNull();
   });
+
+  // open-loops §15 — the payload-validation failure log is an ALLOWLIST. These
+  // tests exist so that a claim added to the JWT later cannot start being logged
+  // by accident; adding one must fail here before it reaches production logs.
+  describe("payload-validation failure logging", () => {
+    async function warnPayloadOfFailedValidation(
+      payloadOverrides: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> {
+      const { logger } = await import("@src/infrastructure/logger.js");
+      vi.mocked(logger.warn).mockClear();
+
+      // `name` must be a string — a number makes UserSchema.safeParse fail.
+      const payload = validUserPayload({ name: 12345, ...payloadOverrides });
+      const user = await verifyJwt(createJwt(payload), mockRedis as Redis, logger);
+      expect(user).toBeNull();
+
+      const call = vi
+        .mocked(logger.warn)
+        .mock.calls.find((c) =>
+          String(c[1] ?? "").includes("Payload validation failed"),
+        );
+      expect(call, "expected a payload-validation-failed warn log").toBeDefined();
+      return call![0] as Record<string, unknown>;
+    }
+
+    it("logs values for allowlisted claims only", async () => {
+      const logged = await warnPayloadOfFailedValidation({});
+      const values = logged.payloadValues as Record<string, unknown>;
+
+      expect(Object.keys(values).sort()).toEqual(["exp", "iat", "id"]);
+      expect(values.id).toBe(42);
+    });
+
+    it("does not log the value of any non-allowlisted claim", async () => {
+      const logged = await warnPayloadOfFailedValidation({
+        // A claim nobody has opted in — stands in for a future JWT addition.
+        secret_new_claim: "leaked-value",
+      });
+
+      const serialized = JSON.stringify(logged);
+      expect(serialized).not.toContain("leaked-value");
+      expect(serialized).not.toContain("test@example.com"); // email
+      expect(serialized).not.toContain("+1234567890"); // phone
+      expect(serialized).not.toContain("Test User"); // name (the failing field)
+    });
+
+    it("still reports the type of every claim, so schema mismatches stay diagnosable", async () => {
+      const logged = await warnPayloadOfFailedValidation({
+        secret_new_claim: "leaked-value",
+      });
+      const types = logged.payloadTypes as Record<string, string>;
+
+      expect(types.name).toBe("number"); // the actual mismatch, by type
+      expect(types.email).toBe("string");
+      expect(types.secret_new_claim).toBe("string");
+      expect(types.is_blocked).toBe("boolean");
+    });
+
+    it("reports null and array claims distinctly rather than as 'object'", async () => {
+      const logged = await warnPayloadOfFailedValidation({
+        avatar: null,
+        equipped_badges: [],
+      });
+      const types = logged.payloadTypes as Record<string, string>;
+
+      expect(types.avatar).toBe("null");
+      expect(types.equipped_badges).toBe("array");
+    });
+  });
 });

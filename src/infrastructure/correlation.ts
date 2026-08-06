@@ -11,12 +11,20 @@
  * concurrent socket events, and every handler awaits. A plain variable would be overwritten by
  * whichever operation started most recently, so log lines would be attributed to the wrong request
  * — silently, and more often under load, which is exactly when the attribution matters.
+ *
+ * observability-audio-quality 11 adds a SECOND, optional field: `vendorTraceId`. The API's error
+ * tracker stamps every outgoing HTTP call (including the ones that reach `/api/events`) with its own
+ * `sentry-trace` header. This service does not mint that format and does not turn it into a span —
+ * span sampling stays off here (see `instrument.ts`) — it only reads the trace id inbound and carries
+ * it alongside `correlationId` so a log line can be joined to the same operation in the error tracker.
+ * Unset unless the ingest route found and parsed a usable header.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { generateCorrelationId } from "@src/shared/crypto.js";
 
 export interface CorrelationStore {
   correlationId: string;
+  vendorTraceId?: string;
 }
 
 const storage = new AsyncLocalStorage<CorrelationStore>();
@@ -55,6 +63,51 @@ export function currentCorrelationId(): string | undefined {
 }
 
 /**
+ * Record the inbound vendor trace id on the current correlated operation.
+ *
+ * A no-op outside `withCorrelation` — there is no store to attach it to, and a secondary field with
+ * nothing to be secondary to would be meaningless. Mutates the existing store object rather than
+ * replacing it, so the write is visible to every reader already holding a reference across awaits.
+ */
+export function setVendorTraceId(vendorTraceId: string): void {
+  const store = storage.getStore();
+  if (store) store.vendorTraceId = vendorTraceId;
+}
+
+/**
+ * The current ambient vendor trace id, or undefined when none was read for this operation.
+ */
+export function currentVendorTraceId(): string | undefined {
+  return storage.getStore()?.vendorTraceId;
+}
+
+/**
+ * The vendor's own `sentry-trace` header shape: `<trace_id>-<span_id>[-<sampled>]`, hex — the vendor
+ * emits lowercase, and the `i` flag accepts uppercase rather than dropping an otherwise-valid id.
+ * Only the trace id (the first segment) is kept — the span id and sampling flag describe the
+ * SENDER's span tree, which this service does not participate in.
+ */
+const SENTRY_TRACE_PATTERN = /^([0-9a-f]{32})-[0-9a-f]{16}(-[01])?$/i;
+
+/**
+ * Parse an inbound `sentry-trace` header into just its trace id, or undefined when the header is
+ * absent or does not match the vendor's format.
+ *
+ * Rejecting on any mismatch is deliberate, same posture as `resolveCorrelationId`: this value is
+ * written into log lines, so it is untrusted input on a path that reaches storage. Fastify may hand
+ * back an array if the header repeats; the first value is used and the rest ignored.
+ */
+export function parseVendorTraceId(
+  header: string | string[] | undefined,
+): string | undefined {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value !== "string") return undefined;
+
+  const match = SENTRY_TRACE_PATTERN.exec(value.trim());
+  return match?.[1];
+}
+
+/**
  * Pino `mixin`: the fields merged into every log record.
  *
  * Lives here rather than inline in the logger so there is exactly one definition to test. Returns
@@ -65,9 +118,12 @@ export function currentCorrelationId(): string | undefined {
  * the mixin's output. The relay path depends on that to log the sender's identifier.
  */
 export function correlationMixin(): Record<string, string> {
-  const correlationId = currentCorrelationId();
+  const store = storage.getStore();
+  if (!store) return {};
 
-  return correlationId === undefined ? {} : { correlationId };
+  const fields: Record<string, string> = { correlationId: store.correlationId };
+  if (store.vendorTraceId !== undefined) fields.vendorTraceId = store.vendorTraceId;
+  return fields;
 }
 
 /**

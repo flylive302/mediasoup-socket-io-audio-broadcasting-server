@@ -44,7 +44,10 @@ export async function verifyJwt(
   const parts = token.split(".");
   if (parts.length !== 3) {
     logger.warn(
-      { partsCount: parts.length, tokenLength: token.length, tokenPreview: token.slice(0, 20) },
+      // No token prefix: a string that failed the 3-part split is not necessarily
+      // a JWT header — a Sanctum token sent here by mistake would put live
+      // credential material in the logs. partsCount + length identify the shape.
+      { partsCount: parts.length, tokenLength: token.length },
       "JWT: Invalid format (expected 3 parts)",
     );
     return null;
@@ -145,8 +148,9 @@ export async function verifyJwt(
   // 5. Validate user payload via Zod
   const parseResult = UserSchema.safeParse(payload);
   if (!parseResult.success) {
-    // Log full payload (excluding sensitive fields) for debugging new-user JWT rejections
-    const { email: _e, phone: _p, ...safePayload } = payload;
+    // Diagnose new-user JWT rejections without logging claim values. Types are
+    // reported for every claim (that is what a schema mismatch needs); values
+    // only for the allowlist below.
     const formattedErrors = parseResult.error.issues.map((i) => ({
       path: i.path.join("."),
       code: i.code,
@@ -156,8 +160,8 @@ export async function verifyJwt(
     logger.warn(
       {
         errors: formattedErrors,
-        payloadKeys: Object.keys(payload),
-        payloadValues: safePayload,
+        payloadTypes: describeClaimTypes(payload),
+        payloadValues: pickLoggableClaims(payload),
         userId: payload.id,
       },
       "JWT: Payload validation failed — check field types against UserSchema",
@@ -243,4 +247,41 @@ export async function verifyJwt(
   }
 
   return user;
+}
+
+/**
+ * Claims whose VALUES may be written to logs on a payload-validation failure.
+ *
+ * This is an allowlist on purpose (open-loops §15). It replaced a denylist that
+ * stripped `email`/`phone` and logged everything else — under which any claim
+ * Laravel adds to the JWT later would start being logged silently, by default.
+ * Now a new claim is private until it is opted in here.
+ */
+const LOGGABLE_CLAIMS = ["id", "sub", "iat", "exp"] as const;
+
+function pickLoggableClaims(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  for (const claim of LOGGABLE_CLAIMS) {
+    if (claim in payload) {
+      picked[claim] = payload[claim];
+    }
+  }
+  return picked;
+}
+
+/**
+ * Type-only view of every claim. A UserSchema mismatch is a shape problem, so
+ * the type is the diagnostic — the value is not needed and may be personal data.
+ */
+function describeClaimTypes(
+  payload: Record<string, unknown>,
+): Record<string, string> {
+  const types: Record<string, string> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    types[key] =
+      value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  }
+  return types;
 }

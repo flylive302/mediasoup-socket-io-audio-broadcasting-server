@@ -183,8 +183,12 @@ export async function initializeSocket(
 
   io.on("connection", (socket) => {
     const userId = socket.data.user?.id;
+    // ticket 10: the handshake-adopted (or minted) correlation id — logged explicitly
+    // here because this line runs outside any createHandler/createSimpleHandler
+    // invocation, so the logger's correlation mixin has no ambient context to draw on yet.
+    const correlationId = socket.data.correlationId;
 
-    logger.info({ socketId: socket.id, userId }, "Socket connected");
+    logger.info({ socketId: socket.id, userId, correlationId }, "Socket connected");
 
     // platform-security 05: global per-socket event budget, ahead of every
     // socket.on(eventName, ...) listener (including the five existing

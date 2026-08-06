@@ -16,7 +16,7 @@ import type { Redis } from "ioredis";
 import type { EventRouter } from "@src/integrations/laravel/event-router.js";
 import type { LaravelEvent } from "@src/integrations/laravel/types.js";
 import { config } from "@src/config/index.js";
-import { withCorrelation } from "./correlation.js";
+import { parseVendorTraceId, setVendorTraceId, withCorrelation } from "./correlation.js";
 import { z } from "zod";
 import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
 import { metrics } from "./metrics.js";
@@ -123,6 +123,15 @@ export const createEventIngestRoutes = (
           .code(401)
           .send({ status: "error", message: "Unauthorized" });
       }
+
+      // observability-audio-quality 11: the API's error-tracker integration stamps every
+      // outgoing HTTP call — including this one — with its own `sentry-trace` header,
+      // regardless of the correlation_id already in the envelope below. READ only: this
+      // service never mints that header itself and never turns it into a span (span
+      // sampling stays off, see instrument.ts). Absent/malformed is silently undefined —
+      // it is a secondary field, losing it costs nothing the envelope's correlation_id
+      // doesn't already cover.
+      const vendorTraceId = parseVendorTraceId(request.headers["sentry-trace"]);
 
       // --- Parse Event ---
       let raw: unknown = request.body;
@@ -235,9 +244,11 @@ export const createEventIngestRoutes = (
       // that joins nothing beats the string "unknown" repeated across unrelated events.
       inFlightEvents++;
       try {
-        const routingResult = await withCorrelation(event.correlation_id, () =>
-          eventRouter.route(event),
-        );
+        const routingResult = await withCorrelation(event.correlation_id, () => {
+          // Secondary field on the same operation — see the header read above for why.
+          if (vendorTraceId !== undefined) setVendorTraceId(vendorTraceId);
+          return eventRouter.route(event);
+        });
 
         return reply.code(200).send({
           status: "ok",

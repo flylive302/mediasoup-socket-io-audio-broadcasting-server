@@ -71,6 +71,11 @@ if (!dsn) {
     // span overrun could consume the very error budget §3 is built on.
     // Errors-only keeps that budget model honest. Revisit at the §12
     // one-week re-check, once real error volume is measured.
+    //
+    // Still holds as of observability-audio-quality 11 (2026-08): that ticket adds a READ of the
+    // API's inbound `sentry-trace` header (see infrastructure/correlation.ts), recorded as a plain
+    // log field. It does not call into this SDK's trace APIs and does not create or sample spans —
+    // propagating a header is not sampling spans, and the reasoning above is unchanged.
 
     integrations: (defaults) => [
       ...defaults.filter(

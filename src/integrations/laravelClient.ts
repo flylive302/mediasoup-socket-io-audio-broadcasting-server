@@ -3,6 +3,7 @@ import * as Sentry from "@sentry/node";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { seenRecently } from "@src/infrastructure/sentry/dedupe.js";
 import { currentCorrelationId } from "@src/infrastructure/correlation.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 import type {
   BatchProcessingResult,
   CascadeInfo,
@@ -185,6 +186,8 @@ export class LaravelClient {
 
   private async post(endpoint: string, body: unknown): Promise<Response> {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
+    const metricsLabel = metricsEndpointLabel(endpoint);
+    const startedAt = Date.now();
 
     const controller = new AbortController();
     const timeoutId = setTimeout(
@@ -193,7 +196,7 @@ export class LaravelClient {
     );
 
     try {
-      return await fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -206,7 +209,10 @@ export class LaravelClient {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      recordLaravelApiCall(metricsLabel, String(response.status), startedAt);
+      return response;
     } catch (error) {
+      recordLaravelApiCall(metricsLabel, laravelFailureStatus(error), startedAt);
       captureLaravelFailure("POST", endpoint, error);
       throw error;
     } finally {
@@ -216,6 +222,8 @@ export class LaravelClient {
 
   private async get(endpoint: string): Promise<Response> {
     const url = `${config.LARAVEL_API_URL}${endpoint}`;
+    const metricsLabel = metricsEndpointLabel(endpoint);
+    const startedAt = Date.now();
 
     const controller = new AbortController();
     const timeoutId = setTimeout(
@@ -224,7 +232,7 @@ export class LaravelClient {
     );
 
     try {
-      return await fetch(url, {
+      const response = await fetch(url, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -236,7 +244,10 @@ export class LaravelClient {
         },
         signal: controller.signal,
       });
+      recordLaravelApiCall(metricsLabel, String(response.status), startedAt);
+      return response;
     } catch (error) {
+      recordLaravelApiCall(metricsLabel, laravelFailureStatus(error), startedAt);
       captureLaravelFailure("GET", endpoint, error);
       throw error;
     } finally {
@@ -457,6 +468,80 @@ function normalizeEndpoint(endpoint: string): string {
       "/:id",
     )
     .replace(/\/\d+(?=\/|$)/g, "/:id");
+}
+
+/**
+ * The closed set of route templates `post()`/`get()` are labeled with for
+ * `laravelApiCalls`/`laravelApiLatency` (observability-audio-quality 14).
+ *
+ * Deliberately NOT `normalizeEndpoint()` reused as-is: that function is good enough for Sentry
+ * ISSUE GROUPING (an occasional extra bucket just means one more issue), but a Prometheus label is a
+ * live time series that is never garbage-collected, and `normalizeEndpoint` only collapses segments
+ * that already look like a digit run or a UUID. `roomId`/`userId` reach these calls from socket
+ * payloads validated only as `z.string().min(1)` (see `src/socket/schemas.ts`) — a caller-supplied
+ * value like `"junk-<random>"` would sail through `normalizeEndpoint` untouched and mint a brand new
+ * series per value, which is exactly the unbounded-cardinality outcome AC#2 forbids.
+ *
+ * Matched structurally against the literal templates this class actually calls instead, so the
+ * result is always one of a fixed, enumerable set — never a caller-controlled path segment. Anything
+ * that doesn't match a known template (there should never be one) falls into "unknown" rather than
+ * being echoed raw.
+ */
+const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
+  [/^\/api\/v1\/internal\/gifts\/batch$/, "/api/v1/internal/gifts/batch"],
+  [
+    /^\/api\/v1\/internal\/rooms\/[^/]+\/status$/,
+    "/api/v1/internal/rooms/:id/status",
+  ],
+  [
+    /^\/api\/v1\/internal\/rooms\/[^/]+\/cascade-info$/,
+    "/api/v1/internal/rooms/:id/cascade-info",
+  ],
+  [
+    /^\/api\/v1\/internal\/rooms\/[^/]+\/members\/[^/]+\/role$/,
+    "/api/v1/internal/rooms/:id/members/:id/role",
+  ],
+  [/^\/api\/v1\/internal\/rooms\/[^/]+$/, "/api/v1/internal/rooms/:id"],
+  [/^\/api\/v1\/internal\/users\/revoked$/, "/api/v1/internal/users/revoked"],
+];
+
+function metricsEndpointLabel(endpoint: string): string {
+  const path = endpoint.split("?")[0]!;
+  for (const [pattern, label] of LARAVEL_ENDPOINT_TEMPLATES) {
+    if (pattern.test(path)) return label;
+  }
+  return "unknown";
+}
+
+/**
+ * Emits both dead-until-now metrics (observability-audio-quality 14) from the one place every
+ * Laravel API call passes through. `status` is either the response's HTTP status code as a string,
+ * or one of the two failure buckets from `laravelFailureStatus` — see the label documentation on
+ * `laravelApiCalls` in metrics.ts for the full closed set.
+ */
+function recordLaravelApiCall(
+  endpoint: string,
+  status: string,
+  startedAt: number,
+): void {
+  metrics.laravelApiCalls.inc({ endpoint, status });
+  metrics.laravelApiLatency.observe(
+    { endpoint },
+    (Date.now() - startedAt) / 1000,
+  );
+}
+
+/**
+ * Buckets a thrown `fetch` failure into the two closed failure labels for `laravelApiCalls`.
+ *
+ * Duck-typed on `.name` rather than `error instanceof Error`: the AbortController firing surfaces as
+ * a `DOMException` in Node's fetch implementation, not necessarily something that satisfies
+ * `instanceof Error` — checking the class would silently mislabel every timeout as a generic
+ * "error" and defeat the point of splitting the two out.
+ */
+function laravelFailureStatus(error: unknown): "timeout" | "error" {
+  const name = (error as { name?: unknown } | null)?.name;
+  return name === "AbortError" ? "timeout" : "error";
 }
 
 /**

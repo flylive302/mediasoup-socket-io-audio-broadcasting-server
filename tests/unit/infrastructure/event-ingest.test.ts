@@ -425,3 +425,92 @@ describe("event-ingest deduplication (aws-platform-build/07)", () => {
     expect(bareRoute).toHaveBeenCalledTimes(3);
   });
 });
+
+/**
+ * observability-audio-quality 11 — read the API's inbound `sentry-trace` header and record it as a
+ * secondary field alongside the envelope's `correlation_id`, without minting one of our own or
+ * touching dedup/ordering. The router mock reads both ambient values itself: that proves the header
+ * was actually adopted onto the SAME operation `eventRouter.route()` runs under, not merely parsed
+ * and discarded.
+ */
+describe("event-ingest vendor trace header (observability-audio-quality 11)", () => {
+  const AUTH = { "x-internal-key": "test-internal-key" };
+
+  let app: FastifyInstance;
+  let seenDuringRoute: { correlationId: string | undefined; vendorTraceId: string | undefined };
+
+  beforeEach(async () => {
+    seenDuringRoute = { correlationId: undefined, vendorTraceId: undefined };
+
+    const { currentCorrelationId, currentVendorTraceId } = await import(
+      "@src/infrastructure/correlation.js"
+    );
+
+    const route = vi.fn(async () => {
+      seenDuringRoute = {
+        correlationId: currentCorrelationId(),
+        vendorTraceId: currentVendorTraceId(),
+      };
+      return { delivered: true, targetCount: 1 };
+    });
+
+    app = Fastify({ logger: false });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await app.register(createEventIngestRoutes({ route } as any));
+    await app.ready();
+  });
+
+  it("reads a well-formed sentry-trace header and adopts it as the secondary field", async () => {
+    const traceId = "a".repeat(32);
+    const spanId = "b".repeat(16);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: { ...AUTH, "sentry-trace": `${traceId}-${spanId}-1` },
+      payload: makeEvent(1),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(seenDuringRoute.vendorTraceId).toBe(traceId);
+    // The envelope's correlation_id is still the primary field — reading the vendor
+    // header must not replace or shadow it.
+    expect(seenDuringRoute.correlationId).toBe("c-1");
+  });
+
+  it("leaves the secondary field unset when no sentry-trace header is sent", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: AUTH,
+      payload: makeEvent(2),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(seenDuringRoute.vendorTraceId).toBeUndefined();
+    expect(seenDuringRoute.correlationId).toBe("c-2");
+  });
+
+  it("leaves the secondary field unset when sentry-trace is malformed, rather than adopting it raw", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: { ...AUTH, "sentry-trace": "not-a-real-trace-header" },
+      payload: makeEvent(3),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(seenDuringRoute.vendorTraceId).toBeUndefined();
+  });
+
+  it("never mints a sentry-trace header of its own on the reply", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: AUTH,
+      payload: makeEvent(4),
+    });
+
+    expect(res.headers["sentry-trace"]).toBeUndefined();
+  });
+});

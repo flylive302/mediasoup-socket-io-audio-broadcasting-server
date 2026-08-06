@@ -6,6 +6,7 @@ import { verifyJwt } from "./jwtValidator.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import type { AuthSocketData } from "./types.js";
 import { Errors } from "@src/shared/errors.js";
+import { resolveCorrelationId } from "@src/infrastructure/correlation.js";
 
 export async function authMiddleware(
   socket: Socket,
@@ -50,19 +51,29 @@ export async function authMiddleware(
 
     if (!user) {
       logger.warn(
-        { socketId: socket.id, tokenLength: cleanToken.length, tokenPreview: cleanToken.slice(0, 20) },
+        { socketId: socket.id, tokenLength: cleanToken.length },
         "Invalid token provided — verifyJwt returned null (check preceding warn logs for reason)",
       );
       metrics.authAttempts.inc({ result: "invalid_token" });
       return next(new Error(Errors.INVALID_CREDENTIALS));
     }
 
+    // ticket 10: adopt the handshake-supplied correlation id (or mint one) so every
+    // subsequent log line for this socket — starting with the two below — carries it.
+    // resolveCorrelationId is the same validation `createHandler`/`createSimpleHandler`
+    // already run against `socket.data.correlationId`; resolving here means the value
+    // they read is always already-valid, never the raw untrusted handshake input.
+    const rawCorrelationId = socket.handshake.auth.correlationId;
+    const correlationId = resolveCorrelationId(
+      typeof rawCorrelationId === "string" ? rawCorrelationId : undefined,
+    );
+
     // Attach user to socket (no token stored — AUTH-004)
-    socket.data = { user } as AuthSocketData;
+    socket.data = { user, correlationId } as AuthSocketData;
 
     // Log only safe user properties
     logger.info(
-      { socketId: socket.id, userId: user.id, userName: user.name },
+      { socketId: socket.id, userId: user.id, userName: user.name, correlationId },
       "Client authenticated",
     );
     metrics.authAttempts.inc({ result: "success" });

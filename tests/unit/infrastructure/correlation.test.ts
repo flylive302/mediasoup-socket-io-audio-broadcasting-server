@@ -4,7 +4,10 @@ import { pino } from "pino";
 import {
   correlationMixin,
   currentCorrelationId,
+  currentVendorTraceId,
+  parseVendorTraceId,
   resolveCorrelationId,
+  setVendorTraceId,
   withCorrelation,
 } from "@src/infrastructure/correlation.js";
 
@@ -160,5 +163,96 @@ describe("ambient correlation context", () => {
     });
 
     expect(lines()[0]).toMatchObject({ correlationId: "sender-id" });
+  });
+});
+
+describe("vendor trace id — secondary field (observability-audio-quality 11)", () => {
+  it("parses the trace id out of a well-formed sentry-trace header", () => {
+    const traceId = "a".repeat(32);
+    const header = `${traceId}-${"b".repeat(16)}-1`;
+
+    expect(parseVendorTraceId(header)).toBe(traceId);
+  });
+
+  it("parses a header without the trailing sampled flag", () => {
+    const traceId = "c".repeat(32);
+    const header = `${traceId}-${"d".repeat(16)}`;
+
+    expect(parseVendorTraceId(header)).toBe(traceId);
+  });
+
+  it("takes the first value when Fastify hands back an array", () => {
+    const traceId = "e".repeat(32);
+    const header = [`${traceId}-${"f".repeat(16)}`, "second-value"];
+
+    expect(parseVendorTraceId(header)).toBe(traceId);
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty string", ""],
+    ["wrong shape entirely", "not-a-trace-header"],
+    ["trace id too short", `${"a".repeat(31)}-${"b".repeat(16)}`],
+    ["span id too short", `${"a".repeat(32)}-${"b".repeat(15)}`],
+    // `$` matches before a trailing newline in JS without the `m` flag, so an embedded
+    // newline is the shape that could smuggle a second field into a log line.
+    ["newline injection after a valid prefix", `${"a".repeat(32)}-${"b".repeat(16)}\ninjected=1`],
+  ])("returns undefined for a malformed header (%s)", (_label, header) => {
+    expect(parseVendorTraceId(header)).toBeUndefined();
+  });
+
+  it("is unset outside any correlated operation", () => {
+    expect(currentVendorTraceId()).toBeUndefined();
+  });
+
+  it("is unset within a correlated operation until explicitly set", () => {
+    withCorrelation("op-id", () => {
+      expect(currentVendorTraceId()).toBeUndefined();
+    });
+  });
+
+  it("is readable after being set inside the same correlated operation", () => {
+    const traceId = "1".repeat(32);
+
+    withCorrelation("op-id", () => {
+      setVendorTraceId(traceId);
+      expect(currentVendorTraceId()).toBe(traceId);
+      expect(currentCorrelationId()).toBe("op-id"); // primary field untouched
+    });
+  });
+
+  it("is a no-op outside any correlated operation — nothing to attach it to", () => {
+    // Must not throw, and must not leak into a later correlated operation.
+    expect(() => setVendorTraceId("2".repeat(32))).not.toThrow();
+
+    withCorrelation("later-op", () => {
+      expect(currentVendorTraceId()).toBeUndefined();
+    });
+  });
+
+  it("appears on log lines as a secondary field once set, alongside correlationId", () => {
+    const { logger, lines } = makeLogger();
+    const traceId = "3".repeat(32);
+
+    withCorrelation("primary-id", () => {
+      setVendorTraceId(traceId);
+      logger.info({ event: "seat:take" }, "Handler completed");
+    });
+
+    expect(lines()[0]).toMatchObject({
+      correlationId: "primary-id",
+      vendorTraceId: traceId,
+      event: "seat:take",
+    });
+  });
+
+  it("omits vendorTraceId from the mixin when never set — no misleading empty field", () => {
+    const { logger, lines } = makeLogger();
+
+    withCorrelation("primary-only", () => {
+      logger.info({ event: "seat:take" }, "Handler completed");
+    });
+
+    expect(lines()[0]).not.toHaveProperty("vendorTraceId");
   });
 });
