@@ -29,6 +29,8 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     laravelEventsReceived: { inc: vi.fn() },
     laravelEventsInFlight: { inc: vi.fn(), dec: vi.fn() },
     laravelEventProcessingDuration: { observe: vi.fn() },
+    laravelEventsDeduplicated: { inc: vi.fn() },
+    laravelEventsStaleRejected: { inc: vi.fn() },
     roomBlockMirror: { inc: vi.fn() },
   },
 }));
@@ -721,6 +723,330 @@ describe("EventRouter", () => {
       await flushPromises();
 
       expect(redis.set).toHaveBeenCalled();
+    });
+  });
+
+  // aws-platform-build/07 — order-sensitivity guards.
+  //
+  // Delivery is at-least-once TODAY (DeliverRealtimeEvent: $tries=3,
+  // $backoff=[2,10,30]), so a failed earlier event can land AFTER a later one.
+  // These three event classes applied state unconditionally, so reordering left
+  // the wrong terminal state. Each guard is a Redis compare-and-set; the Lua
+  // itself cannot run under Vitest (no real Redis in this suite), so `eval` is
+  // stubbed with its two outcomes — 1 = accepted, 0 = rejected as stale — and
+  // the Lua's own semantics were verified separately against a live Redis.
+  describe("ordering guards (aws-platform-build/07)", () => {
+    const OLDER = "2026-08-06T00:00:00+00:00";
+    const NEWER = "2026-08-06T00:00:30+00:00";
+
+    /** `accepted` drives the guard verdict the same way real Redis would. */
+    function createGuardRedis(accepted: boolean) {
+      return {
+        set: vi.fn().mockResolvedValue("OK"),
+        del: vi.fn().mockResolvedValue(1),
+        eval: vi.fn().mockResolvedValue(accepted ? 1 : 0),
+      } as any;
+    }
+
+    function createRoomStateRepo(seatCount: number) {
+      return {
+        get: vi.fn().mockResolvedValue({
+          id: "7",
+          seatCount,
+          seatCountSource: "laravel",
+          participantCount: 3,
+        }),
+        save: vi.fn().mockResolvedValue(undefined),
+      } as any;
+    }
+
+    describe("room.updated", () => {
+      const shrink = (timestamp: string) =>
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_UPDATED,
+          room_id: 7,
+          user_id: null,
+          timestamp,
+          payload: { room: { max_seats: 4 } },
+        });
+
+      it("evicts on a shrink that is NOT stale (guard accepts)", async () => {
+        const redis = createGuardRedis(true);
+        const roomStateRepo = createRoomStateRepo(10);
+        const roomManager = { evictShrunkSeats: vi.fn().mockResolvedValue(undefined) } as any;
+
+        io.sockets.adapter.rooms.set("7", new Set(["s1"]));
+        const router = new EventRouter(
+          io, repo, clientManager, logger, redis, roomStateRepo, undefined, roomManager,
+        );
+
+        await router.route(shrink(NEWER));
+        await flushPromises();
+        await flushPromises();
+
+        expect(roomStateRepo.save).toHaveBeenCalled();
+        expect(roomManager.evictShrunkSeats).toHaveBeenCalledWith("7", 4, clientManager);
+      });
+
+      // The load-bearing case: the shrink branch throws real occupants out of
+      // their seats, so replaying a stale room.updated does not merely write a
+      // wrong number — it evicts people who legitimately hold those seats.
+      it("a stale room.updated neither writes seatCount nor evicts occupants", async () => {
+        const redis = createGuardRedis(false);
+        const roomStateRepo = createRoomStateRepo(10);
+        const roomManager = { evictShrunkSeats: vi.fn().mockResolvedValue(undefined) } as any;
+
+        io.sockets.adapter.rooms.set("7", new Set(["s1"]));
+        const router = new EventRouter(
+          io, repo, clientManager, logger, redis, roomStateRepo, undefined, roomManager,
+        );
+
+        await router.route(shrink(OLDER));
+        await flushPromises();
+        await flushPromises();
+
+        expect(roomStateRepo.get).not.toHaveBeenCalled();
+        expect(roomStateRepo.save).not.toHaveBeenCalled();
+        expect(roomManager.evictShrunkSeats).not.toHaveBeenCalled();
+        expect(metrics.laravelEventsStaleRejected.inc).toHaveBeenCalledWith({
+          event_type: RELAY_EVENTS.room.ROOM_UPDATED,
+        });
+      });
+
+      it("applies the update when the envelope carries no timestamp to compare", async () => {
+        const redis = createGuardRedis(false); // would reject, but must not be consulted
+        const roomStateRepo = createRoomStateRepo(10);
+
+        io.sockets.adapter.rooms.set("7", new Set(["s1"]));
+        const router = new EventRouter(
+          io, repo, clientManager, logger, redis, roomStateRepo,
+        );
+
+        const { timestamp: _dropped, ...noTimestamp } = shrink(NEWER);
+        await router.route(noTimestamp as any);
+        await flushPromises();
+        await flushPromises();
+
+        expect(redis.eval).not.toHaveBeenCalled();
+        expect(roomStateRepo.save).toHaveBeenCalled();
+      });
+    });
+
+    describe("room.member_removed / room.user_unblocked", () => {
+      const blockEvent = (timestamp: string) =>
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          user_id: 42,
+          room_id: null,
+          timestamp,
+          payload: { room_id: 7, user_id: 42, remaining_seconds: 3600, permanent: false },
+        });
+
+      const unblockEvent = (timestamp: string) =>
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_USER_UNBLOCKED,
+          user_id: 42,
+          room_id: null,
+          timestamp,
+          payload: { room_id: 7, user_id: 42 },
+        });
+
+      it("a block delayed behind the unblock that supersedes it does NOT re-lock the user", async () => {
+        const redis = createGuardRedis(false);
+
+        await new EventRouter(io, repo, clientManager, logger, redis).route(blockEvent(OLDER));
+        await flushPromises();
+
+        expect(redis.set).not.toHaveBeenCalled();
+        expect(metrics.laravelEventsStaleRejected.inc).toHaveBeenCalledWith({
+          event_type: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+        });
+      });
+
+      /**
+       * The mirror write and the seat ejection must share ONE verdict.
+       * Gating only the mirror would let a stale block still throw the user off
+       * their seat while writing no block — a visible eviction with no state
+       * behind it, so the user simply rejoins. Partial application is exactly
+       * what AC #3's "correct terminal state" forbids.
+       */
+      it("a stale block ejects nobody from their seat, not just skips the mirror", async () => {
+        const redis = createGuardRedis(false);
+        // `leaveSeat` is ejectRoomMember's very first step — if it is untouched,
+        // no part of the ejection ran.
+        const seatRepository = { leaveSeat: vi.fn() } as any;
+        const roomStateRepo = { get: vi.fn(), save: vi.fn() } as any;
+        const statusCoalescer = { schedule: vi.fn() } as any;
+        const userRoomRepository = { get: vi.fn(), clear: vi.fn() } as any;
+
+        const router = new EventRouter(
+          io, repo, clientManager, logger, redis, roomStateRepo,
+          undefined, undefined, seatRepository, statusCoalescer, userRoomRepository,
+        );
+
+        // The room-broadcast copy — the one that carries the ejection.
+        await router.route(
+          createEvent({
+            event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+            user_id: null,
+            room_id: 7,
+            timestamp: OLDER,
+            payload: { room_id: 7, user_id: 42, remaining_seconds: 3600, permanent: false },
+          }),
+        );
+        await flushPromises();
+        await flushPromises();
+
+        expect(redis.set).not.toHaveBeenCalled();
+        expect(seatRepository.leaveSeat).not.toHaveBeenCalled();
+        expect(userRoomRepository.clear).not.toHaveBeenCalled();
+        expect(statusCoalescer.schedule).not.toHaveBeenCalled();
+      });
+
+      it("a fresh block DOES run the ejection on the room-broadcast copy", async () => {
+        const redis = createGuardRedis(true);
+        const seatRepository = { leaveSeat: vi.fn().mockResolvedValue({ success: false }) } as any;
+        const roomStateRepo = { get: vi.fn().mockResolvedValue(null), save: vi.fn() } as any;
+        const statusCoalescer = { schedule: vi.fn() } as any;
+        const userRoomRepository = { get: vi.fn().mockResolvedValue(null), clear: vi.fn() } as any;
+
+        const router = new EventRouter(
+          io, repo, clientManager, logger, redis, roomStateRepo,
+          undefined, undefined, seatRepository, statusCoalescer, userRoomRepository,
+        );
+
+        await router.route(
+          createEvent({
+            event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+            user_id: null,
+            room_id: 7,
+            timestamp: NEWER,
+            payload: { room_id: 7, user_id: 42, remaining_seconds: 3600, permanent: false },
+          }),
+        );
+        await flushPromises();
+        await flushPromises();
+
+        expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1", "EX", 3600);
+        // Ejection reached the machinery — assert its first step, which runs
+        // regardless of whether the user actually held a seat.
+        expect(seatRepository.leaveSeat).toHaveBeenCalledWith("7", "42");
+      });
+
+      it("an unblock replayed after a newer block does NOT unlock the user", async () => {
+        const redis = createGuardRedis(false);
+
+        await new EventRouter(io, repo, clientManager, logger, redis).route(unblockEvent(OLDER));
+        await flushPromises();
+
+        expect(redis.del).not.toHaveBeenCalled();
+        expect(metrics.laravelEventsStaleRejected.inc).toHaveBeenCalledWith({
+          event_type: RELAY_EVENTS.room.ROOM_USER_UNBLOCKED,
+        });
+      });
+
+      // Block and unblock must contend for ONE marker, or each would only ever
+      // order itself against its own kind and reordering across the pair would
+      // still land wrong.
+      it("block and unblock version the same (room,user) marker", async () => {
+        const redis = createGuardRedis(true);
+        const router = new EventRouter(io, repo, clientManager, logger, redis);
+
+        await router.route(blockEvent(OLDER));
+        await flushPromises();
+        await router.route(unblockEvent(NEWER));
+        await flushPromises();
+
+        const keys = redis.eval.mock.calls.map((call: unknown[]) => call[2]);
+        expect(keys).toHaveLength(2);
+        expect(keys[0]).toBe(keys[1]);
+        expect(keys[0]).toContain("7");
+        expect(keys[0]).toContain("42");
+      });
+
+      it("still applies block and unblock when the guard accepts", async () => {
+        const redis = createGuardRedis(true);
+        const router = new EventRouter(io, repo, clientManager, logger, redis);
+
+        await router.route(blockEvent(NEWER));
+        await flushPromises();
+        expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1", "EX", 3600);
+
+        await router.route(unblockEvent(NEWER));
+        await flushPromises();
+        expect(redis.del).toHaveBeenCalledWith("room:7:blocked:42");
+      });
+    });
+
+    describe("auth.revoke_tokens", () => {
+      const revoke = (revokedAt: unknown) =>
+        createEvent({
+          event: RELAY_EVENTS.auth.REVOKE_TOKENS,
+          user_id: 42,
+          room_id: null,
+          payload: { revoked_at: revokedAt },
+        });
+
+      it("writes the watermark through the newer-only guard", async () => {
+        const redis = createGuardRedis(true);
+
+        await new EventRouter(io, repo, clientManager, logger, redis).route(revoke(1_700_000_100));
+        await flushPromises();
+
+        expect(redis.eval).toHaveBeenCalled();
+        const [, numKeys, key, value] = redis.eval.mock.calls[0]!;
+        expect(numKeys).toBe(1);
+        expect(key).toBe("auth:user_revoked:42");
+        expect(value).toBe("1700000100");
+        // The plain unconditional SET is gone — that was the replay hazard.
+        expect(redis.set).not.toHaveBeenCalled();
+      });
+
+      it("a replayed revocation does not overwrite a newer one", async () => {
+        const redis = createGuardRedis(false);
+
+        await new EventRouter(io, repo, clientManager, logger, redis).route(revoke(1_700_000_000));
+        await flushPromises();
+
+        expect(metrics.laravelEventsStaleRejected.inc).toHaveBeenCalledWith({
+          event_type: RELAY_EVENTS.auth.REVOKE_TOKENS,
+        });
+      });
+
+      // Previously String(undefined) → "undefined" was stored as the watermark,
+      // which jwtValidator can never match numerically: a revocation that
+      // silently did nothing.
+      it("refuses a non-numeric revoked_at instead of storing garbage", async () => {
+        const redis = createGuardRedis(true);
+
+        await new EventRouter(io, repo, clientManager, logger, redis).route(revoke(undefined));
+        await flushPromises();
+
+        expect(redis.eval).not.toHaveBeenCalled();
+        expect(redis.set).not.toHaveBeenCalled();
+        expect(logger.error).toHaveBeenCalled();
+      });
+    });
+
+    // Every guard fails OPEN. Failing closed would silently stop applying
+    // blocks, revocations and seat changes for the duration of a Redis blip —
+    // a far larger incident than the reordering it defends against.
+    it("applies the event anyway when the guard's Redis call fails", async () => {
+      const redis = createGuardRedis(true);
+      redis.eval.mockRejectedValue(new Error("redis down"));
+
+      await new EventRouter(io, repo, clientManager, logger, redis).route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          user_id: 42,
+          room_id: null,
+          timestamp: NEWER,
+          payload: { room_id: 7, user_id: 42, remaining_seconds: 3600, permanent: false },
+        }),
+      );
+      await flushPromises();
+
+      expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1", "EX", 3600);
     });
   });
 });

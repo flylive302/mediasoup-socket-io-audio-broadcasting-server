@@ -173,8 +173,9 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   // Register metrics
   await fastify.register(createMetricsRoutes(roomManager, workerManager));
 
-  // Register event ingest (Laravel → MSAB via SNS/HTTP)
-  await fastify.register(createEventIngestRoutes(eventRouter));
+  // Register event ingest (Laravel → MSAB via SNS/HTTP).
+  // pubClient backs the at-least-once dedup gate — see event-dedup.ts.
+  await fastify.register(createEventIngestRoutes(eventRouter, pubClient));
 
   // Register admin routes (drain mode, status)
   await fastify.register(createAdminRoutes(roomManager));

@@ -155,6 +155,33 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  /**
+   * Redeliveries suppressed by the ingest dedup gate. The gate's failure mode
+   * (dropping events that were NOT duplicates) is invisible to `/health`, so
+   * this counter is the only signal that it is behaving. A flat zero on a
+   * healthy fleet is expected; a rate comparable to
+   * `flylive_laravel_events_received_total` means deliveries are failing after
+   * being applied, and is worth investigating on the Laravel side.
+   */
+  laravelEventsDeduplicated: new Counter({
+    name: "flylive_laravel_events_deduplicated_total",
+    help: "Laravel event redeliveries suppressed as duplicates at ingest",
+    labelNames: ["event_type"] as const,
+    registers: [metricsRegistry],
+  }),
+
+  /**
+   * Order-sensitive events rejected as stale by an ordering guard. Same
+   * reasoning as above: over-rejection would silently stop applying blocks,
+   * revocations and seat changes, and nothing else would show it.
+   */
+  laravelEventsStaleRejected: new Counter({
+    name: "flylive_laravel_events_stale_rejected_total",
+    help: "Order-sensitive Laravel events rejected as older than applied state",
+    labelNames: ["event_type"] as const,
+    registers: [metricsRegistry],
+  }),
+
   // Laravel Events backpressure
   laravelEventsInFlight: new Gauge({
     name: "flylive_laravel_events_in_flight",

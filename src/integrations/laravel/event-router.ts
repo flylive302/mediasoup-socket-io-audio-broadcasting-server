@@ -21,6 +21,13 @@ import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
 import { reactError } from "@src/shared/react-error.js";
+import {
+  acceptIfNotOlder,
+  eventVersionMs,
+  writeIfNewer,
+  ROOM_BLOCK_VERSION_KEY,
+  ROOM_UPDATED_VERSION_KEY,
+} from "@src/infrastructure/event-ordering.js";
 import { ActiveAppSlidesRepository } from "@src/domains/slide/index.js";
 import { config } from "@src/config/index.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
@@ -235,7 +242,11 @@ export class EventRouter {
         event.event === RELAY_EVENTS.room.ROOM_UPDATED &&
         event.room_id !== null
       ) {
-        this.syncRoomSettings(String(event.room_id), event.payload);
+        this.syncRoomSettings(
+          String(event.room_id),
+          event.payload,
+          eventVersionMs(event.timestamp),
+        );
       }
 
       // REACT: admin force-close. Fire-and-forget so routing never blocks on the
@@ -272,41 +283,17 @@ export class EventRouter {
           );
       }
 
-      // REACT: mirror a block into Redis so room:join's GATE can reject the
-      // direct-socket bypass without hitting Laravel. Fire-and-forget — a
-      // failed mirror write degrades to fail-open (Laravel's HTTP gate stays
-      // authoritative), never blocks event routing.
+      // REACT: apply a block — Redis mirror + seat ejection, both behind ONE
+      // ordering verdict. See applyRoomBlock for why they must not be gated
+      // separately.
       if (event.event === RELAY_EVENTS.room.ROOM_MEMBER_REMOVED) {
-        this.mirrorRoomBlock(event.payload);
-      }
-
-      // REACT: unified kick path (ADR 0017, room-blocks/02) — ejection
-      // machinery previously in the retired `room:kick` socket handler, now
-      // driven by this fanout ingest. Fire-and-forget: the client also
-      // self-ejects (leaveRoom + navigate) on room.member_removed, so a
-      // failed/slow ejection here degrades to eventual consistency, never
-      // blocks event routing.
-      // Laravel emits this event twice (user-targeted and room-broadcast),
-      // and each envelope carries only ONE of user_id/room_id — both ids
-      // live in the payload. Gate on the room-broadcast copy so the
-      // ejection runs exactly once per kick.
-      if (
-        event.event === RELAY_EVENTS.room.ROOM_MEMBER_REMOVED &&
-        event.room_id !== null
-      ) {
-        const removed = event.payload as {
-          room_id?: number | string;
-          user_id?: number;
-        };
-        if (removed.user_id != null) {
-          this.ejectMemberOnBlock(String(event.room_id), removed.user_id);
-        }
+        this.applyRoomBlock(event);
       }
 
       // REACT: mirror an unblock — delete the Redis key so a natural rejoin
       // succeeds immediately with no residual friction.
       if (event.event === RELAY_EVENTS.room.ROOM_USER_UNBLOCKED) {
-        this.mirrorRoomUnblock(event.payload);
+        this.mirrorRoomUnblock(event.payload, eventVersionMs(event.timestamp));
       }
 
       return result;
@@ -468,6 +455,7 @@ export class EventRouter {
   private syncRoomSettings(
     roomId: string,
     payload: Record<string, unknown>,
+    versionMs: number | null,
   ): void {
     if (!this.roomStateRepo) return;
 
@@ -485,7 +473,40 @@ export class EventRouter {
       return;
     }
 
-    this.roomStateRepo
+    // GATE: a `room.updated` older than the state already applied must not be
+    // replayed. The shrink branch below evicts real occupants from their seats,
+    // so a stale copy arriving after a newer one does not merely write a wrong
+    // number — it throws people out of seats they legitimately hold.
+    this.acceptsOrder(ROOM_UPDATED_VERSION_KEY(roomId), versionMs)
+      .then((fresh) => {
+        if (!fresh) {
+          metrics.laravelEventsStaleRejected.inc({
+            event_type: RELAY_EVENTS.room.ROOM_UPDATED,
+          });
+          this.logger.info(
+            { roomId, maxSeats, versionMs },
+            "Stale room.updated ignored — newer room state already applied",
+          );
+          return;
+        }
+        return this.applyRoomSeatCount(roomId, maxSeats);
+      })
+      .catch((err) => {
+        // Distinct from applyRoomSeatCount's own catch: that one swallows every
+        // failure of the write itself, so anything reaching here came from the
+        // ordering guard.
+        reactError(err, { roomId }, "room.updated ordering guard failed", {
+          logger: this.logger,
+        });
+      });
+  }
+
+  /**
+   * EXECUTE half of `syncRoomSettings`, unchanged in behaviour — split out so
+   * the staleness GATE above reads as one stage and this stays one stage.
+   */
+  private applyRoomSeatCount(roomId: string, maxSeats: number): Promise<void> {
+    return this.roomStateRepo!
       .get(roomId)
       .then(async (state) => {
         // room-battery-perf/05: even when the value is unchanged, stamp the
@@ -538,9 +559,34 @@ export class EventRouter {
   private writeRevocationKey(userId: number, revokedAt: number): void {
     const key = `auth:user_revoked:${userId}`;
     const ttl = config.JWT_MAX_AGE_SECONDS; // 24h — matches JWT lifetime (F-56)
-    this.redis
-      .set(key, String(revokedAt), "EX", ttl)
-      .then(() => {
+
+    // A missing/garbage `revoked_at` used to be stringified straight into Redis
+    // ("undefined"/"NaN"), which `jwtValidator` then compares numerically
+    // against `iat` — a watermark that can never match, i.e. a revocation that
+    // silently does nothing. Reject it loudly instead.
+    if (!Number.isFinite(revokedAt)) {
+      this.logger.error(
+        { userId, revokedAt },
+        "auth.revoke_tokens carried a non-numeric revoked_at — revocation NOT applied",
+      );
+      return;
+    }
+
+    // GATE: `revoked_at` is its own version — sender-authoritative and
+    // monotonic — so a replayed revocation must never overwrite a newer one
+    // with an older watermark, which would re-admit tokens minted in between.
+    writeIfNewer(this.redis, key, revokedAt, ttl)
+      .then((written) => {
+        if (!written) {
+          metrics.laravelEventsStaleRejected.inc({
+            event_type: RELAY_EVENTS.auth.REVOKE_TOKENS,
+          });
+          this.logger.info(
+            { userId, revokedAt },
+            "Stale auth.revoke_tokens ignored — a newer revocation is already stored",
+          );
+          return;
+        }
         this.logger.info(
           { userId, revokedAt },
           "User revocation key written to local Redis",
@@ -562,7 +608,8 @@ export class EventRouter {
    * (permanent flag set) writes with no TTL; otherwise `EX remaining_seconds`
    * so the key self-expires with no cleanup action.
    */
-  private mirrorRoomBlock(payload: Record<string, unknown>): void {
+  private applyRoomBlock(event: LaravelEvent): void {
+    const payload = event.payload;
     const roomId = payload.room_id;
     const userId = payload.user_id;
     if (typeof roomId !== "number" && typeof roomId !== "string") return;
@@ -573,9 +620,50 @@ export class EventRouter {
       typeof payload.remaining_seconds === "number"
         ? payload.remaining_seconds
         : null;
+    const versionMs = eventVersionMs(event.timestamp);
 
-    this.roomBlockRepo
-      .writeBlock(String(roomId), userId, permanent ? null : remainingSeconds)
+    // GATE: block and unblock share one version marker per (room, user), so
+    // whichever event is genuinely newer wins regardless of arrival order.
+    //
+    // The mirror write and the ejection MUST share this one verdict. Gating
+    // only the mirror would let a stale block still throw the user off their
+    // seat while writing no block — they would simply rejoin, so the reordering
+    // would produce a visible eviction with no lasting state behind it. Partial
+    // application is the failure this guard exists to prevent.
+    this.acceptsOrder(ROOM_BLOCK_VERSION_KEY(String(roomId), userId), versionMs)
+      .then((fresh) => {
+        if (!fresh) {
+          metrics.laravelEventsStaleRejected.inc({
+            event_type: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
+          });
+          this.logger.info(
+            { roomId, userId, versionMs },
+            "Stale room.member_removed ignored — a newer block state is already mirrored",
+          );
+          return;
+        }
+
+        // Unified kick path (ADR 0017, room-blocks/02) — ejection machinery
+        // previously in the retired `room:kick` socket handler, now driven by
+        // this fanout ingest. Fire-and-forget: the client also self-ejects
+        // (leaveRoom + navigate) on room.member_removed, so a failed/slow
+        // ejection degrades to eventual consistency, never blocks routing.
+        //
+        // Laravel emits this event twice (user-targeted and room-broadcast) and
+        // each envelope carries only ONE of user_id/room_id. Gate on the
+        // room-broadcast copy so the ejection runs exactly once per kick. The
+        // guard above admits both copies — they carry the same version, and it
+        // accepts ties — so this copy still reaches the ejection.
+        if (event.room_id !== null) {
+          this.ejectMemberOnBlock(String(event.room_id), userId);
+        }
+
+        return this.roomBlockRepo.writeBlock(
+          String(roomId),
+          userId,
+          permanent ? null : remainingSeconds,
+        );
+      })
       .catch((err) =>
         reactError(err, { roomId, userId }, "Failed to mirror room block into Redis", {
           logger: this.logger,
@@ -587,19 +675,54 @@ export class EventRouter {
    * ADR 0017 / room-blocks 03: delete the Redis block-gate mirror from a
    * `room.user_unblocked` fanout payload.
    */
-  private mirrorRoomUnblock(payload: Record<string, unknown>): void {
+  private mirrorRoomUnblock(
+    payload: Record<string, unknown>,
+    versionMs: number | null,
+  ): void {
     const roomId = payload.room_id;
     const userId = payload.user_id;
     if (typeof roomId !== "number" && typeof roomId !== "string") return;
     if (typeof userId !== "number") return;
 
-    this.roomBlockRepo
-      .deleteBlock(String(roomId), userId)
+    // GATE: same marker the block path stamps. Without it, a block delayed by a
+    // delivery retry could land after the unblock that supersedes it and
+    // re-lock a user who was already let back in — the delete leaves no trace
+    // for a late block to notice.
+    this.acceptsOrder(ROOM_BLOCK_VERSION_KEY(String(roomId), userId), versionMs)
+      .then((fresh) => {
+        if (!fresh) {
+          metrics.laravelEventsStaleRejected.inc({
+            event_type: RELAY_EVENTS.room.ROOM_USER_UNBLOCKED,
+          });
+          this.logger.info(
+            { roomId, userId, versionMs },
+            "Stale room.user_unblocked ignored — a newer block state is already mirrored",
+          );
+          return;
+        }
+        return this.roomBlockRepo.deleteBlock(String(roomId), userId);
+      })
       .catch((err) =>
         reactError(err, { roomId, userId }, "Failed to delete room block Redis mirror", {
           logger: this.logger,
         }),
       );
+  }
+
+  /**
+   * GATE: has a newer version of this entity already been applied?
+   *
+   * `versionMs === null` means the envelope carried no usable timestamp, so
+   * there is nothing to compare — the event is applied, preserving the
+   * pre-guard behaviour rather than dropping it. Redis failures resolve to
+   * `true` inside `acceptIfNotOlder` for the same fail-open reason.
+   */
+  private acceptsOrder(
+    versionKey: string,
+    versionMs: number | null,
+  ): Promise<boolean> {
+    if (versionMs === null) return Promise.resolve(true);
+    return acceptIfNotOlder(this.redis, versionKey, versionMs);
   }
 
   /**

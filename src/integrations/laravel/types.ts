@@ -16,8 +16,19 @@ export interface LaravelEvent {
   room_id: number | null;
   /** Event-specific payload data */
   payload: Record<string, unknown>;
-  /** ISO 8601 timestamp */
-  timestamp: string;
+  /**
+   * ISO 8601 timestamp, stamped by the SENDER (RealtimeTransport.php).
+   *
+   * Optional on purpose. It is the version the ordering guards compare, and it
+   * used to be zod-defaulted to the receiver's arrival time when absent — which
+   * is worse than having none at all, because arrival time reflects the
+   * reordering rather than the sender's intent, so a late replay would look
+   * newest and win. Absent must mean "no ordering guard", never "now".
+   */
+  // `| undefined` is required, not redundant: the project compiles with
+  // `exactOptionalPropertyTypes`, under which a bare `?` forbids an explicit
+  // `undefined` — and zod's `.optional()` produces exactly that.
+  timestamp?: string | undefined;
   /** UUID v4 for tracing/debugging */
   correlation_id: string;
 }

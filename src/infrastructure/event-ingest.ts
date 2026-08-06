@@ -12,20 +12,30 @@
  * comment above the auth check below for what re-adding it safely would require.
  */
 import type { FastifyPluginAsync } from "fastify";
+import type { Redis } from "ioredis";
 import type { EventRouter } from "@src/integrations/laravel/event-router.js";
 import type { LaravelEvent } from "@src/integrations/laravel/types.js";
 import { config } from "@src/config/index.js";
 import { withCorrelation } from "./correlation.js";
 import { z } from "zod";
 import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
+import { metrics } from "./metrics.js";
+import { buildDedupKey, claimEvent, releaseClaim } from "./event-dedup.js";
 
-/** Zod schema — matches the existing LaravelEventSchema in event-subscriber.ts */
+/** Zod schema for the Laravel event envelope. */
 const EventPayloadSchema = z.object({
   event: z.string(),
   user_id: z.number().nullable().default(null),
   room_id: z.number().nullable().default(null),
   payload: z.record(z.unknown()).default({}),
-  timestamp: z.string().default(() => new Date().toISOString()),
+  /**
+   * NOT defaulted. This is the version the ordering guards compare against, and
+   * defaulting it to `new Date().toISOString()` would stamp every unversioned
+   * event with its ARRIVAL time — which encodes the reordering the guards
+   * exist to undo, letting a late replay outrank the event it is replaying.
+   * Absent stays absent so the guards can skip rather than be misled.
+   */
+  timestamp: z.string().optional(),
   correlation_id: z.string().default("unknown"),
 });
 
@@ -41,6 +51,13 @@ let inFlightEvents = 0;
 
 export const createEventIngestRoutes = (
   eventRouter: EventRouter,
+  /**
+   * Backing store for the at-least-once dedup gate. Optional so the gate is
+   * strictly additive: omit it and ingest behaves exactly as it did before,
+   * which keeps every existing caller and test valid. Production always passes
+   * it (see infrastructure/server.ts).
+   */
+  redis?: Redis,
 ): FastifyPluginAsync => {
   return async (fastify) => {
     // SNS sends requests with Content-Type: text/plain containing JSON
@@ -169,6 +186,34 @@ export const createEventIngestRoutes = (
         });
       }
 
+      // --- GATE: at-least-once deduplication ---
+      //
+      // Deliberately placed AFTER the 503 shed above. Claiming the event first
+      // would mark a shed event as seen, and Laravel's retry of that very event
+      // would then be dropped at this gate — silent event loss precisely when
+      // load is highest. With the shed ahead of it, no non-2xx reply exists
+      // downstream of the claim.
+      //
+      // See event-dedup.ts for why the key is not `correlation_id` alone.
+      const dedupKey = redis ? buildDedupKey(event) : null;
+      if (redis && dedupKey && !(await claimEvent(redis, dedupKey))) {
+        metrics.laravelEventsDeduplicated.inc({ event_type: event.event });
+        fastify.log.info(
+          {
+            event: event.event,
+            userId: event.user_id,
+            roomId: event.room_id,
+            correlationId: event.correlation_id,
+          },
+          "Event ingest: duplicate suppressed",
+        );
+        // 200, not 4xx: a non-2xx makes the sender retry the delivery we just
+        // suppressed, turning one duplicate into a retry loop.
+        return reply
+          .code(200)
+          .send({ status: "ok", duplicate: true, delivered: false, target_count: 0 });
+      }
+
       fastify.log.info(
         {
           event: event.event,
@@ -199,6 +244,14 @@ export const createEventIngestRoutes = (
           delivered: routingResult.delivered,
           target_count: routingResult.targetCount,
         });
+      } catch (err) {
+        // Hand the claim back so a retry of this envelope is allowed through.
+        // Insurance only: `route()` catches everything internally and returns a
+        // result object, so this covers a throw from outside its own try/catch.
+        // A returned `{delivered:false}` is a terminal OUTCOME (e.g. the user
+        // has no sockets), not a failure — it must keep its claim.
+        if (redis && dedupKey) await releaseClaim(redis, dedupKey);
+        throw err;
       } finally {
         inFlightEvents--;
       }
