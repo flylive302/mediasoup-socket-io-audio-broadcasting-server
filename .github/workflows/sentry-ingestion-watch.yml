@@ -1,0 +1,78 @@
+# Watchdog for the ABSENCE of telemetry.
+#
+# Sentry ingested nothing from 2026-08-04 to 2026-08-07 and nothing noticed for
+# three days, because every alert we own fires when an event ARRIVES. This job
+# is the inverse: it fails when events STOP.
+#
+# 🔴 It lives here, and not in a Sentry alert rule, on purpose — a rule inside
+# Sentry would depend on the ingestion, billing and alerting that were all
+# broken. It lives in THIS repo, and not in `backend`, because MSAB runs on
+# infrastructure independent of Laravel Cloud and Cloudflare Pages: the watcher
+# must survive an outage of what it watches.
+#
+# The alert channel is GitHub's own failed-scheduled-workflow email. No extra
+# service, no extra secret, nothing shared with the systems being monitored.
+#
+# Requires repo secret: SENTRY_ACCESS_TOKEN (scope `org:read`).
+#
+# ⚠️ EXPECT THIS TO FAIL EVERY RUN UNTIL 2026-08-19. Ingestion is knowingly down
+# until the Sentry billing period rolls — see
+# docs/issues-keep-watching/07-sentry-ingestion-resumes-on-quota-reset.md.
+# That is a deliberate operator decision (2026-08-08), not a bug in this job.
+# ➡️ To silence it in the meantime, comment out the `schedule:` block below.
+#    ⛔ If you do, put the date you will restore it in the commit message —
+#    a muted alarm that nobody re-arms is how the original blackout happened.
+
+name: Sentry ingestion watch
+
+on:
+  schedule:
+    # Hourly. Detection latency is set by --window (6h), not by this cadence;
+    # running hourly just means the window is evaluated on fresh data.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      window:
+        description: 'Hours of zero-accepted before alerting'
+        required: false
+        default: '6'
+      replay:
+        description: 'Score a fixed past UTC day (YYYY-MM-DD) instead of now'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
+      # No install step: the script uses only built-in fetch, so a broken
+      # dependency tree can never take the watchdog down with it.
+      #
+      # ⛔ The two dispatch inputs go through `env:`, never inline `${{ }}` in
+      # `run:` — interpolating them into the shell would be a command-injection
+      # hole. They are quoted on use for the same reason.
+      - name: Check that Sentry is still accepting errors
+        env:
+          SENTRY_ACCESS_TOKEN: ${{ secrets.SENTRY_ACCESS_TOKEN }}
+          WINDOW: ${{ inputs.window || '6' }}
+          REPLAY: ${{ inputs.replay }}
+        run: |
+          set -euo pipefail
+          args=(--window "$WINDOW")
+          if [ -n "$REPLAY" ]; then
+            # Reject anything that is not a bare UTC date before it reaches the
+            # command line at all.
+            case "$REPLAY" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) args+=(--replay "$REPLAY") ;;
+              *) echo "::error::replay must be YYYY-MM-DD, got '$REPLAY'"; exit 2 ;;
+            esac
+          fi
+          node scripts/sentry-ingestion-check.mjs "${args[@]}"
