@@ -154,17 +154,20 @@ export const RELAY_EVENTS = {
   },
 
   /**
-   * Lucky draw: the sender's floating cashback multiplier (`lucky:result`) and
+   * Lucky draw: the sender's floating cashback multiplier (`lucky:result`),
    * the typed no-draw signal (`lucky:no-draw`) — a draw skipped for a
-   * user-visible reason (capped / user_capped / disabled / no_eligible_tier).
-   * Both are user-targeted pass-throughs; the `reason` union is opaque here
-   * (widened only on the Laravel emitter + FE consumer). Big-win room/app
-   * announcements now flow through the unified slide overlay (`slide:play`),
-   * not lucky-specific events — see Laravel unified-slide-overlay (ADR 0009).
+   * user-visible reason (capped / user_capped / disabled / no_eligible_tier) —
+   * and the room-wide win broadcast (`lucky:room-result`) so everyone in the
+   * room sees a win, not just the sender. All are pass-throughs; routing is
+   * generic (user_id or room_id presence). Big-win room/app *slide* banner
+   * announcements separately flow through the unified slide overlay
+   * (`slide:play`) — see Laravel unified-slide-overlay (ADR 0009).
    */
   lucky: {
     LUCKY_RESULT: "lucky:result",
     LUCKY_NO_DRAW: "lucky:no-draw",
+    /** Room-wide win broadcast (additive) — routing is generic pass-through by room_id. */
+    LUCKY_ROOM_RESULT: "lucky:room-result",
   },
 
   /**
