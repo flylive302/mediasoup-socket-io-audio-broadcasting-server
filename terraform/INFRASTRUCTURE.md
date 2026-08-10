@@ -749,7 +749,8 @@ docker build -t "$ECR_URL:sha-${GIT_SHA}" .
 docker push "$ECR_URL:sha-${GIT_SHA}"
 
 # 2. Update Terraform image_tag variable (or set via tfvars)
-# The autoscaling modules accept an image_tag variable (default: "latest")
+# The autoscaling modules require an image_tag variable — no default, and
+# "latest"/"" are rejected by validation (ticket 14). Must be a real sha-<commit8> tag.
 
 # 3. Apply to update the launch template
 terraform apply -var="image_tag=sha-${GIT_SHA}"

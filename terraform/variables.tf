@@ -8,6 +8,12 @@ variable "project_name" {
   default     = "flylive-audio"
 }
 
+variable "github_deploy_environment" {
+  description = "GitHub deployment environment (repo Settings → Environments) whose approved jobs may assume the OIDC deploy role — set per tfvars so staging and production runs can only assume their own role (ticket 12)"
+  type        = string
+  default     = "aws-production"
+}
+
 variable "environment" {
   description = "Deployment environment — used for the Environment tag only (cost allocation). Resource names are isolated by AWS account, not this value."
   type        = string
@@ -29,6 +35,16 @@ variable "laravel_api_url" {
   description = "Base URL the MSAB instances use to reach the Laravel backend. Staging overrides with the staging app origin."
   type        = string
   default     = "https://app.flyliveapp.com"
+}
+
+variable "image_tag" {
+  description = "Pinned image tag (sha-<commit8> from the CI run that built it). Never \"latest\" — a cold-restore or instance replacement must always launch the exact staged/verified image."
+  type        = string
+
+  validation {
+    condition     = var.image_tag != "" && var.image_tag != "latest"
+    error_message = "image_tag must be a pinned sha-<commit8> tag, not empty or \"latest\"."
+  }
 }
 
 variable "min_instances" {

@@ -7,7 +7,7 @@
 
 resource "aws_ecr_repository" "msab" {
   name                 = "${var.project_name}/msab"
-  image_tag_mutability = "MUTABLE" # Allow :latest tag overwrites
+  image_tag_mutability = "IMMUTABLE" # Reject re-pushes of an existing tag — a sha-<commit8> tag must always resolve to one image
   force_delete         = false
 
   image_scanning_configuration {
@@ -26,8 +26,10 @@ resource "aws_ecr_repository" "msab" {
 # (removes the Mumbai-ECR latency/cost/SPOF dependency for Frankfurt scaling).
 #
 # Caveats baked into the runbook:
-#  - NOT retroactive: only images pushed AFTER this applies are replicated. The
-#    owner must re-push (or re-tag :latest) before Frankfurt's local-pull works.
+#  - NOT retroactive: only images pushed AFTER this applies are replicated. Under
+#    IMMUTABLE (ticket 14) an existing tag can no longer be re-pushed to force
+#    replication — the owner must push a NEW sha-<commit8> tag (a fresh CI build)
+#    before Frankfurt's local-pull works.
 #  - Lifecycle policies do NOT replicate — the destination repo is auto-created by
 #    ECR and accumulates images; prune it manually/separately if it grows.
 resource "aws_ecr_replication_configuration" "msab" {

@@ -264,13 +264,12 @@ variable "load_balancer_arn_suffix" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag to deploy. Pin to a git-SHA tag (e.g., sha-abc1234) in production. Using 'latest' risks mixed cluster versions during scale-out events."
+  description = "Pinned image tag (sha-<commit8> from the CI run that built it). Never \"latest\" — a cold-restore or instance replacement must always launch the exact staged/verified image."
   type        = string
-  default     = "latest"
 
   validation {
-    condition     = var.image_tag != ""
-    error_message = "image_tag must not be empty."
+    condition     = var.image_tag != "" && var.image_tag != "latest"
+    error_message = "image_tag must be a pinned sha-<commit8> tag, not empty or \"latest\"."
   }
 }
 

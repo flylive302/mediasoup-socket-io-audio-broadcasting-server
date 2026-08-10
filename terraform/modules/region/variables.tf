@@ -70,6 +70,14 @@ variable "instance_type" { type = string }
 variable "instance_architecture" { type = string }
 variable "ssh_public_key_path" { type = string }
 variable "instance_profile_name" { type = string }
+
+# Ticket 16: the shared EC2 IAM role name, forwarded to modules/ssm so it can
+# attach a kms:Decrypt grant (scoped to this region's own CMK) to the same
+# role instance_profile_name above belongs to. Not sourced inside modules/iam
+# itself — that would require modules/iam to depend on this region's ssm
+# output for the key ARN, which cycles back against this module's existing
+# dependency on modules/iam for instance_profile_name.
+variable "iam_role_name" { type = string }
 variable "ecr_repo_url" { type = string }
 
 variable "laravel_internal_key" {
@@ -110,6 +118,11 @@ variable "hls_r2_access_key_id" {
 variable "hls_r2_secret_access_key" {
   type      = string
   sensitive = true
+}
+
+variable "image_tag" {
+  description = "Pinned image tag (sha-<commit8>) forwarded to the autoscaling module. Never \"latest\"."
+  type        = string
 }
 
 variable "min_instances" { type = number }

@@ -1,4 +1,10 @@
 secrets:
+  # Static AWS keys remain ONLY for the inert drift-check job in
+  # terraform-aws-tests.yml (gated behind AWS_DRIFT_CHECK_ENABLED, keys never
+  # issued). The deploy workflow uses OIDC (ticket 12) — AWS_DEPLOY_ROLE_ARN
+  # below, a variable, not a secret.
   - AWS_ACCESS_KEY_ID
   - AWS_SECRET_ACCESS_KEY
   - LARAVEL_INTERNAL_KEY
+variables:
+  - AWS_DEPLOY_ROLE_ARN

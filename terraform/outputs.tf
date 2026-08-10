@@ -86,18 +86,13 @@ output "ecr_repository_url" {
   value       = module.ecr.repository_url
 }
 
-# --- GitHub Actions Deploy User (CI/CD) ---
-# After apply, paste these into GitHub → repo Settings → Environments →
-# aws-production → secrets (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
-#   terraform output github_actions_access_key_id
-#   terraform output -raw github_actions_secret_access_key
-output "github_actions_access_key_id" {
-  description = "AWS_ACCESS_KEY_ID for the aws-production GitHub environment"
-  value       = module.iam.github_actions_access_key_id
-}
-
-output "github_actions_secret_access_key" {
-  description = "AWS_SECRET_ACCESS_KEY for the aws-production GitHub environment"
-  value       = module.iam.github_actions_secret_access_key
-  sensitive   = true
+# --- GitHub Actions Deploy Role (CI/CD, OIDC — ticket 12) ---
+# No static keys anywhere. After apply, paste this ONE value into GitHub →
+# repo Settings → Environments → aws-production → variables (not secrets —
+# role ARNs are not secret) as AWS_DEPLOY_ROLE_ARN, and delete any
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets still present there.
+#   terraform output github_actions_role_arn
+output "github_actions_role_arn" {
+  description = "AWS_DEPLOY_ROLE_ARN for the aws-production GitHub environment"
+  value       = module.iam.github_actions_role_arn
 }

@@ -77,6 +77,9 @@ variables {
   laravel_internal_key = "test-internal-key-0123456789abcdef"
   jwt_secret           = "test-jwt-secret-0123456789abcdef"
   cloudflare_api_token = "test-cloudflare-api-token-0123456789ab"
+
+  # Required, no-default (ticket 14: image_tag has no default and rejects "latest").
+  image_tag = "sha-deadbeef"
 }
 
 # --- Durable store never evicts and is snapshotted, retention AND window

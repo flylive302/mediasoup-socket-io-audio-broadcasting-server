@@ -94,7 +94,58 @@ resource "aws_iam_role_policy" "ec2_describe" {
   })
 }
 
-# --- CloudWatch Logs Policy (for Docker awslogs driver) ---
+# --- CloudWatch Log Group — MSAB container logs (shipped by the CloudWatch
+# Agent installed in modules/autoscaling/user-data.sh:264-292). The runtime
+# agent config there hard-codes log_group_name = "/flylive-audio/msab"; this
+# resource name is built from the same var.project_name as everything else
+# in this module so the two can never desync (bash and Terraform can't share
+# a variable, so this is enforced by convention + this comment, not code —
+# if project_name ever changes, user-data.sh's literal must be updated too).
+#
+# retention_in_days is explicit (not left at the provider default of "never
+# expire"): 30 days is an operational debugging window for a realtime audio
+# service — enough to investigate rooms/seats/connection-drop incidents
+# after the fact. Costs stay bounded, and incidents older than a month are
+# investigated from docs/metrics (dashboards, postmortems), not raw
+# container logs. See var.log_retention_days if this ever needs to change
+# per-environment.
+#
+# Region note: CloudWatch Logs is regional; this group is created under the
+# module's default (unaliased) aws provider, which main.tf pins to Mumbai
+# (ap-south-1) — the same region "module region_mumbai" runs in. That's
+# correct today because var.enabled_regions defaults to ["mumbai"] only
+# (Frankfurt/Singapore are defined but off — see variables.tf ticket-11
+# comment). If a second region is ever enabled, its instances need a log
+# group in THEIR region too; this single resource won't cover them, and the
+# CreateLogGroup permission removed below (agent config in
+# modules/autoscaling/user-data.sh) means shipping would fail silently there
+# instead of self-healing. Revisit placement (per-region, in modules/region
+# or modules/autoscaling) before turning on a second region.
+resource "aws_cloudwatch_log_group" "msab" {
+  name              = "/${var.project_name}/msab"
+  retention_in_days = var.log_retention_days
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- CloudWatch Logs Policy (for the CloudWatch Agent shipping Docker logs) ---
+# logs:CreateLogGroup is deliberately NOT granted here — narrower than AWS's
+# own managed CloudWatchAgentServerPolicy, which does include CreateLogGroup.
+# aws_cloudwatch_log_group.msab above is the only group this agent config
+# writes to (one collect_list entry, log_group_name is a fixed string, not
+# templated per instance/day — modules/autoscaling/user-data.sh:264-292), so
+# the agent only ever needs to create its per-instance log STREAM
+# ({instance_id}) inside that pre-existing group and write to it — never a
+# group. Terraform now owns the group's existence and retention.
+# Trade-off, stated plainly: this is a deliberate tightening below AWS's
+# recommended policy, not a verified requirement from AWS docs. The
+# consequence if the group is ever missing in a region this role runs in
+# (e.g. a future region enabled without provisioning its own group — see the
+# region note above) is that log shipping fails outright instead of
+# self-healing. Re-add CreateLogGroup if that trade-off stops being
+# acceptable.
 resource "aws_iam_role_policy" "cloudwatch_logs" {
   name = "${var.project_name}-cloudwatch-logs"
   role = aws_iam_role.msab.id
@@ -105,12 +156,11 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
       {
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents",
           "logs:DescribeLogStreams",
         ]
-        Resource = "arn:aws:logs:*:*:log-group:/flylive-audio/*"
+        Resource = "arn:aws:logs:*:*:log-group:/${var.project_name}/*"
       }
     ]
   })
@@ -181,19 +231,120 @@ resource "aws_iam_instance_profile" "msab" {
 }
 
 # =============================================================================
-# CI/CD Deploy User — GitHub Actions (deploy.yml)
+# CI/CD Deploy Identity — GitHub Actions via OIDC federation (deploy.yml)
 # =============================================================================
-# Long-lived access key used by .github/workflows/deploy.yml to:
-#   - build-and-push: authenticate + push the MSAB image to ECR (ap-south-1)
-#   - deploy: trigger an ASG instance refresh in both regions
-# Scoped to exactly those actions (NOT terraform-deployer, which is over-privileged).
-# The old account's manually-created CI user was lost in the greenfield restart;
-# this re-creates it as code. Access key is surfaced as a sensitive root output to
-# paste into GitHub → Settings → Environments → aws-production secrets.
+# Ticket 12: no long-lived access key. GitHub Actions presents a short-lived
+# OIDC token from token.actions.githubusercontent.com and assumes a role whose
+# trust policy is pinned to this repository AND the specific GitHub deployment
+# environment (var.github_environment). A job running under any other repo or
+# environment cannot assume it — that (plus per-env state/VPC, tickets 09/11)
+# is the blast-radius wall a single AWS account (D5) otherwise lacks.
+#
+# The role is capped by a permissions boundary (below): even if a broader
+# policy is ever attached to it by mistake, effective permissions can never
+# exceed exactly what deploy.yml needs — ECR push to the MSAB repo + ASG
+# instance refresh. Nothing to paste into GitHub secrets except the role ARN
+# (github_actions_role_arn output — NOT sensitive; role ARNs are not secrets).
 # =============================================================================
 
-resource "aws_iam_user" "github_actions" {
-  name = "${var.project_name}-github-actions"
+# GitHub's OIDC identity provider — one per account. thumbprint_list is
+# vestigial (AWS trusts GitHub's root CA directly since 2023) but the argument
+# is still required by the resource; these are GitHub's published thumbprints.
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
+  ]
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- Permissions boundary: the deploy identity's hard ceiling ---
+# A boundary does not GRANT anything — it caps the maximum. The role's
+# effective permissions are (attached policies ∩ this boundary).
+resource "aws_iam_policy" "github_actions_boundary" {
+  name        = "${var.project_name}-gha-deploy-boundary"
+  description = "Permissions boundary for the GitHub Actions deploy role — caps it at ECR push (MSAB repo only) + ASG instance refresh, regardless of what policies get attached later"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:DescribeImages",
+        ]
+        Resource = var.ecr_repository_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeInstanceRefreshes",
+          "autoscaling:DescribeLifecycleHooks",
+          "autoscaling:DescribeScalingActivities",
+          "autoscaling:StartInstanceRefresh",
+          "autoscaling:CancelInstanceRefresh",
+          "autoscaling:CompleteLifecycleAction",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# Plan-known copy of the trust policy's sub claim, so the offline test suite
+# can assert the repo+environment pin (the rendered assume_role_policy embeds
+# the OIDC provider ARN, which is unknown at plan time).
+locals {
+  github_oidc_sub = "repo:${var.github_repository}:environment:${var.github_environment}"
+}
+
+resource "aws_iam_role" "github_actions" {
+  name                 = "${var.project_name}-github-actions"
+  permissions_boundary = aws_iam_policy.github_actions_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+            # Only jobs running under THIS repo's THIS deployment environment.
+            # GitHub environments carry the required-reviewer gate, so this also
+            # means: only a run a human approved can assume the role.
+            "token.actions.githubusercontent.com:sub" = local.github_oidc_sub
+          }
+        }
+      }
+    ]
+  })
 
   tags = {
     Project = var.project_name
@@ -201,14 +352,10 @@ resource "aws_iam_user" "github_actions" {
   }
 }
 
-resource "aws_iam_access_key" "github_actions" {
-  user = aws_iam_user.github_actions.name
-}
-
 # --- ECR push: authenticate + push image (build-and-push job) ---
-resource "aws_iam_user_policy" "github_actions_ecr_push" {
+resource "aws_iam_role_policy" "github_actions_ecr_push" {
   name = "${var.project_name}-gha-ecr-push"
-  user = aws_iam_user.github_actions.name
+  role = aws_iam_role.github_actions.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -239,9 +386,9 @@ resource "aws_iam_user_policy" "github_actions_ecr_push" {
 }
 
 # --- ASG instance refresh: roll new image into both regions (deploy job) ---
-resource "aws_iam_user_policy" "github_actions_asg_refresh" {
+resource "aws_iam_role_policy" "github_actions_asg_refresh" {
   name = "${var.project_name}-gha-asg-refresh"
-  user = aws_iam_user.github_actions.name
+  role = aws_iam_role.github_actions.id
 
   policy = jsonencode({
     Version = "2012-10-17"

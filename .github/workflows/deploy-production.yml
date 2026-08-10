@@ -48,6 +48,11 @@ on:
         required: false
         type: string
         default: ""
+      image_tag:
+        description: "Optional pinned tag to deploy instead of the freshly built SHA (rollback to a known-good artifact). Empty = build and deploy HEAD (current behaviour)."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -69,6 +74,6 @@ jobs:
       environment: vultr-production # ← required-reviewer gate = the manual approval
       tf_workspace: msab-vultr-production
       tfvars_file: ci/production.tfvars
-      image_tag: ${{ needs.build.outputs.image_tag }}
+      image_tag: ${{ inputs.image_tag || needs.build.outputs.image_tag }}
       roll_only: ${{ inputs.roll_only || '' }}
     secrets: inherit

@@ -113,8 +113,11 @@ variables {
   # laravel_internal_key, jwt_secret have no default).
   redis_auth_token     = "test-redis-auth-token-0123456789ab"
   laravel_internal_key = "test-internal-key-0123456789abcdef"
-  jwt_secret            = "test-jwt-secret-0123456789abcdef"
-  cloudflare_api_token  = "test-cloudflare-api-token-0123456789ab"
+  jwt_secret           = "test-jwt-secret-0123456789abcdef"
+  cloudflare_api_token = "test-cloudflare-api-token-0123456789ab"
+
+  # Required, no-default (ticket 14: image_tag has no default and rejects "latest").
+  image_tag = "sha-deadbeef"
 }
 
 # -----------------------------------------------------------------------------
@@ -163,6 +166,7 @@ run "asg_is_fixed_size_when_variables_set_equal" {
     laravel_internal_key   = "test-internal-key-0123456789abcdef"
     jwt_secret             = "test-jwt-secret-0123456789abcdef"
     audio_domain           = "audio.flyliveapp.com"
+    image_tag              = "sha-deadbeef"
 
     # The fixed-size fleet decision under test (ticket 06, min = max = desired).
     min_instances     = 3
@@ -370,4 +374,43 @@ run "environment_rejects_invalid_value" {
   expect_failures = [
     var.environment,
   ]
+}
+
+# -----------------------------------------------------------------------------
+# ticket 14: image_tag must be pinned — "latest" (and empty) are rejected, no
+# default. variables.tf `image_tag` validation: != "" && != "latest".
+# -----------------------------------------------------------------------------
+run "image_tag_rejects_latest" {
+  command = plan
+
+  variables {
+    image_tag = "latest"
+  }
+
+  expect_failures = [
+    var.image_tag,
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# ticket 14: ECR repository must be IMMUTABLE — modules/ecr/main.tf
+# `aws_ecr_repository.msab.image_tag_mutability`. A sha-tagged image can never
+# be silently overwritten by a later push of the same tag.
+# -----------------------------------------------------------------------------
+run "ecr_repository_is_immutable" {
+  command = plan
+
+  module {
+    source = "./modules/ecr"
+  }
+
+  variables {
+    project_name                    = "flylive-audio"
+    replication_destination_regions = []
+  }
+
+  assert {
+    condition     = aws_ecr_repository.msab.image_tag_mutability == "IMMUTABLE"
+    error_message = "ECR repository must be IMMUTABLE (ticket 14) — tags must never be silently overwritten"
+  }
 }

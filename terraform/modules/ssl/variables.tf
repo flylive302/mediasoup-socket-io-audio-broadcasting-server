@@ -22,7 +22,7 @@ variable "caa_records_override" {
     production path — this is the default everywhere outside tests). Never
     set this outside tests.
   EOT
-  type        = list(object({
+  type = list(object({
     tag   = string
     value = string
   }))

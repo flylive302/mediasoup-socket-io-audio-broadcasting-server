@@ -65,10 +65,10 @@ module "ssl" {
   source    = "../ssl"
   providers = { aws = aws, cloudflare = cloudflare }
 
-  project_name          = var.project_name
-  audio_domain          = var.audio_domain
-  cloudflare_zone_id    = var.cloudflare_zone_id
-  caa_records_override  = var.caa_records_override
+  project_name         = var.project_name
+  audio_domain         = var.audio_domain
+  cloudflare_zone_id   = var.cloudflare_zone_id
+  caa_records_override = var.caa_records_override
 }
 
 module "loadbalancer" {
@@ -97,6 +97,9 @@ module "ssm" {
   broadcast_hls_enabled    = var.broadcast_hls_enabled
   hls_r2_access_key_id     = var.hls_r2_access_key_id
   hls_r2_secret_access_key = var.hls_r2_secret_access_key
+
+  iam_role_name = var.iam_role_name
+  aws_region    = var.aws_region
 }
 
 module "cloudwatch" {
@@ -109,19 +112,20 @@ module "cloudwatch" {
 module "autoscaling" {
   source = "../autoscaling"
 
-  region                  = var.aws_region
-  project_name            = var.project_name
-  instance_type           = var.instance_type
-  instance_architecture   = var.instance_architecture
-  ssh_public_key_path     = var.ssh_public_key_path
-  instance_profile_name   = var.instance_profile_name
-  msab_security_group_id  = module.networking.msab_security_group_id
-  public_subnet_ids       = module.networking.public_subnet_ids
-  target_group_arn        = module.loadbalancer.target_group_arn
-  ecr_repo_url            = var.ecr_repo_url
-  app_port                = var.app_port
-  rtc_min_port            = var.rtc_min_port
-  rtc_max_port            = var.rtc_max_port
+  region                 = var.aws_region
+  project_name           = var.project_name
+  instance_type          = var.instance_type
+  instance_architecture  = var.instance_architecture
+  ssh_public_key_path    = var.ssh_public_key_path
+  instance_profile_name  = var.instance_profile_name
+  msab_security_group_id = module.networking.msab_security_group_id
+  public_subnet_ids      = module.networking.public_subnet_ids
+  target_group_arn       = module.loadbalancer.target_group_arn
+  ecr_repo_url           = var.ecr_repo_url
+  image_tag              = var.image_tag
+  app_port               = var.app_port
+  rtc_min_port           = var.rtc_min_port
+  rtc_max_port           = var.rtc_max_port
   # REDIS_* = durable store; REDIS_CACHE_* = evict-freely store (ticket 21).
   redis_host              = module.redis_durable.redis_host
   redis_port              = module.redis_durable.redis_port

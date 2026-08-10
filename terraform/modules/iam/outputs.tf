@@ -15,13 +15,12 @@ output "role_arn" {
   value       = aws_iam_role.msab.arn
 }
 
-output "github_actions_access_key_id" {
-  description = "Access key ID for the GitHub Actions deploy user → aws-production env secret AWS_ACCESS_KEY_ID"
-  value       = aws_iam_access_key.github_actions.id
+output "role_name" {
+  description = "IAM role name (ticket 16: modules/ssm attaches a per-region kms:Decrypt grant to this role, scoped to that region's CMK — colocated there rather than here to avoid a module dependency cycle, since modules/region already depends on this module for instance_profile_name)"
+  value       = aws_iam_role.msab.name
 }
 
-output "github_actions_secret_access_key" {
-  description = "Secret access key for the GitHub Actions deploy user → aws-production env secret AWS_SECRET_ACCESS_KEY"
-  value       = aws_iam_access_key.github_actions.secret
-  sensitive   = true
+output "github_actions_role_arn" {
+  description = "ARN of the OIDC-federated GitHub Actions deploy role → aws-production env variable AWS_DEPLOY_ROLE_ARN (role ARNs are not secrets)"
+  value       = aws_iam_role.github_actions.arn
 }

@@ -29,6 +29,9 @@ ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
 min_instances     = 2
 desired_instances = 2
 
+# Pinned image tag (ticket 14). Never "latest" — required, no default.
+image_tag = "sha-CHANGE_ME"
+
 # --- Secrets (generate with: openssl rand -hex 32) ---
 jwt_secret           = "CHANGE_ME_64_hex"
 laravel_internal_key = "CHANGE_ME_64_hex"
@@ -42,3 +45,6 @@ cloudflare_turn_key_id  = "CHANGE_ME"
 # --- Cloudflare DNS zone (unattended ACM validation — needs DNS Read + DNS Write on the zone) ---
 cloudflare_api_token = "CHANGE_ME"
 cloudflare_zone_id   = "CHANGE_ME"
+
+# Ticket 12: staging runs may only assume the staging deploy role
+github_deploy_environment = "aws-staging"

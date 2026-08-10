@@ -58,35 +58,69 @@ RUN --mount=type=secret,id=sentry_token \
       echo "WARNING: sentry_token build secret absent — skipping sourcemap upload (frames will be minified for this build)."; \
     fi
 
+# Production-deps stage - compiles native modules (mediasoup worker) ONCE,
+# on the same Debian bookworm base as `production` (just the non-slim variant,
+# so glibc/libstdc++ match exactly). Its only output consumed downstream is
+# `node_modules` — this stage's build toolchain (python3/build-essential)
+# never reaches the shipped image, and `production` no longer recompiles
+# anything (17-container-image-hardening: native recompilation moved out of
+# the production stage instead of being measured-and-accepted).
+FROM node:24-bookworm AS prod-deps
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
 # Production stage - using slim Debian image
 FROM node:24-bookworm-slim AS production
 
 WORKDIR /app
 
-# Copy config
+# Copy config (kept for `npm ls`/introspection at runtime; no npm install runs here).
 COPY package*.json ./
 
-# Install system dependencies for mediasoup, install npm deps, then cleanup.
-# ffmpeg is a RUNTIME dependency (realtime-09 broadcast HLS mixer) — it stays
-# after cleanup, unlike the build-only python3-pip/build-essential. Stock ffmpeg
-# carries the `aac` encoder we need; no extra codecs required.
+# Runtime-only system deps. python3/build-essential are gone from this stage:
+# native deps (mediasoup worker) are already compiled in `prod-deps` above.
+# ffmpeg is a RUNTIME dependency (realtime-09 broadcast HLS mixer) — stock
+# ffmpeg carries the `aac` encoder we need; no extra codecs required.
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    build-essential \
     wget \
     ffmpeg \
-    && npm ci --omit=dev \
-    && apt-get remove -y python3-pip build-essential \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
-    
+    && rm -rf /var/lib/apt/lists/* \
+    # Non-root execution (17-container-image-hardening). Host networking and
+    # the mediasoup UDP/TCP port range are unaffected — those are kernel/veth
+    # concerns, not tied to the process UID, and all EXPOSEd ports here are
+    # >1024 so no CAP_NET_BIND_SERVICE is needed.
+    && groupadd --system msab \
+    && useradd --system --gid msab --home-dir /app --shell /usr/sbin/nologin msab
+
+# Compiled node_modules (mediasoup worker binary included) from prod-deps,
+# owned by the runtime user so it can exec the worker and mediasoup's
+# postinstall-written files aren't root-owned.
+COPY --from=prod-deps --chown=msab:msab /app/node_modules ./node_modules
+
 # Copy built assets.
 # `/app/dist/*.js` — NOT `/app/dist` — because the build now emits `.js.map`
 # sourcemaps for Sentry, and this image is published to a public registry.
 # The maps are uploaded to Sentry from the builder stage instead (see §10 of
 # docs/issues/msab-sentry/prd-msab-sentry.md); they must never ship in a layer.
-COPY --from=builder /app/dist/*.js ./dist/
+COPY --from=builder --chown=msab:msab /app/dist/*.js ./dist/
+
+# HLS_WORK_DIR default (src/config/index.ts) — created and owned up front so
+# the non-root user doesn't need write access to /tmp's root-owned parent
+# metadata beyond what the sticky bit already grants (belt-and-suspenders:
+# /tmp is 1777 so this would work either way, but an explicit owned dir is
+# clearer than relying on the sticky bit).
+RUN mkdir -p /tmp/flylive-hls && chown msab:msab /tmp/flylive-hls
+
+USER msab
 
 # Env variables should be set by runtime (DO App Platform)
 ENV NODE_ENV=production

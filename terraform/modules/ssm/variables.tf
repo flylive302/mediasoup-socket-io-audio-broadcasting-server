@@ -4,6 +4,16 @@ variable "project_name" {
   type = string
 }
 
+variable "iam_role_name" {
+  description = "Name of the shared EC2 instance IAM role (modules/iam) — the kms:Decrypt grant for this region's CMK is attached here"
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region this instance of the module runs in — used only to make the kms:Decrypt role-policy name unique per region (the IAM role is global, this module is regional)"
+  type        = string
+}
+
 variable "jwt_secret" {
   description = "JWT secret shared with Laravel backend"
   type        = string

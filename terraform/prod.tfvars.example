@@ -21,6 +21,9 @@ laravel_api_url = "https://app.flyliveapp.com"
 
 ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
 
+# Pinned image tag (ticket 14). Never "latest" — required, no default.
+image_tag = "sha-CHANGE_ME"
+
 # --- Secrets (generate with: openssl rand -hex 32) ---
 jwt_secret           = "CHANGE_ME_64_hex"
 laravel_internal_key = "CHANGE_ME_64_hex"

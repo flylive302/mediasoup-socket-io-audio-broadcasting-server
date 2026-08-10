@@ -42,6 +42,11 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     environment: aws-production
+    # Ticket 12: OIDC federation — the job requests a short-lived identity
+    # token and assumes the deploy role; no static AWS keys exist anywhere.
+    permissions:
+      id-token: write
+      contents: read
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
@@ -50,8 +55,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-south-1
 
       - name: Login to Amazon ECR
@@ -82,8 +86,11 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: true
+          # Ticket 14: sha tag ONLY — the ECR repo is IMMUTABLE, so re-pushing a
+          # ":latest" tag would fail every run after the first with
+          # ImageTagAlreadyExistsException. Deploys pin the sha tag; nothing may
+          # reference ":latest".
           tags: |
-            ${{ steps.meta.outputs.full_image }}:latest
             ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -107,6 +114,10 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: aws-production
+    # Ticket 12: OIDC federation — see build-and-push.
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false # Don't cancel other regions if one fails
       # AUDIT-005 FIX: Deploy sequentially — if Mumbai breaks, Frankfurt stays healthy
@@ -124,8 +135,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ matrix.region.aws_region }}
 
       - name: Discover ASG name (${{ matrix.region.name }})
@@ -368,8 +378,7 @@ jobs:
         if: always()
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ matrix.region.aws_region }}
 
       - name: Complete job
