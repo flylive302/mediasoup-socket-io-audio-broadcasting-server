@@ -13,6 +13,7 @@ vi.mock("@src/config/index.js", () => ({
     INSTANCE_ID: "i-test-box-1",
     AWS_REGION: "ap-south-1",
     EVENT_QUEUE_URL: "",
+    EVENT_HTTP_INGEST_ENABLED: true,
   },
 }));
 

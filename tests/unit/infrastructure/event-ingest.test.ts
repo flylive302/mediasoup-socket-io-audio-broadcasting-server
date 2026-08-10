@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@src/config/index.js", () => ({
-  config: { LARAVEL_INTERNAL_KEY: "test-internal-key", INSTANCE_ID: "i-test-box-1" },
+  config: {
+    LARAVEL_INTERNAL_KEY: "test-internal-key",
+    INSTANCE_ID: "i-test-box-1",
+    EVENT_HTTP_INGEST_ENABLED: true,
+  },
 }));
+
+import { config } from "@src/config/index.js";
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { createEventIngestRoutes } from "@src/infrastructure/event-ingest.js";
@@ -88,7 +94,7 @@ describe("event-ingest backpressure (F-40)", () => {
   });
 });
 
-describe("event-ingest SNS delivery formats", () => {
+describe("event-ingest transport (SNS retired, ticket 28)", () => {
   let app: FastifyInstance;
   let routedEvents: unknown[];
 
@@ -107,7 +113,7 @@ describe("event-ingest SNS delivery formats", () => {
     await app.ready();
   });
 
-  it("routes a direct/raw-delivery event (no SNS envelope)", async () => {
+  it("routes a direct POST with header auth", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/events",
@@ -120,45 +126,63 @@ describe("event-ingest SNS delivery formats", () => {
     expect((routedEvents[0] as { event: string }).event).toBe("e-1");
   });
 
-  it("unwraps an SNS Notification envelope (Raw Message Delivery OFF)", async () => {
-    // SNS cannot send custom headers, so the internal key arrives as ?key=.
+  it("rejects the retired ?key= query-param credential with 401", async () => {
+    // Pre-28 this was the SNS auth path; a valid key in the URL must no
+    // longer authenticate, so a leaked access log line is not a credential.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/events?key=test-internal-key",
+      payload: makeEvent(2),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(routedEvents).toHaveLength(0);
+  });
+
+  it("does not unwrap an SNS Notification envelope (422s it as a non-event)", async () => {
     const envelope = {
       Type: "Notification",
       MessageId: "m-1",
-      TopicArn: "arn:aws:sns:ap-south-1:000:flylive",
-      Message: JSON.stringify(makeEvent(2)),
+      Message: JSON.stringify(makeEvent(3)),
     };
 
     const res = await app.inject({
       method: "POST",
-      url: "/api/events?key=test-internal-key",
-      headers: {
-        "content-type": "text/plain",
-        "x-amz-sns-message-type": "Notification",
-      },
-      payload: JSON.stringify(envelope),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(routedEvents).toHaveLength(1);
-    expect((routedEvents[0] as { event: string }).event).toBe("e-2");
-  });
-
-  it("422s an SNS Notification whose Message is not a valid event", async () => {
-    const envelope = {
-      Type: "Notification",
-      Message: JSON.stringify({ not: "an-event" }),
-    };
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/events?key=test-internal-key",
-      headers: { "content-type": "text/plain" },
-      payload: JSON.stringify(envelope),
+      url: "/api/events",
+      headers: { "x-internal-key": "test-internal-key" },
+      payload: envelope,
     });
 
     expect(res.statusCode).toBe(422);
     expect(routedEvents).toHaveLength(0);
+  });
+
+  it("410s every request when EVENT_HTTP_INGEST_ENABLED=false, and recovers on flip-back", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (config as any).EVENT_HTTP_INGEST_ENABLED = false;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/events",
+        headers: { "x-internal-key": "test-internal-key" },
+        payload: makeEvent(4),
+      });
+      expect(res.statusCode).toBe(410);
+      expect(routedEvents).toHaveLength(0);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (config as any).EVENT_HTTP_INGEST_ENABLED = true;
+    }
+
+    // Reversibility (AC-5): flipping the switch back restores the transport.
+    const after = await app.inject({
+      method: "POST",
+      url: "/api/events",
+      headers: { "x-internal-key": "test-internal-key" },
+      payload: makeEvent(5),
+    });
+    expect(after.statusCode).toBe(200);
+    expect(routedEvents).toHaveLength(1);
   });
 });
 

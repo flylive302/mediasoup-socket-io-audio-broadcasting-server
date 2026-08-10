@@ -13,10 +13,10 @@
 #                             correlation_id, and a correlation-only id would
 #                             silently drop one of the pair.
 #
-# INERT BY DESIGN until tickets 26 (consumer) and 27 (producer) land — the
-# queue exists, nothing reads or writes it, production behaviour is unchanged.
-# The SNS topic (modules/sns) stays live until ticket 28 retires it — its
-# removal is EXPLICITLY ticket 28's, not this module's (stated in ticket 25).
+# INERT BY DESIGN until cutover — the queue exists, the consumer (ticket 26)
+# is off without EVENT_QUEUE_URL, the producer (ticket 27) is off unless
+# MSAB_TRANSPORT=sqs; production behaviour is unchanged. The SNS topic that
+# preceded this bridge was removed by ticket 28 (as ticket 25 scheduled).
 #
 # DLQ REPLAY (operator, documented per ticket 25 AC):
 #   1. Inspect:  aws sqs receive-message --queue-url <dlq-url> \

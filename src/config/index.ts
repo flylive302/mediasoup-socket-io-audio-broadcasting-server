@@ -320,6 +320,15 @@ const configSchema = z.object({
   // msab-events.fifo queue URL at cutover. Auth is the instance IAM role.
   EVENT_QUEUE_URL: z.string().default(""),
 
+  // Ticket 28: kill switch for the HTTP event-ingest fallback. Stays `true`
+  // until the SQS transport (EVENT_QUEUE_URL above + MSAB_TRANSPORT=sqs on
+  // the Laravel side) is observed carrying real production traffic — then the
+  // operator flips this to `false` and POST /api/events returns 410. Flipping
+  // back re-enables it: retirement is reversible by configuration until the
+  // observation window closes (AC-5). Default-true schema so an unset or
+  // templated-empty value keeps the live transport on (fail-open).
+  EVENT_HTTP_INGEST_ENABLED: booleanEnvSchemaDefaultTrue,
+
   // observability-audio-quality 01: how often the audio-quality sampler
   // snapshots live client legs and republishes the percentile gauges.
   // Scores themselves are pushed by the SFU as they change, so this only

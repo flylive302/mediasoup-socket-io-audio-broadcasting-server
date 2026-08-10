@@ -325,32 +325,10 @@ module "ecr" {
 }
 
 # =============================================================================
-# Global: SNS Event Bus (stays in Mumbai, fans out to enabled regions)
-# =============================================================================
-
-data "aws_caller_identity" "current" {}
-
-module "sns" {
-  source = "./modules/sns"
-
-  project_name         = var.project_name
-  aws_account_id       = data.aws_caller_identity.current.account_id
-  laravel_internal_key = var.laravel_internal_key
-
-  # Fan-out to every ENABLED region's MSAB endpoint via custom domains (not raw
-  # NLB DNS names — SNS verifies TLS and the ACM cert only covers
-  # *.${audio_domain}). Keys are static region names so for_each resolves at
-  # plan time. Derived from var.audio_domain so staging works unchanged.
-  msab_endpoint_urls = {
-    for name in var.enabled_regions :
-    name => "https://${name}.${var.audio_domain}/api/events"
-  }
-}
-
-# =============================================================================
 # Queues: SQS FIFO bridge for economy events (ticket 25, shape = ADR 0029)
-# Inert until tickets 26/27 land — nothing consumes or produces yet. The SNS
-# topic above stays live until ticket 28 retires it.
+# The SNS event-bus module that used to sit here was retired by ticket 28
+# (2026-08-11): it was never applied and never carried traffic — Laravel
+# delivers via direct authenticated POST, moving to this queue at cutover.
 # =============================================================================
 
 module "queues" {

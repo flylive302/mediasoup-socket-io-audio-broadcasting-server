@@ -51,12 +51,6 @@ output "asg_name_singapore" {
   value = one(module.region_singapore[*].asg_name)
 }
 
-# --- SNS ---
-output "sns_topic_arn" {
-  description = "SNS topic ARN — Laravel publishes events here"
-  value       = module.sns.topic_arn
-}
-
 # --- ACM Certificate Validation Records ---
 # The ssl module now creates these CNAMEs in Cloudflare automatically
 # (cloudflare_dns_record.validation, proxied = false) — no operator hand-edit
