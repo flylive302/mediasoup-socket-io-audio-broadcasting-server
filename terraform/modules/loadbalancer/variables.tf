@@ -16,12 +16,6 @@ variable "app_port" {
   type = number
 }
 
-variable "instance_id" {
-  description = "EC2 instance ID — leave empty when using ASG (ASG manages target registration)"
-  type        = string
-  default     = ""
-}
-
 variable "certificate_arn" {
   description = "ACM certificate ARN for TLS listener (empty = no TLS)"
   type        = string

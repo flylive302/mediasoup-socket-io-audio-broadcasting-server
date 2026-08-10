@@ -1,6 +1,23 @@
 # =============================================================================
 # Load Balancer Module — NLB for TCP/UDP
 # =============================================================================
+# Ticket 23 — two Vultr-era workarounds are DELIBERATELY NOT PORTED. Do not
+# reimplement either here:
+#
+# 1. Instance-ID reattachment (old rolling-deploy.sh:120-159): Vultr's LB
+#    attached instances BY ID, so a `-replace` orphaned the LB fleet-wide until
+#    a raw provider API call re-attached them (live outage 2026-07-09). AWS
+#    target groups track registration, not instance identity, and the ASG
+#    registers/deregisters instances itself (`target_group_arns` on the ASG in
+#    modules/autoscaling). No deploy script may ever call a load-balancer API
+#    (aws elbv2 register-targets / deregister-targets) — if you think you need
+#    to, the ASG wiring is broken; fix that instead.
+#
+# 2. Fee-cap retry loop (old rolling-deploy.sh:94-118, 3 retries × 120 s):
+#    existed only because a destroy kept counting against Vultr's monthly
+#    spend cap for several minutes. AWS has no equivalent cap; the loop has
+#    no reason to exist.
+# =============================================================================
 
 terraform {
   required_providers {
@@ -33,6 +50,9 @@ resource "aws_lb_target_group" "app" {
   vpc_id      = var.vpc_id
   target_type = "instance"
 
+  # Ticket 23: every health-check knob set explicitly — no implicit AWS
+  # defaults. HTTP against the app's own /health, matching the ASG's
+  # "ELB" health_check_type and the derived grace window in autoscaling.
   health_check {
     enabled             = true
     protocol            = "HTTP"
@@ -41,17 +61,23 @@ resource "aws_lb_target_group" "app" {
     healthy_threshold   = 2
     unhealthy_threshold = 3
     interval            = 30
+    timeout             = 10
   }
 
-  # TIER0 (F-85): apply during ops window — see plan.
-  # source_ip stickiness on the NLB combined with Global Accelerator (which
-  # presents a small set of edge IPs, client_ip_preservation_enabled=false)
-  # collapses new connections onto whichever instance an edge IP hashes to —
-  # one box soaks all traffic while the rest idle. Disabling stickiness lets
-  # the NLB flow-hash distribute connections. WebRTC media is UDP direct to
-  # the instance and unaffected; only the signaling TCP flow is rebalanced.
-  # Rollout: apply off-peak, then watch per-target NewFlowCount/connection
-  # counts equalize before declaring done-issues.
+  # Stickiness stays DISABLED — deliberately, for two reasons:
+  #
+  # 1. Session affinity is NOT the load balancer's job on this platform.
+  #    Room→instance affinity comes from epic 3a's room pinning: a client is
+  #    directed to the specific instance its room is pinned to, so LB-level
+  #    stickiness adds nothing to correctness. WebRTC media is UDP straight to
+  #    the instance and never crosses the NLB; only signaling TCP does.
+  # 2. TIER0 (F-85), from the Global-Accelerator era (GA since removed):
+  #    source_ip stickiness collapsed new connections onto whichever instance
+  #    the small set of edge IPs hashed to — one box soaked all traffic while
+  #    the rest idled. Flow-hash distribution is what we want.
+  #
+  # INFRASTRUCTURE.md's claim that stickiness is enabled and "critical for
+  # WebSocket connections" is WRONG (doc-supersession list, epic 1 ticket 13).
   stickiness {
     enabled = false
     type    = "source_ip"
@@ -88,10 +114,8 @@ resource "aws_lb_listener" "tls" {
   }
 }
 
-# --- Register EC2 instance (only for standalone EC2, not when using ASG) ---
-resource "aws_lb_target_group_attachment" "msab" {
-  count            = var.instance_id != "" ? 1 : 0
-  target_group_arn = aws_lb_target_group.app.arn
-  target_id        = var.instance_id
-  port             = var.app_port
-}
+# Ticket 23: target-group registration is ENTIRELY ASG-managed
+# (attach-on-launch, deregister-on-terminate via `target_group_arns` on the
+# ASG). The former `aws_lb_target_group_attachment` + `instance_id` escape
+# hatch was removed — it was the old provider's attach-by-instance-ID pattern
+# (see the module header) and inviting it back defeats the point of the move.

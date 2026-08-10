@@ -437,3 +437,27 @@ run "identity_is_explicit_and_public_ip_is_asserted_routable" {
     error_message = "PUBLIC_IP must be asserted routable (private/CGNAT/link-local ranges rejected), not merely non-empty"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Ticket 23 — target-group registration is ENTIRELY ASG-managed: the ASG
+# carries the target group ARN (attach-on-launch, deregister-on-terminate) and
+# health-checks through the ELB. The loadbalancer module has no per-instance
+# attachment resource, and no deploy script may call a load-balancer API.
+# -----------------------------------------------------------------------------
+run "target_registration_is_asg_managed" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = length(aws_autoscaling_group.msab.target_group_arns) == 1
+    error_message = "The ASG must own target-group registration via target_group_arns — never a script or per-instance attachment"
+  }
+
+  assert {
+    condition     = aws_autoscaling_group.msab.health_check_type == "ELB"
+    error_message = "ASG health checks must come from the target group (ELB), matching the explicit health_check block in modules/loadbalancer"
+  }
+}

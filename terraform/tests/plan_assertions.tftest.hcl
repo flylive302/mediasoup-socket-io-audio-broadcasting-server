@@ -221,7 +221,36 @@ run "loadbalancer_stickiness_is_disabled" {
 
   assert {
     condition     = aws_lb_target_group.app.stickiness[0].enabled == false
-    error_message = "Target-group stickiness must stay DISABLED (TIER0 F-85: GA + source_ip stickiness collapses traffic onto one instance). INFRASTRUCTURE.md claims otherwise and is wrong."
+    error_message = "Target-group stickiness must stay DISABLED (ticket 23: affinity comes from epic 3a room pinning, not the LB; TIER0 F-85 showed source_ip stickiness collapsing traffic onto one instance). INFRASTRUCTURE.md claims otherwise and is wrong."
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Ticket 23: every health-check knob is EXPLICIT in code — protocol, port,
+# path, interval, timeout, and both thresholds. No AWS default left implicit.
+# -----------------------------------------------------------------------------
+run "loadbalancer_health_check_is_fully_explicit" {
+  command = plan
+
+  module {
+    source = "./modules/loadbalancer"
+  }
+
+  variables {
+    project_name      = "flylive-audio"
+    vpc_id            = "vpc-mock"
+    public_subnet_ids = ["subnet-mock-a", "subnet-mock-b"]
+    app_port          = 3030
+  }
+
+  assert {
+    condition     = aws_lb_target_group.app.health_check[0].protocol == "HTTP" && aws_lb_target_group.app.health_check[0].path == "/health" && aws_lb_target_group.app.health_check[0].port == "3030"
+    error_message = "Health check must probe HTTP /health on the app port — explicitly, not by default"
+  }
+
+  assert {
+    condition     = aws_lb_target_group.app.health_check[0].interval == 30 && aws_lb_target_group.app.health_check[0].timeout == 10 && aws_lb_target_group.app.health_check[0].healthy_threshold == 2 && aws_lb_target_group.app.health_check[0].unhealthy_threshold == 3
+    error_message = "Health-check interval/timeout/thresholds must all be set explicitly in code (ticket 23), not left to AWS defaults"
   }
 }
 

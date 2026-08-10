@@ -79,7 +79,8 @@ module "loadbalancer" {
   public_subnet_ids = module.networking.public_subnet_ids
   app_port          = var.app_port
   certificate_arn   = module.ssl.certificate_arn
-  # instance_id omitted — ASG manages target group registration
+  # Registration is ASG-managed (ticket 23) — the module has no per-instance
+  # attachment surface at all; the ASG's target_group_arns does the work.
 }
 
 # Secrets replicated into this region's SSM (SSM Parameter Store is regional —
