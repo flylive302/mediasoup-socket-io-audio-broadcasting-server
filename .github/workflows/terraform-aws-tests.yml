@@ -1,0 +1,96 @@
+---
+name: Terraform — AWS plan tests + drift check
+
+# Two jobs, one file (aws-platform-build ticket 10, seam 1):
+#
+#  1. plan-tests — native `terraform test` against terraform/tests/*.tftest.hcl.
+#     Runs on every push/PR touching the AWS stack. Fully offline: the tests use
+#     mock_provider, so NO AWS credentials are needed and nothing is created.
+#
+#  2. drift-check — weekly scheduled `terraform plan -detailed-exitcode` against
+#     the live production state. SHIPS INERT (standing rule: infra changes land
+#     behind an unset switch): the job is skipped until the repository variable
+#     AWS_DRIFT_CHECK_ENABLED is set to "true". Before flipping it, the
+#     aws-production environment needs:
+#       - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY reissued from the FRESH
+#         account 505307260926 (the stored keys are from a closed account), and
+#       - TF_BACKEND_PROD  = contents of terraform/backend-production.hcl
+#       - TF_VARS_PROD     = contents of terraform/prod.tfvars
+#         (both files are gitignored — they carry the account id / secrets).
+#     Exit code 2 = drift detected → the job fails so it shows up red.
+
+on:
+  push:
+    branches: [master, staging]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-aws-tests.yml"
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-aws-tests.yml"
+  schedule:
+    - cron: "17 2 * * 1" # Mondays 02:17 UTC — weekly drift check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan-tests:
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+
+      - name: Init (no backend — offline)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan tests (mocked provider, no credentials)
+        run: terraform test
+
+  drift-check:
+    # Inert until AWS_DRIFT_CHECK_ENABLED=true (see header). Cron + manual only.
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && vars.AWS_DRIFT_CHECK_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: aws-production
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+
+      - name: Materialize gitignored backend + tfvars from secrets
+        env:
+          TF_BACKEND_PROD: ${{ secrets.TF_BACKEND_PROD }}
+          TF_VARS_PROD: ${{ secrets.TF_VARS_PROD }}
+        run: |
+          printf '%s' "$TF_BACKEND_PROD" > backend-production.hcl
+          printf '%s' "$TF_VARS_PROD" > prod.tfvars
+          test -s backend-production.hcl && test -s prod.tfvars
+
+      - name: Init against production state
+        run: terraform init -input=false -backend-config=backend-production.hcl
+
+      - name: Plan (read-only, fails on drift)
+        run: terraform plan -input=false -lock=false -var-file=prod.tfvars -detailed-exitcode

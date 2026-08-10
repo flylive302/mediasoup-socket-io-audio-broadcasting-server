@@ -5,7 +5,9 @@
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5"
+  # use_lockfile on the S3 backend requires Terraform >= 1.10; mock_provider in
+  # tests/ requires >= 1.7 — 1.10 is the real floor (was wrongly ">= 1.5").
+  required_version = ">= 1.10"
 
   required_providers {
     aws = {

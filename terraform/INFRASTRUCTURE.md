@@ -1,5 +1,17 @@
 # FlyLive Audio Server — Infrastructure Reference
 
+> ## ⛔ SUPERSEDED 2026-08-10 — do not treat this document as authoritative
+> This doc has **twelve verified contradictions against the code it describes** (both directions —
+> e.g. it claims LB stickiness is enabled; the module disables it with rationale inline; it
+> describes two regions; the code provisions three). It is retired per aws-platform-build
+> ticket 10, **not** maintained.
+> Replacements: per-module reuse verdicts →
+> `Flylive/docs/issues/secrets-repo-cleanup/13a-verdict-dormant-aws-terraform.md`;
+> current decisions → `Flylive/docs/issues/aws-platform-build/` (00-INPUTS.md §10, tickets) and
+> `Flylive/docs/adr/DECISIONS.md` (ADR 0028); behaviour guarantees → `terraform/tests/*.tftest.hcl`
+> (machine-checked, unlike this file). §2.1/§3.1/§4.5 (state backend) were refreshed 2026-08-10 and
+> are current; everything else may be stale.
+
 > **Scope:** MSAB (MediaSoup Audio Broadcasting Server) Terraform stack.  
 > **Regions:** Mumbai (`ap-south-1`) + Frankfurt (`eu-central-1`) + Singapore (`ap-southeast-1`)  
 > **Terraform:** >= 1.10 required (see § State Backend)
