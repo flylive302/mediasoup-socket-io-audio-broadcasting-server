@@ -348,6 +348,18 @@ module "sns" {
 }
 
 # =============================================================================
+# Queues: SQS FIFO bridge for economy events (ticket 25, shape = ADR 0029)
+# Inert until tickets 26/27 land — nothing consumes or produces yet. The SNS
+# topic above stays live until ticket 28 retires it.
+# =============================================================================
+
+module "queues" {
+  source = "./modules/queues"
+
+  project_name = var.project_name
+}
+
+# =============================================================================
 # IAM Role + Instance Profile (global — IAM is not regional)
 # =============================================================================
 
@@ -356,6 +368,10 @@ module "iam" {
 
   project_name       = var.project_name
   ecr_repository_arn = module.ecr.repository_arn
+
+  # Ticket 25: consume-side SQS access by IAM role, no shared secret.
+  enable_event_queue_consume = true
+  event_queue_arn            = module.queues.queue_arn
 
   # OIDC deploy role trust (ticket 12): which GitHub environment's jobs may
   # assume the deploy role. Staging must point at its own GitHub environment

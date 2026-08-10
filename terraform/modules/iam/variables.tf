@@ -22,6 +22,18 @@ variable "github_environment" {
   default     = "aws-production"
 }
 
+variable "enable_event_queue_consume" {
+  description = "Create the SQS consume policy on the MSAB role (ticket 25). Static flag — count cannot depend on the computed queue ARN."
+  type        = bool
+  default     = false
+}
+
+variable "event_queue_arn" {
+  description = "ARN of the msab-events FIFO queue (ticket 25). Required when enable_event_queue_consume = true."
+  type        = string
+  default     = ""
+}
+
 variable "log_retention_days" {
   description = <<-EOT
     CloudWatch Logs retention (days) for the MSAB log group (project_name/msab).

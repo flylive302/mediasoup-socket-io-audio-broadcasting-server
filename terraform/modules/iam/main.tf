@@ -214,6 +214,35 @@ resource "aws_iam_role_policy" "ssm_parameters" {
   })
 }
 
+# --- SQS consumer — ticket 25: queue access is IAM-role-based, no shared secret ---
+# Consume-side only, scoped to the ONE msab-events queue. Send is deliberately
+# absent: the producer is Laravel (ticket 27), which gets its own principal —
+# an instance that could write its own economy events would be a forgery path.
+resource "aws_iam_role_policy" "sqs_consume" {
+  # Gated on a static flag, not on the ARN being non-empty — the ARN is
+  # computed (unknown at plan), and count may not depend on unknown values.
+  count = var.enable_event_queue_consume ? 1 : 0
+  name  = "${var.project_name}-sqs-consume"
+  role  = aws_iam_role.msab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+          "sqs:ChangeMessageVisibility",
+        ]
+        Resource = var.event_queue_arn
+      }
+    ]
+  })
+}
+
 # --- SSM Session Manager — replaces SSH (browser-based shell via AWS Console) ---
 resource "aws_iam_role_policy_attachment" "ssm_session_manager" {
   role       = aws_iam_role.msab.name
