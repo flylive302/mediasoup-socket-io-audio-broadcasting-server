@@ -56,6 +56,15 @@ session_secret       = "CHANGE_ME_64_hex"
 cloudflare_turn_api_key = "CHANGE_ME"
 cloudflare_turn_key_id  = "CHANGE_ME"
 
+# --- SFU cascade + room affinity (aws-app-affinity/12) ---
+# cascade_enabled defaults to false (agrees with the app schema). Production
+# currently runs cascade on — see ci/production.tfvars, which pins it
+# explicitly. affinity_enabled is an operator attestation (07/09/11 must be
+# live) and must stay false until then; the instance refuses to boot with
+# both false.
+# cascade_enabled  = true
+# affinity_enabled = false
+
 # --- Broadcast HLS tier (realtime-09) — optional, defaults to disabled ---
 # broadcast_hls_enabled    = true
 # hls_r2_endpoint          = "https://<acct>.r2.cloudflarestorage.com"

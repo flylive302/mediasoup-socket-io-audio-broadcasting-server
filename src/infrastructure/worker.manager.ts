@@ -56,8 +56,10 @@ export class WorkerManager {
 
   /** Initialize all workers - must be called before use */
   async initialize(): Promise<void> {
-    // Use configured worker count, or fallback to CPU count
-    const numWorkers = config.MEDIASOUP_NUM_WORKERS ?? cpus().length;
+    // 02-derive-worker-count-and-assert-vcpu-floor: derivation now lives in
+    // the config schema (src/config/index.ts) — MEDIASOUP_NUM_WORKERS is
+    // always resolved by the time it reaches here, explicit env or derived.
+    const numWorkers = config.MEDIASOUP_NUM_WORKERS;
     this.expectedWorkerCount = numWorkers;
     this.logger.info({ numWorkers }, "Creating mediasoup workers");
 

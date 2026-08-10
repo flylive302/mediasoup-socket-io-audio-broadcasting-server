@@ -96,6 +96,8 @@ module "compute" {
   cloudflare_turn_key_id  = var.cloudflare_turn_key_id
   sentry_dsn              = var.sentry_dsn
   mediasoup_num_workers   = var.mediasoup_num_workers
+  cascade_enabled         = var.cascade_enabled
+  affinity_enabled        = var.affinity_enabled
 
   redis_host     = module.valkey[each.key].host
   redis_port     = module.valkey[each.key].port

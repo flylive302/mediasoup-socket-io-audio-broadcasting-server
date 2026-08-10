@@ -114,6 +114,7 @@ resource "vultr_instance" "main" {
     cloudflare_turn_api_key = var.cloudflare_turn_api_key
     cloudflare_turn_key_id  = var.cloudflare_turn_key_id
     cascade_enabled         = var.cascade_enabled
+    affinity_enabled        = var.affinity_enabled
     mediasoup_num_workers   = var.mediasoup_num_workers
     redis_host              = var.redis_host
     redis_port              = var.redis_port

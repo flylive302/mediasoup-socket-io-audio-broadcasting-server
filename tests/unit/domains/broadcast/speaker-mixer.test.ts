@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { SpeakerMixer } from "@src/domains/broadcast/speaker-mixer.js";
+import {
+  MixerPortRegistry,
+  MixerPortsExhaustedError,
+} from "@src/domains/broadcast/mixer-port-registry.js";
 
 /**
  * mediasoup is a native module the suite doesn't load (see worker.manager.test),
@@ -45,7 +49,7 @@ const logger = { warn() {}, debug() {}, info() {}, error() {} } as any;
 describe("SpeakerMixer.sync", () => {
   it("adds a transport+consumer per producer and reports the set changed", async () => {
     const { router, connects } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
 
     const changed = await mixer.sync(["p1", "p2"]);
 
@@ -59,7 +63,7 @@ describe("SpeakerMixer.sync", () => {
 
   it("is a no-op (changed=false) when the set is unchanged", async () => {
     const { router } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
     await mixer.sync(["p1", "p2"]);
     router.createPlainTransport.mockClear();
 
@@ -72,7 +76,7 @@ describe("SpeakerMixer.sync", () => {
 
   it("removes departed producers, closes their transport, and frees the port", async () => {
     const { router, transports, connects } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
     await mixer.sync(["p1", "p2"]);
 
     const changed = await mixer.sync(["p1"]);
@@ -91,7 +95,7 @@ describe("SpeakerMixer.sync", () => {
 describe("SpeakerMixer SDP + inputs", () => {
   it("maps consumer rtpParameters to mix inputs in stable order", async () => {
     const { router } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
     await mixer.sync(["p1", "p2"]);
 
     const inputs = mixer.getInputs();
@@ -109,7 +113,7 @@ describe("SpeakerMixer SDP + inputs", () => {
 describe("SpeakerMixer lifecycle", () => {
   it("resumeAll resumes every consumer", async () => {
     const { router, transports } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
     await mixer.sync(["p1", "p2"]);
 
     await mixer.resumeAll();
@@ -120,12 +124,66 @@ describe("SpeakerMixer lifecycle", () => {
 
   it("close() closes all transports and empties the mix", async () => {
     const { router, transports } = makeFakeRouter();
-    const mixer = new SpeakerMixer(router as any, logger);
+    const mixer = new SpeakerMixer(router as any, logger, new MixerPortRegistry());
     await mixer.sync(["p1", "p2"]);
 
     mixer.close();
 
     expect(mixer.size).toBe(0);
     expect(transports.every((t) => t.close.mock.calls.length > 0)).toBe(true);
+  });
+});
+
+describe("MixerPortRegistry — instance-scoped sharing across Rooms", () => {
+  it("two concurrent Rooms' mixers on one instance allocate distinct ports (no collision)", async () => {
+    const registry = new MixerPortRegistry();
+    const roomA = makeFakeRouter();
+    const roomB = makeFakeRouter();
+    const mixerA = new SpeakerMixer(roomA.router as any, logger, registry);
+    const mixerB = new SpeakerMixer(roomB.router as any, logger, registry);
+
+    await mixerA.sync(["a1"]);
+    await mixerB.sync(["b1"]);
+
+    // Room B's mixer must NOT start back at the base port — it shares the
+    // registry with Room A's mixer, so both broadcasts get distinct ports.
+    expect(roomA.connects.map((c) => c.port)).toEqual([5004]);
+    expect(roomB.connects.map((c) => c.port)).toEqual([5006]);
+  });
+
+  it("releases a port on Room teardown and a different Room's mixer can reallocate it", async () => {
+    const registry = new MixerPortRegistry();
+    const roomA = makeFakeRouter();
+    const roomB = makeFakeRouter();
+    const mixerA = new SpeakerMixer(roomA.router as any, logger, registry);
+    const mixerB = new SpeakerMixer(roomB.router as any, logger, registry);
+
+    await mixerA.sync(["a1"]); // takes 5004
+    await mixerB.sync(["b1"]); // takes 5006
+
+    mixerA.close(); // Room A's broadcast ends, frees 5004
+
+    await mixerB.sync(["b1", "b2"]); // Room B grows — reuses the freed 5004
+    expect(roomB.connects.map((c) => c.port)).toEqual([5006, 5004]);
+  });
+
+  it("throws loudly (does not silently fail) when the port range is exhausted", async () => {
+    // A tiny range that only fits one port: [5004, 5006).
+    const registry = new MixerPortRegistry(5004, 5006);
+    const room = makeFakeRouter();
+    const mixer = new SpeakerMixer(room.router as any, logger, registry);
+
+    await mixer.sync(["p1"]); // takes the only port, 5004
+
+    await expect(mixer.sync(["p1", "p2"])).rejects.toThrow(MixerPortsExhaustedError);
+  });
+
+  it("stays clear of the mediasoup WebRTC port range by default", () => {
+    // MEDIASOUP_RTC_MIN_PORT defaults to 10000 — the pool's default upper
+    // bound must never reach it.
+    const registry = new MixerPortRegistry();
+    let lastPort = -1;
+    for (let i = 0; i < 5; i++) lastPort = registry.allocate();
+    expect(lastPort).toBeLessThan(10000);
   });
 });

@@ -19,12 +19,15 @@
  *    listening so initial RTP isn't fired into a closed port.
  *
  * Ports: allocated from a small localhost pool (RTP only, rtcpMux), well clear of
- * the mediasoup WebRTC range; freed ports are reused.
+ * the mediasoup WebRTC range; freed ports are reused. The pool itself
+ * (`MixerPortRegistry`) is shared across every Room's mixer on the instance —
+ * see that module's header for why a per-mixer pool was not safe (aws-app-affinity-10).
  */
 import type * as mediasoup from "mediasoup";
 import type { Logger } from "pino";
 import { buildMixSdp, type MixInput } from "./hls-pipeline.js";
 import { reactError } from "@src/shared/react-error.js";
+import type { MixerPortRegistry } from "./mixer-port-registry.js";
 
 interface MixEntry {
   transport: mediasoup.types.PlainTransport;
@@ -32,18 +35,15 @@ interface MixEntry {
   port: number;
 }
 
-/** Default base port for FFmpeg RTP receive — clear of MEDIASOUP_RTC_MIN_PORT (10000). */
-const DEFAULT_BASE_PORT = 5004;
-
 export class SpeakerMixer {
   /** producerId → its plain transport + consumer + port. Insertion-ordered. */
   private readonly entries = new Map<string, MixEntry>();
-  private readonly usedPorts = new Set<number>();
 
   constructor(
     private readonly router: mediasoup.types.Router,
     private readonly logger: Logger,
-    private readonly basePort: number = DEFAULT_BASE_PORT,
+    /** Instance-scoped port pool, shared with every other Room's mixer. */
+    private readonly portRegistry: MixerPortRegistry,
   ) {}
 
   /** Current number of mixed speakers. */
@@ -123,7 +123,9 @@ export class SpeakerMixer {
   // ─────────────────────────────────────────────────────────────────
 
   private async add(producerId: string): Promise<boolean> {
-    const port = this.allocatePort();
+    // Loud on purpose: an exhausted pool must fail the broadcast op visibly
+    // (via the caller's error handling), not silently skip this speaker.
+    const port = this.portRegistry.allocate();
     try {
       const transport = await this.router.createPlainTransport({
         listenInfo: { protocol: "udp", ip: "127.0.0.1" },
@@ -143,7 +145,7 @@ export class SpeakerMixer {
       this.entries.set(producerId, { transport, consumer, port });
       return true;
     } catch (err) {
-      this.usedPorts.delete(port);
+      this.portRegistry.release(port);
       this.logger.warn(
         { err, producerId, port },
         "SpeakerMixer: failed to add producer to mix",
@@ -156,15 +158,7 @@ export class SpeakerMixer {
     const entry = this.entries.get(producerId);
     if (!entry) return;
     if (!entry.transport.closed) entry.transport.close();
-    this.usedPorts.delete(entry.port);
+    this.portRegistry.release(entry.port);
     this.entries.delete(producerId);
-  }
-
-  /** Lowest free even port at/above basePort (step 2 leaves room for RTCP). */
-  private allocatePort(): number {
-    let port = this.basePort;
-    while (this.usedPorts.has(port)) port += 2;
-    this.usedPorts.add(port);
-    return port;
   }
 }

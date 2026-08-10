@@ -4,7 +4,24 @@
  */
 import { z } from "zod";
 import "dotenv/config";
+import { cpus } from "os";
 import { getInstanceId } from "@src/infrastructure/instance-identity.js";
+
+/**
+ * 02-derive-worker-count-and-assert-vcpu-floor: media workers must leave one
+ * vCPU free for the Node.js event loop that schedules them, and the fleet's
+ * documented floor is 2 workers minimum (below that, a single worker death
+ * leaves zero capacity). `vCPU − 1 >= 2` ⇒ **3 vCPU is the minimum instance
+ * size this process can boot on** — this constant is that floor, asserted in
+ * `initializeConfig()` below, and is the number epic 3b (instance sizing)
+ * must not size below.
+ */
+export const MEDIASOUP_MIN_VCPU = 3;
+
+/** vCPU − 1, reserving one core for the Node.js event loop. Never below 0. */
+function deriveDefaultWorkerCount(): number {
+  return Math.max(cpus().length - 1, 0);
+}
 
 /** Reusable schema for boolean-like env vars ("true"/"1" → true, else false) */
 const booleanEnvSchema = z
@@ -164,7 +181,15 @@ const configSchema = z.object({
     .default(16_384),
 
   // Mediasoup Workers
-  MEDIASOUP_NUM_WORKERS: z.coerce.number().optional(), // If not set, uses os.cpus().length
+  // 02-derive-worker-count-and-assert-vcpu-floor: an explicit env value always
+  // wins; unset, this derives to vCPU − 1 (one core reserved for the Node.js
+  // event loop) via `deriveDefaultWorkerCount()` above. See MEDIASOUP_MIN_VCPU
+  // for the instance-size floor this implies, asserted in production below.
+  MEDIASOUP_NUM_WORKERS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(deriveDefaultWorkerCount),
 
   // Room Auto-Close (inactivity timer)
   // AUDIT-021 FIX: increased from 30s to 120s — 30s was too aggressive during network blips
@@ -349,6 +374,19 @@ const configSchema = z.object({
   // Rotation overlap only — see JWT_SECRET_PREVIOUS above. Comma-separated.
   INTERNAL_API_KEY_PREVIOUS: z.string().default(""),
   PUBLIC_IP: z.string().default(""),                       // This instance's public IP (from IMDS or env)
+  // aws-app-affinity/12: operator attestation that Room-affinity guarantees
+  // (tickets 07 Room pinned to a healthy instance, 09 drain moves Rooms, 11
+  // client follows a moved Room) are actually live for this deployment.
+  // MSAB cannot verify affinity itself — there is no local signal for it —
+  // so this is a deploy-time promise, not a measurement. It exists ONLY to
+  // gate the reverse boot assertion below: CASCADE_ENABLED=false is safe
+  // only once every socket (speaker or listener) is guaranteed to land on
+  // the Room's owning instance. Without that, a join on a non-owning
+  // instance hits the hard failure in
+  // src/domains/room/handlers/join-room.handler.ts ("another instance owns
+  // it but cascade edge setup failed"). Default false: until 07/09/11 ship,
+  // there is nothing to attest to.
+  AFFINITY_ENABLED: booleanEnvSchema,
 
   // realtime-09: LL-HLS broadcast publish tier. When a Room flips to broadcast
   // mode (realtime-08 threshold), the server mixes every seated speaker into one
@@ -464,6 +502,30 @@ export async function initializeConfig(): Promise<void> {
     if (config.CASCADE_ENABLED && !config.PUBLIC_IP) {
       throw new Error(
         "[config] CASCADE_ENABLED=true requires PUBLIC_IP. Edges cannot reach this instance for pipe handshakes. (Hint: PUBLIC_IP is set by user-data.sh from IMDSv2 — check its fail-fast logic.)",
+      );
+    }
+    // aws-app-affinity/12: the reverse direction. With cascade off, a socket
+    // that lands on a non-owning same-region instance gets a hard join
+    // failure (src/domains/room/handlers/join-room.handler.ts — "another
+    // instance owns it but cascade edge setup failed"). That's only safe
+    // once affinity (07/09/11) guarantees every socket lands on the Room's
+    // owning instance. AFFINITY_ENABLED is an operator attestation, not
+    // something this process can measure — refuse to boot rather than serve
+    // failed joins in the unattested combination.
+    if (!config.CASCADE_ENABLED && !config.AFFINITY_ENABLED) {
+      throw new Error(
+        "[config] CASCADE_ENABLED=false requires AFFINITY_ENABLED=true. Without cascade AND without an affinity attestation, a socket landing on a non-owning instance in the same region gets a hard join failure (listeners included). Set AFFINITY_ENABLED=true only once room-affinity guarantees (07/09/11) are actually live for this deployment.",
+      );
+    }
+    // 02-derive-worker-count-and-assert-vcpu-floor: below MEDIASOUP_MIN_VCPU,
+    // vCPU − 1 drops under the documented 2-worker floor — do NOT clamp this
+    // up, a clamp silently reproduces today's zero-reserve contention on an
+    // undersized box. Fail to boot instead, naming the required size.
+    if (config.MEDIASOUP_NUM_WORKERS < MEDIASOUP_MIN_VCPU - 1) {
+      throw new Error(
+        `[config] MEDIASOUP_NUM_WORKERS resolved to ${config.MEDIASOUP_NUM_WORKERS}, below the 2-worker floor. ` +
+          `Production requires at least ${MEDIASOUP_MIN_VCPU} vCPU (workers derive as vCPU − 1, one core reserved ` +
+          `for the Node.js event loop that schedules them). Resize the instance.`,
       );
     }
   }

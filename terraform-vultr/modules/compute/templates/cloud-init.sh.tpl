@@ -182,6 +182,10 @@ CASCADE_ENABLED=${cascade_enabled}
 CASCADE_THRESHOLD=1800
 PUBLIC_IP=${announced_ip}
 
+# Room affinity attestation (aws-app-affinity/12) — operator-set, not
+# MSAB-verifiable. See AFFINITY_ENABLED in src/config/index.ts.
+AFFINITY_ENABLED=${affinity_enabled}
+
 # Fleet identity (slice 05): deterministic, unique-per-instance CAS selfId.
 # instance-identity.ts reads INSTANCE_ID_OVERRIDE FIRST — before the AWS-only
 # IMDSv2 probe (which run-and-fails on Vultr) and the os.hostname() fallback.

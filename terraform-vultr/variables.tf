@@ -115,6 +115,39 @@ variable "mediasoup_num_workers" {
   default     = 1
 }
 
+# --- SFU cascade (aws-app-affinity/12) -----------------------------------------
+# Previously UNREACHABLE from Terraform: the compute module hardcoded a `true`
+# default that this root never overrode (no var, no var-file, no environment
+# could reach it), contradicting the application schema's own documented
+# `false` default. Declaring it here makes the flag settable per environment
+# and gives the fleet a single source of truth. `false` here matches the
+# application default (src/config/index.ts CASCADE_ENABLED) — agreement is the
+# point, not a preference. This ticket does NOT change the deployed value: see
+# production.tfvars, which pins `true` explicitly to preserve today's live
+# behavior now that the flag is visible instead of buried in a module default.
+variable "cascade_enabled" {
+  description = "Enable SFU cross-instance/cross-region cascade relay (Phase 5). Mirrors CASCADE_ENABLED in src/config/index.ts — keep defaults in agreement."
+  type        = bool
+  default     = false
+}
+
+# --- Room affinity attestation (aws-app-affinity/12) ---------------------------
+# NOT something MSAB can verify at boot — it is an operator attestation that
+# the affinity guarantees from tickets 07 (Room pinned to a healthy instance),
+# 09 (drain moves Rooms) and 11 (client follows a moved Room) are actually in
+# place for this deployment. Until those ship, this must stay `false`.
+# `CASCADE_ENABLED=false` is only safe once affinity guarantees every socket
+# — speaker or listener — lands on the Room's owning instance; without it, a
+# non-owning instance throws a hard join failure (see
+# src/domains/room/handlers/join-room.handler.ts). The boot assertion in
+# src/config/index.ts refuses to start in the cascade-off/affinity-off
+# combination rather than serving failed joins.
+variable "affinity_enabled" {
+  description = "Attests that room-affinity guarantees (07/09/11) are live for this deployment. Required (with cascade_enabled) before cascade can be safely turned off — see AFFINITY_ENABLED in src/config/index.ts."
+  type        = bool
+  default     = false
+}
+
 # --- Broadcast HLS tier (realtime-09) -----------------------------------------
 # Mirrors ../terraform/variables.tf exactly (same runtime, same feature). The
 # config schema's refine() only requires the R2 fields when enabled, so a

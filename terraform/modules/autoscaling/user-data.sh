@@ -183,8 +183,11 @@ MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP
 MEDIASOUP_RTC_MIN_PORT=${rtc_min_port}
 MEDIASOUP_RTC_MAX_PORT=${rtc_max_port}
 
-# Workers: vCPU - 1 (reserve 1 for Node.js event loop)
-MEDIASOUP_NUM_WORKERS=3
+# Workers: derived by MSAB's config schema at boot (vCPU - 1, one core
+# reserved for the Node.js event loop) — see 02-derive-worker-count-and-assert-vcpu-floor.
+# Intentionally NOT set here so both deployment paths (this template and the
+# already env-driven Vultr path) agree: an unset value lets the app derive it.
+
 
 # Limits
 MAX_ROOMS_PER_WORKER=100

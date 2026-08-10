@@ -13,6 +13,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
 import { R2HlsUploader, type HlsUploader } from "./hls-uploader.js";
 import { SpeakerMixer } from "./speaker-mixer.js";
+import { MixerPortRegistry } from "./mixer-port-registry.js";
 import { HlsPublisher } from "./hls-publisher.js";
 import {
   BroadcastPublishController,
@@ -28,6 +29,11 @@ const STARTUP_GRACE_MS = 500;
 export function createBroadcastController(
   roomManager: RoomManager,
 ): BroadcastPublishController {
+  // Instance-scoped: one pool shared by every Room's mixer on this process,
+  // so two concurrent broadcast Rooms never race for the same local UDP port
+  // (aws-app-affinity-10). `createBroadcastController` runs once at startup.
+  const mixerPortRegistry = new MixerPortRegistry();
+
   if (!config.BROADCAST_HLS_ENABLED) {
     return new BroadcastPublishController({
       enabled: false,
@@ -71,7 +77,7 @@ export function createBroadcastController(
       };
     },
     createMixer: (router) =>
-      new SpeakerMixer(router as mediasoup.types.Router, logger),
+      new SpeakerMixer(router as mediasoup.types.Router, logger, mixerPortRegistry),
     createPublisher: (roomId) =>
       new HlsPublisher(
         {

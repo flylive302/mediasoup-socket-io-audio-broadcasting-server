@@ -155,8 +155,25 @@ variable "sentry_dsn" {
 }
 
 variable "cascade_enabled" {
+  # aws-app-affinity/12: default changed true → false to agree with the
+  # application schema's own documented default (src/config/index.ts). Was
+  # previously unreachable from the root (no var, no var-file, no environment
+  # override could get here), so production ran on this default alone,
+  # contradicting the app's documented `false`. The root now declares and
+  # threads this var explicitly (see ../../variables.tf) so the deployed
+  # value is a config decision, not an accident of a module default.
   type    = bool
-  default = true
+  default = false
+}
+
+variable "affinity_enabled" {
+  # aws-app-affinity/12: operator attestation that Room-affinity guarantees
+  # (07/09/11) are live for this deployment. MSAB cannot verify this itself —
+  # it only asserts the combination `cascade_enabled=false` +
+  # `affinity_enabled=false` refuses to boot. See AFFINITY_ENABLED in
+  # src/config/index.ts.
+  type    = bool
+  default = false
 }
 
 variable "mediasoup_num_workers" {

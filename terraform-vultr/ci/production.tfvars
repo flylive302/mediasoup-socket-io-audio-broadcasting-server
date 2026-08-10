@@ -52,6 +52,17 @@ valkey_plan = "vultr-dbaas-startup-rp-intel-1-12-2"
 
 tracer_region = "bom"
 
+# SFU cascade (aws-app-affinity/12) — pinned explicitly to `true` to PRESERVE
+# the currently-running value now that the flag is reachable from Terraform.
+# It was previously coming from the compute module's own `true` default
+# (unreachable from here); this line is the reachability fix, not a change —
+# see 12-cascade-flag-reachable-and-asserted.md. Flipping this to `false` is
+# ticket 13, and requires affinity_enabled = true (07/09/11) first or the
+# instance refuses to boot.
+cascade_enabled = true
+# affinity_enabled stays at its `false` default: 07/09/11 have not shipped, so
+# there is nothing yet to attest to. Do not flip until they have.
+
 # Broadcast HLS tier (realtime-09) — R2 keys come from TF_VAR_* secrets.
 broadcast_hls_enabled = true
 hls_r2_endpoint       = "https://f7006f3d39297a83ca86eca240b906d4.r2.cloudflarestorage.com"

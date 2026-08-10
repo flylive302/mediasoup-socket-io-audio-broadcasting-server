@@ -39,9 +39,14 @@ describe("config assertions", () => {
     expect(config.INSTANCE_ID).toBe("dev-host");
   });
 
-  it("passes in production with cascade disabled and INSTANCE_ID resolved", async () => {
+  it("passes in production with cascade disabled, affinity attested, and INSTANCE_ID resolved", async () => {
     process.env.NODE_ENV = "production";
     process.env.CASCADE_ENABLED = "false";
+    // aws-app-affinity/12: cascade off now requires an affinity attestation
+    // (the reverse boot assertion) — this test previously passed with no
+    // affinity var set at all, which is exactly the unguarded direction the
+    // ticket closes. Updated deliberately, not a silently moved goalpost.
+    process.env.AFFINITY_ENABLED = "true";
     process.env.INSTANCE_ID_OVERRIDE = "i-prod-1";
 
     const { config, initializeConfig } = await import("@src/config/index.js");
@@ -82,6 +87,61 @@ describe("config assertions", () => {
     await expect(initializeConfig()).rejects.toThrow(/PUBLIC_IP/);
   });
 
+  // aws-app-affinity/12: the full flag x flag matrix. Both assertions are of
+  // the form "flag is on the dangerous side AND its prerequisite is missing
+  // → throw" — cascade-on guards its own secrets, cascade-off guards on
+  // affinity. Neither must fire in a valid configuration, and cascade-off
+  // must not resurrect the cascade-on secret requirements (symmetry).
+  describe("cascade x affinity matrix", () => {
+    it("cascade on, affinity on: passes (cascade's own prerequisites still required)", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "true";
+      process.env.AFFINITY_ENABLED = "true";
+      process.env.INTERNAL_API_KEY = "z".repeat(32);
+      process.env.PUBLIC_IP = "1.2.3.4";
+      process.env.INSTANCE_ID_OVERRIDE = "i-matrix-on-on";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).resolves.not.toThrow();
+    });
+
+    it("cascade on, affinity off: passes (affinity is irrelevant while cascade covers routing)", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "true";
+      process.env.AFFINITY_ENABLED = "false";
+      process.env.INTERNAL_API_KEY = "z".repeat(32);
+      process.env.PUBLIC_IP = "1.2.3.4";
+      process.env.INSTANCE_ID_OVERRIDE = "i-matrix-on-off";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).resolves.not.toThrow();
+    });
+
+    it("cascade off, affinity on: passes WITHOUT INTERNAL_API_KEY or PUBLIC_IP (symmetry)", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "false";
+      process.env.AFFINITY_ENABLED = "true";
+      process.env.INTERNAL_API_KEY = "";
+      process.env.PUBLIC_IP = "";
+      process.env.INSTANCE_ID_OVERRIDE = "i-matrix-off-on";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).resolves.not.toThrow();
+    });
+
+    it("cascade off, affinity off: throws naming both flags", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "false";
+      process.env.AFFINITY_ENABLED = "false";
+      process.env.INSTANCE_ID_OVERRIDE = "i-matrix-off-off";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).rejects.toThrow(
+        /CASCADE_ENABLED=false requires AFFINITY_ENABLED=true/,
+      );
+    });
+  });
+
   it("throws in production when TURN keys are missing (F-16)", async () => {
     process.env.NODE_ENV = "production";
     process.env.CASCADE_ENABLED = "false";
@@ -111,6 +171,101 @@ describe("config assertions", () => {
 
     const { initializeConfig } = await import("@src/config/index.js");
     await expect(initializeConfig()).resolves.not.toThrow();
+  });
+
+  // 02-derive-worker-count-and-assert-vcpu-floor
+  describe("MEDIASOUP_NUM_WORKERS derivation + vCPU floor", () => {
+    it.each([
+      [3, 2],
+      [4, 3],
+      [8, 7],
+      [16, 15],
+    ])("derives vCPU - 1 workers (%i vCPU -> %i workers) when unset", async (vcpuCount, expectedWorkers) => {
+      vi.doMock("os", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("os")>();
+        return {
+          ...actual,
+          cpus: () => Array.from({ length: vcpuCount }, () => ({}) as never),
+        };
+      });
+      delete process.env.MEDIASOUP_NUM_WORKERS;
+      process.env.NODE_ENV = "development";
+      process.env.INSTANCE_ID_OVERRIDE = "dev-derive";
+
+      const { config } = await import("@src/config/index.js");
+      expect(config.MEDIASOUP_NUM_WORKERS).toBe(expectedWorkers);
+
+      vi.doUnmock("os");
+    });
+
+    it("an explicit MEDIASOUP_NUM_WORKERS overrides the derivation", async () => {
+      vi.doMock("os", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("os")>();
+        return {
+          ...actual,
+          cpus: () => Array.from({ length: 16 }, () => ({}) as never),
+        };
+      });
+      process.env.MEDIASOUP_NUM_WORKERS = "5";
+      process.env.NODE_ENV = "development";
+      process.env.INSTANCE_ID_OVERRIDE = "dev-override";
+
+      const { config } = await import("@src/config/index.js");
+      expect(config.MEDIASOUP_NUM_WORKERS).toBe(5);
+
+      vi.doUnmock("os");
+    });
+
+    it("fails to boot in production below the vCPU floor (derived)", async () => {
+      vi.doMock("os", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("os")>();
+        return {
+          ...actual,
+          cpus: () => Array.from({ length: 2 }, () => ({}) as never), // 2 vCPU -> 1 worker, below the floor
+        };
+      });
+      delete process.env.MEDIASOUP_NUM_WORKERS;
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "false";
+      process.env.AFFINITY_ENABLED = "true"; // isolate the vCPU-floor assertion from aws-app-affinity/12's reverse check
+      process.env.INSTANCE_ID_OVERRIDE = "i-prod-lowcpu";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).rejects.toThrow(/MEDIASOUP_NUM_WORKERS/);
+
+      vi.doUnmock("os");
+    });
+
+    it("fails to boot in production when an explicit override is itself below the floor", async () => {
+      process.env.MEDIASOUP_NUM_WORKERS = "1";
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "false";
+      process.env.AFFINITY_ENABLED = "true"; // isolate the vCPU-floor assertion from aws-app-affinity/12's reverse check
+      process.env.INSTANCE_ID_OVERRIDE = "i-prod-lowworkers";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).rejects.toThrow(/MEDIASOUP_NUM_WORKERS/);
+    });
+
+    it("passes in production at exactly the floor (3 vCPU -> 2 workers)", async () => {
+      vi.doMock("os", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("os")>();
+        return {
+          ...actual,
+          cpus: () => Array.from({ length: 3 }, () => ({}) as never),
+        };
+      });
+      delete process.env.MEDIASOUP_NUM_WORKERS;
+      process.env.NODE_ENV = "production";
+      process.env.CASCADE_ENABLED = "false";
+      process.env.AFFINITY_ENABLED = "true"; // isolate the vCPU-floor assertion from aws-app-affinity/12's reverse check
+      process.env.INSTANCE_ID_OVERRIDE = "i-prod-floor";
+
+      const { initializeConfig } = await import("@src/config/index.js");
+      await expect(initializeConfig()).resolves.not.toThrow();
+
+      vi.doUnmock("os");
+    });
   });
 
   // platform-security 06: pin the PARSED default value of the auth-gate
