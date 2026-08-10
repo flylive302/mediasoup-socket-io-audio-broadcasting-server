@@ -26,8 +26,8 @@ ssh_public_key_path = "~/.ssh/flylive_deploy.pub"
 # Full replica = 2 (matches prod). To cut cost between test cycles, drop to 1
 # (or 0) and re-apply — keeps the GA/NLB/ACM stack intact so the next push to
 # `staging` still auto-deploys (terraform destroy would break deploy.yml).
-min_instances     = 2
-desired_instances = 2
+# Fixed-size fleet (ticket 18): one number → ASG min = max = desired.
+fleet_size = 2
 
 # Pinned image tag (ticket 14). Never "latest" — required, no default.
 image_tag = "sha-CHANGE_ME"

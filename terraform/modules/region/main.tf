@@ -127,19 +127,17 @@ module "autoscaling" {
   rtc_min_port           = var.rtc_min_port
   rtc_max_port           = var.rtc_max_port
   # REDIS_* = durable store; REDIS_CACHE_* = evict-freely store (ticket 21).
-  redis_host              = module.redis_durable.redis_host
-  redis_port              = module.redis_durable.redis_port
-  redis_cache_host        = module.redis.redis_host
-  redis_cache_port        = module.redis.redis_port
-  laravel_internal_key    = var.laravel_internal_key
-  jwt_secret              = var.jwt_secret
-  session_secret          = var.session_secret
-  audio_domain            = var.audio_domain
-  cors_origins            = var.cors_origins
-  laravel_api_url         = var.laravel_api_url
-  cascade_enabled         = var.cascade_enabled
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
+  redis_host       = module.redis_durable.redis_host
+  redis_port       = module.redis_durable.redis_port
+  redis_cache_host = module.redis.redis_host
+  redis_cache_port = module.redis.redis_port
+  # NOTE: laravel_internal_key / jwt_secret / session_secret / audio_domain /
+  # cloudflare_turn_api_key are NOT passed to autoscaling any more (ticket 18) — the
+  # module never used them; the instance fetches those secrets from SSM at boot.
+  cors_origins           = var.cors_origins
+  laravel_api_url        = var.laravel_api_url
+  cascade_enabled        = var.cascade_enabled
+  cloudflare_turn_key_id = var.cloudflare_turn_key_id
 
   # MSAB Application Config
   jwt_max_age_seconds    = var.jwt_max_age_seconds
@@ -156,9 +154,8 @@ module "autoscaling" {
   hls_r2_bucket         = var.hls_r2_bucket
   hls_public_base_url   = var.hls_public_base_url
 
-  min_instances     = var.min_instances
-  desired_instances = var.desired_instances
-  max_instances     = var.max_instances
+  # Fixed-size fleet: ONE number drives min = max = desired (ticket 18 AC #2).
+  fleet_size = var.fleet_size
 
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer.target_group_arn_suffix

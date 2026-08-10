@@ -59,6 +59,17 @@ jobs:
       - name: Plan tests (mocked provider, no credentials)
         run: terraform test
 
+      # ticket 18 AC #5 — the fleet is fixed-size, so NO autoscaling policy may ship.
+      # `terraform test` cannot assert a resource's absence (a plan exposes no resource
+      # inventory to query), so absence is gated here instead.
+      - name: No scaling policy may ship (fixed-size fleet)
+        run: |
+          if grep -rn 'resource "aws_autoscaling_policy"' modules/; then
+            echo "::error::aws_autoscaling_policy found — the fleet is fixed-size (ticket 06/18). Remove it or change the decision in the epic first."
+            exit 1
+          fi
+          echo "OK: zero autoscaling policies."
+
   drift-check:
     # Inert until AWS_DRIFT_CHECK_ENABLED=true (see header). Cron + manual only.
     if: >-

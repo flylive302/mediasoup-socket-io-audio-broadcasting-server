@@ -1,11 +1,16 @@
 # =============================================================================
-# Auto Scaling Module — Launch Template + ASG + Scaling Policies
+# Auto Scaling Module — Launch Template + fixed-size ASG + lifecycle hooks
 # =============================================================================
-# Replaces the standalone EC2 compute module with:
-#   - Launch Template (same config as compute: AMI, user-data, SG, IAM)
-#   - Auto Scaling Group (1-N instances per region)
-#   - Target tracking scaling policy (based on custom ActiveConnections metric)
+#   - Launch Template (AMI, user-data, SG, IAM) — renders the container run
+#   - Auto Scaling Group, FIXED SIZE (min = max = desired = var.fleet_size)
 #   - Lifecycle hooks for graceful launch/terminate
+#   - Visibility-only CloudWatch alarms (no alarm actions)
+#
+# ⛔ NO autoscaling policy ships here (ticket 18 AC #5). The fleet is fixed-size
+#    per the epic-wide operator decision (ticket 06): mediasoup rooms are sticky
+#    to an instance, so adding capacity does not relieve a hot instance, and
+#    removing capacity drops live calls. Capacity is re-picked by hand from
+#    ticket 35's saturation curve, not by a target-tracking policy.
 # =============================================================================
 
 terraform {
@@ -14,6 +19,36 @@ terraform {
       source = "hashicorp/aws"
     }
   }
+}
+
+locals {
+  # --- Container memory cap, COMPUTED (ticket 18 AC #6) ----------------------
+  # No `7g`/`6g` literal exists anywhere: the cap is this instance type's RAM
+  # minus a stated host reserve. c7i.xlarge (8192 MiB) − 2 GiB = 6144 MiB = the
+  # exact 6g the proven production runtime uses today.
+  instance_memory_mib  = var.instance_memory_mib[var.instance_type]
+  container_memory_mib = local.instance_memory_mib - (var.host_reserve_gib * 1024)
+
+  # --- Drain window, DERIVED ONCE (ticket 18 AC #3) -------------------------
+  # Single source of truth: var.app_drain_ceiling_seconds (mirrors the app's own
+  # DRAIN_CEILING_MS). The three values below are the only consumers, and the
+  # ordering they must satisfy is asserted in tests/drain_window.tftest.hcl:
+  #
+  #   drain_request  == app ceiling      (120) — never ask the app for LESS than it needs
+  #   drain_poll_ceiling > app ceiling   (125) — one poll tick of slack past the app's deadline
+  #   drain_poll_ceiling <  hook heartbeat (150) — the script finishes INSIDE the AWS window,
+  #                                                so complete-lifecycle-action never races
+  #                                                hook expiry (the script never sends a
+  #                                                lifecycle heartbeat, so there is no slack
+  #                                                to be had after the fact)
+  drain_request_seconds      = var.app_drain_ceiling_seconds
+  drain_poll_ceiling_seconds = var.app_drain_ceiling_seconds + var.drain_poll_interval_seconds
+  drain_hook_heartbeat       = var.app_drain_ceiling_seconds + var.drain_hook_margin_seconds
+
+  # --- Warmup / health-check grace, DERIVED (ticket 18 AC #4) ---------------
+  # One number for both: the same physical event (instance boots → serves traffic)
+  # gates "don't health-check me yet" and "don't rotate the next instance yet".
+  instance_warmup_seconds = var.container_warmup_seconds + var.bootstrap_overhead_seconds
 }
 
 # --- Get latest Ubuntu 24.04 AMI ---
@@ -78,29 +113,34 @@ resource "aws_launch_template" "msab" {
 
   # User data script — same as compute module
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
-    region                  = var.region
-    project_name            = var.project_name
-    ecr_repo_url            = var.ecr_repo_url
-    app_port                = var.app_port
-    rtc_min_port            = var.rtc_min_port
-    rtc_max_port            = var.rtc_max_port
-    redis_host              = var.redis_host
-    redis_port              = var.redis_port
-    redis_cache_host        = var.redis_cache_host
-    redis_cache_port        = var.redis_cache_port
-    laravel_internal_key    = var.laravel_internal_key
-    jwt_secret              = var.jwt_secret
-    session_secret          = var.session_secret
-    audio_domain            = var.audio_domain
-    cors_origins            = var.cors_origins
-    laravel_api_url         = var.laravel_api_url
-    cascade_enabled         = var.cascade_enabled
-    cloudflare_turn_api_key = var.cloudflare_turn_api_key
-    cloudflare_turn_key_id  = var.cloudflare_turn_key_id
-    image_tag               = var.image_tag
-    jwt_max_age_seconds     = var.jwt_max_age_seconds
-    laravel_api_timeout_ms  = var.laravel_api_timeout_ms
-    ice_stun_urls           = var.ice_stun_urls
+    region                 = var.region
+    project_name           = var.project_name
+    ecr_repo_url           = var.ecr_repo_url
+    app_port               = var.app_port
+    rtc_min_port           = var.rtc_min_port
+    rtc_max_port           = var.rtc_max_port
+    redis_host             = var.redis_host
+    redis_port             = var.redis_port
+    redis_cache_host       = var.redis_cache_host
+    redis_cache_port       = var.redis_cache_port
+    cors_origins           = var.cors_origins
+    laravel_api_url        = var.laravel_api_url
+    cascade_enabled        = var.cascade_enabled
+    cloudflare_turn_key_id = var.cloudflare_turn_key_id
+    image_tag              = var.image_tag
+    jwt_max_age_seconds    = var.jwt_max_age_seconds
+    laravel_api_timeout_ms = var.laravel_api_timeout_ms
+    ice_stun_urls          = var.ice_stun_urls
+
+    # Container memory cap, computed from the instance type's RAM (AC #6).
+    container_memory_mib = local.container_memory_mib
+
+    # Drain window — all three derived from var.app_drain_ceiling_seconds (AC #3).
+    drain_request_seconds       = local.drain_request_seconds
+    drain_poll_ceiling_seconds  = local.drain_poll_ceiling_seconds
+    drain_poll_interval_seconds = var.drain_poll_interval_seconds
+    # Detection lag before the drain even starts — same budget as the drain (AC #3).
+    lifecycle_poll_interval_seconds = var.lifecycle_poll_interval_seconds
 
     room_broadcast_threshold_up   = var.room_broadcast_threshold_up
     room_broadcast_threshold_down = var.room_broadcast_threshold_down
@@ -136,19 +176,30 @@ resource "aws_launch_template" "msab" {
 }
 
 # --- Auto Scaling Group ---
+# FIXED SIZE, on purpose: all three capacity fields read the SAME variable, so the
+# fleet cannot become elastic by editing one number. Rationale (ticket 06 / 18 AC #2):
+# a mediasoup room lives on ONE instance for its whole life, so an extra instance
+# relieves nothing that is already hot, and removing an instance drops live calls.
+# Capacity moves by hand, from ticket 35's saturation curve.
+#
+# NOTE for ticket 29 (canary rollout): min = max forecloses launch-before-terminate —
+# max_healthy_percentage > 100 needs max_size headroom, so instance refresh here must
+# terminate-then-launch and briefly runs below fleet_size. 29 owns that trade-off.
 resource "aws_autoscaling_group" "msab" {
   name_prefix         = "${var.project_name}-asg-"
-  min_size            = var.min_instances
-  max_size            = var.max_instances
-  desired_capacity    = var.desired_instances
+  min_size            = var.fleet_size
+  max_size            = var.fleet_size
+  desired_capacity    = var.fleet_size
   vpc_zone_identifier = var.public_subnet_ids
 
   # Register instances with NLB target group
   target_group_arns = [var.target_group_arn]
 
-  # Health check via NLB target group
+  # Health check via NLB target group. Grace period is DERIVED from the same cold-boot
+  # budget as instance_warmup below (ticket 18 AC #4) — both answer "how long until this
+  # instance can serve traffic", so they must never be two independent literals.
   health_check_type         = "ELB"
-  health_check_grace_period = 300 # 5 min for user-data to complete
+  health_check_grace_period = local.instance_warmup_seconds
 
   # Simple launch template — used when no instance type fallbacks are configured
   dynamic "launch_template" {
@@ -180,19 +231,21 @@ resource "aws_autoscaling_group" "msab" {
       }
 
       instances_distribution {
-        on_demand_base_capacity                  = var.min_instances
+        on_demand_base_capacity                  = var.fleet_size
         on_demand_percentage_above_base_capacity = 100
         on_demand_allocation_strategy            = "prioritized"
       }
     }
   }
 
-  # Instance refresh settings (for rolling deployments)
+  # Instance refresh settings (for rolling deployments). Warmup = the derived cold-boot
+  # budget (ticket 18 AC #4): container warmup measured in ticket 17 (90s) + the itemised
+  # user-data bootstrap cost (250s) that runs BEFORE the container starts.
   instance_refresh {
     strategy = "Rolling"
     preferences {
       min_healthy_percentage = 50
-      instance_warmup        = 300
+      instance_warmup        = local.instance_warmup_seconds
     }
   }
 
@@ -230,26 +283,14 @@ resource "aws_autoscaling_lifecycle_hook" "terminating" {
   name                   = "msab-terminate-hook"
   autoscaling_group_name = aws_autoscaling_group.msab.name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
-  heartbeat_timeout      = var.drain_timeout_seconds
+  heartbeat_timeout      = local.drain_hook_heartbeat
   default_result         = "CONTINUE" # Terminate even if drain fails
 }
 
-# --- Scaling Policy: Target Tracking (CPU) ---
-# AUDIT-010 FIX: Replaces StepScaling with TargetTracking.
-# AWS automatically adds/removes instances to maintain ~60% CPU.
-resource "aws_autoscaling_policy" "target_tracking_cpu" {
-  name                   = "${var.project_name}-target-tracking-cpu"
-  autoscaling_group_name = aws_autoscaling_group.msab.name
-  policy_type            = "TargetTrackingScaling"
-
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ASGAverageCPUUtilization"
-    }
-    target_value     = 60.0
-    disable_scale_in = false
-  }
-}
+# ⛔ NO aws_autoscaling_policy — deliberately. A TargetTracking-on-CPU policy used to live
+# here (AUDIT-010); it is REMOVED, not merely un-extended, because the fleet is fixed-size
+# (ticket 18 AC #5). The two alarms below are visibility-only: empty alarm_actions, they
+# page nobody and scale nothing. Their thresholds are named for the alarms, not for scaling.
 
 # --- CloudWatch Alarm: High Connections (visibility only — no action) ---
 resource "aws_cloudwatch_metric_alarm" "high_connections" {
@@ -260,10 +301,10 @@ resource "aws_cloudwatch_metric_alarm" "high_connections" {
   namespace           = "FlyLive/MSAB"
   period              = 60
   statistic           = "Average"
-  threshold           = var.scale_up_threshold
-  alarm_description   = "WARNING: ActiveConnections > ${var.scale_up_threshold} for 3 minutes"
+  threshold           = var.connections_alarm_high_threshold
+  alarm_description   = "WARNING: ActiveConnections > ${var.connections_alarm_high_threshold} for 3 minutes"
 
-  # No alarm_actions — Target Tracking handles scaling
+  # No alarm_actions, and nothing to act: the scaling policy is gone (AC #5). Visibility only.
   alarm_actions = []
 
   dimensions = {}
@@ -278,8 +319,8 @@ resource "aws_cloudwatch_metric_alarm" "low_connections" {
   namespace           = "FlyLive/MSAB"
   period              = 60
   statistic           = "Average"
-  threshold           = var.scale_down_threshold
-  alarm_description   = "INFO: ActiveConnections < ${var.scale_down_threshold} for 10 minutes"
+  threshold           = var.connections_alarm_low_threshold
+  alarm_description   = "INFO: ActiveConnections < ${var.connections_alarm_low_threshold} for 10 minutes"
 
   alarm_actions = []
 

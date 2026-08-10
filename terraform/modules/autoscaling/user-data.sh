@@ -114,18 +114,24 @@ aws ecr get-login-password --region "$ECR_REGION" | docker login --username AWS 
 docker pull $ECR_REPO_URL:${image_tag}
 
 # --- Fetch Secrets from SSM Parameter Store ---
-# Secrets are KMS-encrypted in SSM and never written to disk.
-# They are passed directly to Docker via -e flags.
+# Secrets are KMS-encrypted in SSM (ticket 16) and reach the container through a
+# 0600 env-file written below — never through the docker command line.
 SSM_PREFIX="/${project_name}"
 REGION="${region}"
 
 fetch_ssm() {
+  # ⚠️ Sanitize here, once, for all callers. These values are written to a docker
+  # --env-file, whose parser is NOT a shell: no quote handling, and a value runs to
+  # end of line. A stray CR (a CRLF paste into the SSM console) would end up INSIDE
+  # the value. The same file is also read by systemd's EnvironmentFile parser, a
+  # third set of rules again. Stripping CR costs nothing and removes the whole class.
+  # A value containing a real newline can't be salvaged — it is rejected below.
   aws ssm get-parameter \
     --name "$SSM_PREFIX/$1" \
     --with-decryption \
     --query 'Parameter.Value' \
     --output text \
-    --region "$REGION" 2>/dev/null || echo ""
+    --region "$REGION" 2>/dev/null | tr -d '\r' || echo ""
 }
 
 SECRET_JWT=$(fetch_ssm "jwt-secret")
@@ -155,15 +161,36 @@ if [ "$MISSING_SECRETS" -eq 1 ]; then
   exit 1
 fi
 
+# --- Reject secrets that cannot survive an env-file ---
+# A literal newline truncates the value and turns the remainder into a garbage KEY
+# line. Docker rejects that at `docker run` — i.e. at boot, inside the launch
+# lifecycle hook, on an instance that then health-fails and gets replaced. Fail here
+# instead, with a message that names the parameter.
+for SECRET_NAME in SECRET_JWT SECRET_INTERNAL_KEY SECRET_SESSION SECRET_TURN_API_KEY SECRET_REDIS_AUTH SECRET_HLS_R2_ACCESS_KEY_ID SECRET_HLS_R2_SECRET_ACCESS_KEY; do
+  if [ "$(printf '%s' "$${!SECRET_NAME}" | wc -l)" -gt 0 ]; then
+    echo "❌ FATAL: $SECRET_NAME contains a newline — it cannot be written to a docker --env-file."
+    echo "   Fix the SSM parameter value (single line, no CR/LF), then relaunch the instance."
+    exit 1
+  fi
+done
+
 echo "✅ All critical secrets fetched from SSM ($REGION)"
 
 # --- Create .env file (NON-SENSITIVE config only) ---
-cat > .env << ENVEOF
+# Absolute path on purpose: this file is READ by absolute path (docker --env-file, and the
+# msab-lifecycle systemd unit's EnvironmentFile). Writing it relative would work only for as
+# long as nobody adds a `cd` between here and the docker run — and that failure boots a
+# container with zero non-secret config.
+cat > /opt/msab/.env << ENVEOF
 NODE_ENV=production
 PORT=${app_port}
+# Same port, second name: the msab-lifecycle systemd unit reads THIS file and the drain
+# script looks for MSAB_PORT. Kept here (non-sensitive) so the secrets file below holds
+# nothing but secrets.
+MSAB_PORT=${app_port}
 LOG_LEVEL=info
 
-# Redis (host/port only — passwords passed via docker -e).
+# Redis (host/port only — passwords ride the 0600 secrets env-file below).
 # REDIS_* = DURABLE store (money queue, room/seat/block state — noeviction,
 # snapshotted). REDIS_CACHE_* = evict-freely store (rate limits, presence,
 # socket.io pub/sub). Both are dedicated MSAB ElastiCache groups, so DB 0 —
@@ -234,43 +261,59 @@ CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 ROOM_BROADCAST_THRESHOLD_UP=${room_broadcast_threshold_up}
 ROOM_BROADCAST_THRESHOLD_DOWN=${room_broadcast_threshold_down}
 
-# realtime-09 — broadcast HLS tier (non-sensitive; R2 keys passed via docker -e).
+# realtime-09 — broadcast HLS tier (non-sensitive; R2 keys ride the secrets env-file).
 BROADCAST_HLS_ENABLED=${broadcast_hls_enabled}
 HLS_R2_ENDPOINT=${hls_r2_endpoint}
 HLS_R2_BUCKET=${hls_r2_bucket}
 HLS_PUBLIC_BASE_URL=${hls_public_base_url}
 ENVEOF
 
-# --- Write secrets env file for lifecycle drain service (not in .env, not in Docker) ---
-cat > /opt/msab/.env.secrets << SECRETSEOF
-LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY
-MSAB_PORT=${app_port}
-SECRETSEOF
+# --- Write secrets env file (0600) ---
+# Consumed twice: as the container's SECOND --env-file, and by the msab-lifecycle
+# systemd unit. Secrets ONLY — every non-sensitive value lives in .env above.
+# This mirrors the proven production runtime, which runs
+# `--env-file /opt/msab/.env --env-file /opt/msab/.secrets` and passes no -e flags
+# (docs/runbooks/msab-by-hand-deploy.md). Keeping the shape identical also keeps the
+# secrets off the process command line.
+touch /opt/msab/.env.secrets
 chmod 600 /opt/msab/.env.secrets
+cat > /opt/msab/.env.secrets << SECRETSEOF
+JWT_SECRET=$SECRET_JWT
+LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY
+INTERNAL_API_KEY=$SECRET_INTERNAL_KEY
+SESSION_SECRET=$SECRET_SESSION
+CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY
+REDIS_PASSWORD=$SECRET_REDIS_AUTH
+REDIS_CACHE_PASSWORD=$SECRET_REDIS_AUTH
+HLS_R2_ACCESS_KEY_ID=$SECRET_HLS_R2_ACCESS_KEY_ID
+HLS_R2_SECRET_ACCESS_KEY=$SECRET_HLS_R2_SECRET_ACCESS_KEY
+SECRETSEOF
 
 # --- Run Container ---
-# Secrets passed via -e flags (from SSM), non-sensitive config via --env-file
+# ⚠️ This invocation is deliberately flag-for-flag identical to the proven production
+# runtime (docs/runbooks/msab-by-hand-deploy.md) — ONLY the substrate differs (ECR
+# instead of GHCR, EC2 instead of the Vultr box). Do not "improve" a flag here without
+# changing the runbook in the same breath; a silent divergence means AWS is running a
+# configuration nothing has ever proven.
+#   --memory / --memory-swap: rendered from the instance type's RAM minus the stated host
+#     reserve (see locals in main.tf). On c7i.xlarge this is 6144m — the same 6g the live
+#     box runs. --memory-swap MUST equal --memory: swap on a mediasoup worker is audible
+#     stutter, not a clean failure.
+#   CPU pinning is NOT a Docker flag — MSAB pins its own workers in-process
+#     (worker.manager.ts), and worker count is derived from nproc, not set here.
 # NOTE: awslogs Docker log driver rejected awslogs-stream-prefix on Docker 29.x/Ubuntu 24.04.
-# Using json-file with rotation instead. CloudWatch shipping via CW Agent can be added later.
+# Using json-file with rotation instead. CloudWatch shipping is via the CW Agent below.
 docker run -d \
   --name msab \
   --restart unless-stopped \
   --network host \
-  --memory=7g \
-  --memory-swap=7g \
+  --memory=${container_memory_mib}m \
+  --memory-swap=${container_memory_mib}m \
   --log-driver=json-file \
   --log-opt max-size=100m \
   --log-opt max-file=5 \
-  --env-file .env \
-  -e "JWT_SECRET=$SECRET_JWT" \
-  -e "LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY" \
-  -e "INTERNAL_API_KEY=$SECRET_INTERNAL_KEY" \
-  -e "SESSION_SECRET=$SECRET_SESSION" \
-  -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
-  -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
-  -e "REDIS_CACHE_PASSWORD=$SECRET_REDIS_AUTH" \
-  -e "HLS_R2_ACCESS_KEY_ID=$SECRET_HLS_R2_ACCESS_KEY_ID" \
-  -e "HLS_R2_SECRET_ACCESS_KEY=$SECRET_HLS_R2_SECRET_ACCESS_KEY" \
+  --env-file /opt/msab/.env \
+  --env-file /opt/msab/.env.secrets \
   $ECR_REPO_URL:${image_tag}
 
 # --- Install CloudWatch Agent (ship Docker JSON logs to CloudWatch Logs) ---
@@ -355,9 +398,27 @@ set -euo pipefail
 
 APP_PORT="$${MSAB_PORT:-3030}"
 INTERNAL_KEY="$${LARAVEL_INTERNAL_KEY:-}"
-POLL_INTERVAL=10
-DRAIN_POLL=5
-MAX_DRAIN_WAIT=900
+# How often we check whether AWS has moved us to Terminating:Wait. This is DETECTION LAG:
+# the hook's heartbeat clock starts when AWS transitions the instance, not when we notice,
+# so it is part of the same budget as the drain itself. Rendered, and the hook margin is
+# validated to exceed it (see drain_hook_margin_seconds in variables.tf).
+POLL_INTERVAL=${lifecycle_poll_interval_seconds}
+
+# --- Drain window: RENDERED by terraform, never a literal (ticket 18 AC #3) ---
+# Single source of truth = var.app_drain_ceiling_seconds, which mirrors the app's own
+# DRAIN_CEILING_MS in src/index.ts. Do NOT hand-edit these three numbers here.
+#   DRAIN_POLL      = how often we re-check drain status
+#   MAX_DRAIN_WAIT  = app ceiling + one poll tick. Strictly LESS than the ASG terminate
+#                     hook's heartbeat, so this script always completes the lifecycle
+#                     action INSIDE the window AWS is holding open — it never sends a
+#                     lifecycle heartbeat, so racing hook expiry has no recovery path.
+#   DRAIN_REQUEST   = the timeout we ASK the app for. Equals the app's own ceiling; it
+#                     must never be lower. The old code asked for MAX_DRAIN_WAIT minus a
+#                     60s offset — tuned against a 900s window, that offset carried onto a
+#                     150s window asks for 90s, below the 120s the app actually needs.
+DRAIN_POLL=${drain_poll_interval_seconds}
+MAX_DRAIN_WAIT=${drain_poll_ceiling_seconds}
+DRAIN_REQUEST=${drain_request_seconds}
 LOG_TAG="lifecycle-drain"
 
 log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] [$LOG_TAG] $*"; }
@@ -397,7 +458,7 @@ while true; do
 
     DRAIN_RESPONSE=$(curl -s -X POST \
       -H "X-Internal-Key: $INTERNAL_KEY" \
-      "http://localhost:$APP_PORT/admin/drain?timeout=$((MAX_DRAIN_WAIT - 60))" 2>/dev/null || echo '{"status":"error"}')
+      "http://localhost:$APP_PORT/admin/drain?timeout=$DRAIN_REQUEST" 2>/dev/null || echo '{"status":"error"}')
     log "Drain response: $DRAIN_RESPONSE"
 
     ELAPSED=0

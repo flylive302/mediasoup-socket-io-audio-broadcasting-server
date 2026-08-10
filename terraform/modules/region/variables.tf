@@ -125,6 +125,5 @@ variable "image_tag" {
   type        = string
 }
 
-variable "min_instances" { type = number }
-variable "desired_instances" { type = number }
-variable "max_instances" { type = number }
+# Fixed-size fleet — one number, wired to the ASG's min = max = desired (ticket 18).
+variable "fleet_size" { type = number }

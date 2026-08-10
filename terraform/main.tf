@@ -189,9 +189,7 @@ module "region_mumbai" {
   hls_public_base_url                   = var.hls_public_base_url
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
-  min_instances                         = var.min_instances
-  desired_instances                     = var.desired_instances
-  max_instances                         = var.max_instances
+  fleet_size                            = var.fleet_size
 }
 
 module "region_frankfurt" {
@@ -243,9 +241,7 @@ module "region_frankfurt" {
   hls_public_base_url                   = var.hls_public_base_url
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
-  min_instances                         = var.min_instances
-  desired_instances                     = var.desired_instances
-  max_instances                         = var.max_instances
+  fleet_size                            = var.fleet_size
 }
 
 module "region_singapore" {
@@ -297,9 +293,7 @@ module "region_singapore" {
   hls_public_base_url                   = var.hls_public_base_url
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
-  min_instances                         = var.min_instances
-  desired_instances                     = var.desired_instances
-  max_instances                         = var.max_instances
+  fleet_size                            = var.fleet_size
 }
 
 # =============================================================================

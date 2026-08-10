@@ -110,7 +110,16 @@ const start = async () => {
       // chance to drain. Previously the ceiling was 15s — any room mid-call was
       // force-closed. Raised to 120s. The overall hard-kill timeout must exceed
       // drain + remaining cleanup, else it would pre-empt the longer drain.
-      // Pairs with F-87 (ASG terminate lifecycle heartbeat aligned to ~150s).
+      //
+      // ⚠️ CROSS-LANGUAGE CONSTANT (aws-platform-build ticket 18). This value is
+      // mirrored by `app_drain_ceiling_seconds` in
+      // terraform/modules/autoscaling/variables.tf, which derives EVERY other drain
+      // timeout from it: the ASG terminate-hook heartbeat (ceiling + 30s = the same
+      // margin as the hard kill below), the on-instance drain script's poll ceiling,
+      // and the timeout that script asks this process for. Change one without the
+      // other and AWS starts closing the window before the app is done — the exact
+      // drift ticket 18 exists to kill. terraform/tests/drain_window.tftest.hcl pins
+      // the terraform side to 120.
       const DRAIN_CEILING_MS = 120_000;
       const timeoutMs = DRAIN_CEILING_MS + 30_000;
       const shutdownTimeout = setTimeout(() => {

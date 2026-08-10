@@ -47,28 +47,22 @@ variable "image_tag" {
   }
 }
 
-variable "min_instances" {
-  description = "ASG minimum instances per region. Default 2 for production HA (AUDIT-004). Staging may set 1 (or 0) between test cycles to cut cost without destroying the stack."
-  type        = number
-  default     = 2
-}
-
-variable "desired_instances" {
-  description = "ASG desired instances per region. Default 2 for production HA. Staging may lower between test cycles; keep >= min_instances."
-  type        = number
-  default     = 2
-}
-
-variable "max_instances" {
+variable "fleet_size" {
   description = <<-EOT
-    ASG maximum instances per region. Default 50 for the 50k-user headroom (realtime-06),
-    but this is only reachable if the account's On-Demand Standard vCPU quota (L-1216C47A)
-    allows it: max ≈ quota_vCPU / instance_vCPU. With the default 16-vCPU quota and
-    c7i.xlarge (4 vCPU), the real ceiling is 4 — keep max_instances truthful to the quota
-    until an increase lands (realtime-16).
+    MSAB instances per enabled region. ONE number on purpose — it drives the ASG's
+    min_size, max_size AND desired_capacity, so the fleet is structurally fixed-size
+    (ticket 18 AC #2; the fixed-size decision is ticket 06). It replaces the old
+    min_instances / desired_instances / max_instances trio, which could silently drift
+    into an elastic fleet by editing one of the three.
+
+    ⚠️ Quota truth (carried over from max_instances): fleet_size × instance vCPU must fit
+    the account's On-Demand Standard vCPU quota (L-1216C47A) in that region. With the
+    default 16-vCPU quota and c7i.xlarge (4 vCPU) the real ceiling is 4 instances. Ticket
+    02's increase is FILED but not yet granted — keep this truthful to the quota in force.
+    The final number comes from ticket 35's saturation curve; 2 is the honest default.
   EOT
   type        = number
-  default     = 50
+  default     = 2
 }
 
 variable "aws_region" {

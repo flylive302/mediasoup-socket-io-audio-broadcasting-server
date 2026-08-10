@@ -14,6 +14,71 @@ variable "instance_type" {
   description = "EC2 instance type (CPU-optimized recommended for MediaSoup)"
   type        = string
   default     = "c7i.xlarge"
+
+  # ticket 18: the container memory cap is COMPUTED from this type's RAM
+  # (var.instance_memory_mib), so an unknown type must fail at plan, not silently
+  # render a wrong --memory. Add the type to instance_memory_mib to allow it.
+  validation {
+    condition     = contains(keys(var.instance_memory_mib), var.instance_type)
+    error_message = "instance_type must be a key of var.instance_memory_mib — the container memory cap is derived from its RAM. Add the type (with its real RAM in MiB) to that map first."
+  }
+}
+
+variable "instance_memory_mib" {
+  description = <<-EOT
+    instance_type → physical RAM in MiB, from the AWS EC2 instance-type spec sheet.
+    This is the ONLY place a RAM figure appears: the container's --memory cap is
+    computed as (this value − host_reserve_gib), never restated as a literal
+    (ticket 18). Extend the map when a new instance type is introduced.
+  EOT
+  type        = map(number)
+  default = {
+    # c7i (Intel, amd64) — the default family
+    "c7i.large"    = 4096
+    "c7i.xlarge"   = 8192
+    "c7i.2xlarge"  = 16384
+    "c7i.4xlarge"  = 32768
+    "c7i.8xlarge"  = 65536
+    "c7i.12xlarge" = 98304
+    # c7g / c8g (Graviton, arm64) — same 2 GiB-per-vCPU ratio
+    "c7g.large"   = 4096
+    "c7g.xlarge"  = 8192
+    "c7g.2xlarge" = 16384
+    "c7g.4xlarge" = 32768
+    "c8g.large"   = 4096
+    "c8g.xlarge"  = 8192
+    "c8g.2xlarge" = 16384
+    "c8g.4xlarge" = 32768
+  }
+}
+
+variable "host_reserve_gib" {
+  description = <<-EOT
+    RAM (GiB) left to the host OS + Docker daemon, subtracted from the instance's RAM
+    to get the container's --memory cap. 2 GiB reproduces the proven production runtime
+    exactly: 8 GiB (c7i.xlarge / the live vhf-3c-8gb box) − 2 = 6g, which is what
+    `docs/runbooks/msab-by-hand-deploy.md` runs today.
+
+    ⚠️ The reserve is NOT a fixed fraction — the runbook's (never-deployed) 16 GiB variant
+    used 13g, i.e. a 3 GiB reserve. 2 GiB is correct for the sizes in use now; re-pick it
+    alongside ticket 35's final sizing if the instance type changes.
+  EOT
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.host_reserve_gib >= 1
+    error_message = "host_reserve_gib must leave at least 1 GiB to the host."
+  }
+
+  # The reserve is subtracted from the instance's RAM. Without a floor, a large reserve on a
+  # small instance renders `--memory=0m` — which Docker may read as "no limit", silently
+  # removing the cap instead of failing loudly. lookup()'s sentinel keeps an unknown
+  # instance_type from raising a SECOND error here (it has its own validation).
+  validation {
+    condition     = lookup(var.instance_memory_mib, var.instance_type, 999999) - (var.host_reserve_gib * 1024) >= 2048
+    error_message = "host_reserve_gib leaves the container under 2 GiB on this instance_type. Pick a bigger instance type or a smaller reserve — a near-zero cap is worse than no cap."
+  }
 }
 
 variable "instance_architecture" {
@@ -104,29 +169,11 @@ variable "redis_cache_port" {
   default     = 6379
 }
 
-variable "laravel_internal_key" {
-  description = "Shared secret key for Laravel API authentication"
-  type        = string
-  sensitive   = true
-}
-
-variable "jwt_secret" {
-  description = "JWT secret shared with Laravel backend"
-  type        = string
-  sensitive   = true
-}
-
-variable "session_secret" {
-  description = "Express session secret"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "audio_domain" {
-  description = "Domain for the audio server"
-  type        = string
-}
+# NOTE (ticket 18): laravel_internal_key, jwt_secret, session_secret, audio_domain and
+# cloudflare_turn_api_key used to be declared here and passed into templatefile(), but
+# user-data.sh never referenced their placeholders — every one of those secrets is fetched
+# at boot from SSM instead (ticket 16). They were dead plumbing and are gone. The root/region
+# modules still declare them; the SSM module is their real consumer.
 
 variable "cors_origins" {
   description = "CORS origins for the app"
@@ -142,47 +189,150 @@ variable "laravel_api_url" {
 
 # --- Scaling Configuration ---
 
-variable "min_instances" {
-  description = "Minimum number of instances in the ASG"
+variable "fleet_size" {
+  description = <<-EOT
+    Number of MSAB instances in this region's ASG. ONE variable on purpose: it is wired to
+    min_size, max_size AND desired_capacity, so a fixed-size fleet is structurally guaranteed
+    rather than a convention three independent numbers happen to honour (ticket 18 AC #2;
+    the fixed-size decision itself is ticket 06).
+
+    ⚠️ Quota truth (carried over from the old max_instances): fleet_size × instance vCPU must
+    fit the account's On-Demand Standard vCPU quota (L-1216C47A) IN THIS REGION. With the
+    default 16-vCPU quota and c7i.xlarge (4 vCPU) the real ceiling is 4 instances. Ticket 02's
+    increase is filed but NOT yet granted — keep this truthful to the quota actually in force.
+    Ticket 35 supplies the final number from the load test; 2 is the honest carry-over default.
+  EOT
   type        = number
   default     = 2
+
+  validation {
+    condition     = var.fleet_size >= 1
+    error_message = "fleet_size must be at least 1 — a 0-instance ASG is a total audio outage."
+  }
 }
 
-variable "max_instances" {
-  description = "Maximum number of instances in the ASG. Raised 15→50 for 50k-user headroom (realtime-06). NOTE: 50×instance_type vCPU/region must fit the account's On-Demand Standard vCPU quota — confirm before relying on the ceiling."
-  type        = number
-  default     = 50
-}
-
-variable "desired_instances" {
-  description = "Desired number of instances in the ASG"
-  type        = number
-  default     = 2
-}
-
-variable "scale_up_threshold" {
-  description = "ActiveConnections threshold to trigger scale up"
+variable "connections_alarm_high_threshold" {
+  description = "ActiveConnections level above which the visibility-only high-connections alarm fires. Named for the alarm, not for scaling — no scaling policy exists (ticket 18 AC #5)."
   type        = number
   default     = 500
 }
 
-variable "scale_down_threshold" {
-  description = "ActiveConnections threshold to trigger scale down"
+variable "connections_alarm_low_threshold" {
+  description = "ActiveConnections level below which the visibility-only low-connections alarm fires. Named for the alarm, not for scaling — no scaling policy exists (ticket 18 AC #5)."
   type        = number
   default     = 100
 }
 
-variable "drain_timeout_seconds" {
-  description = "Maximum time (seconds) to wait for drain before termination"
+# --- Drain window (ticket 18 AC #3) --------------------------------------------------
+# THE single source of truth for every drain-related timeout is app_drain_ceiling_seconds.
+# The terminate hook, the on-instance drain script's poll ceiling, and the timeout the
+# script ASKS the app for are all derived from it in locals (main.tf) — none of them is a
+# free-standing literal, so they cannot drift apart again.
+#
+# History of the drift this kills: the hook went 900s → 150s but the script's own
+# MAX_DRAIN_WAIT literal stayed at 900s and asked the app for 900−60 = 840s, i.e. the script
+# polled for 900s inside a window AWS closed at 150s. Naively carrying the −60 offset onto
+# the 150s window would have asked for 90s — BELOW the app's own 120s ceiling — a quieter
+# version of the same bug. Hence: derive from the app's ceiling, never from the hook.
+
+variable "app_drain_ceiling_seconds" {
+  description = <<-EOT
+    MSAB's own SIGTERM drain ceiling, in seconds. MUST mirror DRAIN_CEILING_MS in
+    `src/index.ts` (120_000 ms — F-5). This is the ONE value every other drain timeout is
+    derived from; changing it here without changing the app is the drift this variable exists
+    to prevent, so the app carries a comment pointing back at this variable.
+  EOT
   type        = number
-  # TIER0 (F-87): apply during ops window — see plan.
-  # Was 900s. MSAB's SIGTERM drain ceiling is 120s (F-5); a 900s heartbeat
-  # stranded a terminating instance for ~14m45s of paid-but-idle compute per
-  # scale-in/deploy. 150s = 120s drain + 30s margin. Further optimization
-  # (remove the residual wait entirely): have MSAB's drain-complete path call
-  # `aws autoscaling complete-lifecycle-action` — tracked as an MSAB-runtime
-  # follow-up, out of scope for this tf-only pass.
-  default = 150
+  default     = 120
+}
+
+variable "drain_hook_margin_seconds" {
+  description = <<-EOT
+    Seconds added to app_drain_ceiling_seconds to size the ASG terminate-hook heartbeat.
+    30s matches the app's own hard-kill margin (`src/index.ts`: DRAIN_CEILING_MS + 30_000),
+    so AWS holds the instance for exactly as long as the process can still be alive.
+    Total heartbeat = 120 + 30 = 150s.
+  EOT
+  type        = number
+  default     = 30
+
+  # The margin must cover everything that happens INSIDE the hook window but OUTSIDE the app's
+  # drain: the lifecycle-state detection lag (up to one lifecycle_poll_interval_seconds — the
+  # hook's clock starts when AWS transitions the instance, not when the script notices) plus one
+  # drain poll tick. A margin at or below that reintroduces the unrecoverable race this ticket
+  # exists to kill: complete-lifecycle-action losing to hook expiry, with no heartbeat ever sent.
+  validation {
+    condition     = var.drain_hook_margin_seconds > var.lifecycle_poll_interval_seconds + var.drain_poll_interval_seconds
+    error_message = "drain_hook_margin_seconds must EXCEED lifecycle_poll_interval_seconds + drain_poll_interval_seconds — otherwise the detection lag alone can consume the whole margin."
+  }
+}
+
+variable "lifecycle_poll_interval_seconds" {
+  description = <<-EOT
+    How often the on-instance drain monitor asks AWS whether this instance has entered
+    Terminating:Wait. This is DETECTION LAG, and it is charged against the terminate hook's
+    heartbeat just like the drain is — the hook's clock starts when AWS transitions the
+    instance, not when the script notices. drain_hook_margin_seconds is validated against it.
+  EOT
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.lifecycle_poll_interval_seconds >= 1
+    error_message = "lifecycle_poll_interval_seconds must be at least 1."
+  }
+}
+
+variable "drain_poll_interval_seconds" {
+  description = <<-EOT
+    How often the on-instance drain script polls MSAB's drain status. Also sets the script's
+    give-up ceiling: app_drain_ceiling + one poll interval, so the script gives up exactly one
+    tick after the app's own deadline — strictly INSIDE the hook window, never at the same
+    instant AWS closes it (which would race complete-lifecycle-action against hook expiry).
+  EOT
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.drain_poll_interval_seconds >= 1
+    error_message = "drain_poll_interval_seconds must be at least 1."
+  }
+}
+
+# --- Cold-boot / warmup budget (ticket 18 AC #4) ---------------------------------------
+
+variable "container_warmup_seconds" {
+  description = <<-EOT
+    Time from `docker run` to a 200 on /health, for the hardened image. MEASURED in ticket 17:
+    1.9s observed run→healthy locally, budgeted at 90s to absorb the ECR pull and a cold page
+    cache. Container-level ONLY — the bootstrap steps before it are budgeted separately in
+    bootstrap_overhead_seconds.
+  EOT
+  type        = number
+  default     = 90
+}
+
+variable "bootstrap_overhead_seconds" {
+  description = <<-EOT
+    Everything user-data.sh does BEFORE the container can serve traffic. Itemised estimate,
+    not a measurement — the first real apply and ticket 19 (which reorders bootstrap) both
+    revise it:
+
+      apt-get update + upgrade ............  60
+      Docker install (get.docker.com) .....  45
+      AWS CLI v2 download + install .......  15
+      iptables-persistent .................  10
+      ECR login + pull (1.39 GiB image) ...  90
+      7 serial SSM get-parameter calls ....  10
+      CloudWatch agent download + dpkg ....  20
+                                            ---
+                                            250
+
+    ⚠️ PROVISIONAL. Ticket 18's own Notes require re-checking this after ticket 19 reorders the
+    bootstrap sequence, and again against the first real instance launch.
+  EOT
+  type        = number
+  default     = 250
 }
 
 variable "cascade_enabled" {
@@ -192,16 +342,27 @@ variable "cascade_enabled" {
 }
 
 variable "instance_type_overrides" {
-  description = "Ordered list of fallback instance types for mixed instances policy. When non-empty, the ASG uses a prioritized allocation strategy to try each type in order. Leave empty to use only the primary instance_type from the launch template."
+  description = <<-EOT
+    Ordered list of fallback instance types for the mixed-instances policy. When non-empty, the
+    ASG tries each type in priority order until one has capacity. Empty (the default, and what
+    root/region actually pass) uses only the primary instance_type from the launch template.
+
+    ⚠️ Every override must have the SAME RAM as instance_type: the container's --memory cap is
+    baked into user-data ONCE, from instance_type's RAM (ticket 18 AC #6). A fallback with less
+    RAM would launch a container capped above the host's memory. Enforced below.
+  EOT
   type        = list(string)
   default     = []
-}
 
-variable "cloudflare_turn_api_key" {
-  description = "Cloudflare Realtime TURN API bearer token for dynamic credential generation"
-  type        = string
-  sensitive   = true
-  default     = ""
+  validation {
+    # lookup() with distinct sentinels: an unknown type can never compare equal, and an
+    # unknown instance_type surfaces via its OWN validation rather than an index crash here.
+    condition = alltrue([
+      for t in var.instance_type_overrides :
+      lookup(var.instance_memory_mib, t, -1) == lookup(var.instance_memory_mib, var.instance_type, -2)
+    ])
+    error_message = "Every instance_type_overrides entry must be a key of instance_memory_mib AND have the same RAM as instance_type — the container memory cap is rendered once, from instance_type."
+  }
 }
 
 variable "cloudflare_turn_key_id" {

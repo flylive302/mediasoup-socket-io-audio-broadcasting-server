@@ -136,15 +136,17 @@ run "instance_type_default_is_c7i_xlarge" {
 }
 
 # -----------------------------------------------------------------------------
-# ASG fixed-size invariant: modules/autoscaling/main.tf `aws_autoscaling_group.msab`
-# sets min_size = var.min_instances, max_size = var.max_instances,
-# desired_capacity = var.desired_instances — three independent variables, no
-# module-level enforcement that they're equal. This asserts that when the root
-# module is given equal values (the fixed-size fleet decision), the rendered
-# ASG for every region actually comes out fixed-size — it does NOT assert the
-# variables' defaults are fixed-size, because they aren't (default max=50).
+# ASG fixed-size invariant (ticket 18 AC #2). min_size / max_size /
+# desired_capacity now ALL read one variable — var.fleet_size — in
+# modules/autoscaling/main.tf, so a fixed-size fleet is structural rather than a
+# convention three independent numbers happen to honour. This asserts the
+# rendered ASG really does come out equal on all three, whatever fleet_size is.
+#
+# The module-scoped drain-window / warmup / memory assertions live in their own
+# file (tests/drain_window.tftest.hcl) — a `module` block in a run re-types the
+# mock providers suite-wide, so mixing them here breaks the root-level runs.
 # -----------------------------------------------------------------------------
-run "asg_is_fixed_size_when_variables_set_equal" {
+run "asg_is_fixed_size_from_one_variable" {
   command = plan
 
   module {
@@ -163,15 +165,10 @@ run "asg_is_fixed_size_when_variables_set_equal" {
     ecr_repo_url           = "111111111111.dkr.ecr.ap-south-1.amazonaws.com/flylive-audio/msab"
     redis_host             = "mock-redis"
     redis_cache_host       = "mock-redis-cache"
-    laravel_internal_key   = "test-internal-key-0123456789abcdef"
-    jwt_secret             = "test-jwt-secret-0123456789abcdef"
-    audio_domain           = "audio.flyliveapp.com"
     image_tag              = "sha-deadbeef"
 
-    # The fixed-size fleet decision under test (ticket 06, min = max = desired).
-    min_instances     = 3
-    max_instances     = 3
-    desired_instances = 3
+    # The fixed-size fleet decision under test (ticket 06 / 18 AC #2).
+    fleet_size = 3
   }
 
   assert {
@@ -182,6 +179,21 @@ run "asg_is_fixed_size_when_variables_set_equal" {
   assert {
     condition     = aws_autoscaling_group.msab.desired_capacity == aws_autoscaling_group.msab.min_size
     error_message = "ASG must render fixed-size: desired_capacity != min_size"
+  }
+
+  assert {
+    condition     = aws_autoscaling_group.msab.min_size == var.fleet_size
+    error_message = "ASG capacity must come from var.fleet_size, not from a separate number"
+  }
+
+  # ticket 18 AC #5: the two CloudWatch alarms that remain are VISIBILITY ONLY —
+  # empty alarm_actions. (Absence of aws_autoscaling_policy itself can't be
+  # asserted from inside terraform test — a plan has no resource inventory to
+  # query — so it is gated by the `no-scaling-policy` grep step in
+  # .github/workflows/terraform-aws-tests.yml.)
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.high_connections.alarm_actions) == 0 && length(aws_cloudwatch_metric_alarm.low_connections.alarm_actions) == 0
+    error_message = "The connections alarms must stay visibility-only (no alarm_actions) — the fleet is fixed-size and nothing may act on them"
   }
 }
 
