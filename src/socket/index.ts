@@ -65,6 +65,10 @@ export function waitForActiveDisconnects(timeoutMs: number): Promise<void> {
 export async function initializeSocket(
   io: Server,
   redis: Redis,
+  // Cache-store client (aws-platform-build/21): rate limits, presence and
+  // socket mappings may evict freely. Defaults to the durable client so a
+  // single-store deployment behaves exactly as before.
+  redisCache: Redis = redis,
 ): Promise<AppContext> {
   // Initialize Managers
   const workerManager = new WorkerManager(logger);
@@ -85,7 +89,7 @@ export async function initializeSocket(
 
   const roomManager = new RoomManager(workerManager, redis, io, laravelClient, statusCoalescer, seatRepository);
   const giftHandler = new GiftHandler(redis, io, laravelClient);
-  const rateLimiter = new RateLimiter(redis);
+  const rateLimiter = new RateLimiter(redisCache);
 
   // realtime-01: presence is the authoritative source of "who is in a Room".
   // Built from roomManager.state so it can heal the advisory integer + TTL.
@@ -111,7 +115,7 @@ export async function initializeSocket(
   // dm-realtime-platform/07: DM presence (connection-count, per-user, TTL'd).
   // Started here (sweep timer) and stopped in the graceful-shutdown sequence
   // (src/index.ts), mirroring autoCloseJob/statusCoalescer.
-  const presenceService = new PresenceService(redis, io, clientManager);
+  const presenceService = new PresenceService(redisCache, io, clientManager);
   presenceService.start();
 
   // Initialize auto-close system (presence-gated, not integer-gated)
@@ -125,8 +129,8 @@ export async function initializeSocket(
   autoCloseJob.start();
 
   // Initialize events system (Laravel pub/sub)
-  const userSocketRepository = new UserSocketRepository(redis, logger);
-  const userRoomRepository = new UserRoomRepository(redis, logger);
+  const userSocketRepository = new UserSocketRepository(redisCache, logger);
+  const userRoomRepository = new UserRoomRepository(redisCache, logger);
   const eventRouter = new EventRouter(
     io,
     userSocketRepository,
@@ -158,6 +162,7 @@ export async function initializeSocket(
   const appContext: AppContext = {
     io,
     redis,
+    redisCache,
     workerManager,
     roomManager,
     clientManager,

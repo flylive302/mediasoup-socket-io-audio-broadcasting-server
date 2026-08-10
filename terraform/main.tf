@@ -18,6 +18,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5"
+    }
   }
 
   # Remote state in S3 (created via scripts/aws/bootstrap-state.sh).
@@ -125,13 +129,20 @@ provider "aws" {
   }
 }
 
+# Cloudflare — single global (unaliased) provider. The zone (and its DNS
+# records / CAA data) is not regional, so every region's ssl module shares
+# this one provider instance instead of getting its own alias.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
+
 # =============================================================================
 # Regions — thin gated stanzas over modules/region (see header)
 # =============================================================================
 
 module "region_mumbai" {
   source    = "./modules/region"
-  providers = { aws = aws.mumbai }
+  providers = { aws = aws.mumbai, cloudflare = cloudflare }
   count     = contains(var.enabled_regions, "mumbai") ? 1 : 0
 
   region_name           = "mumbai"
@@ -148,8 +159,13 @@ module "region_mumbai" {
   cascade_ports_open            = var.cascade_ports_open
   cascade_enabled               = var.cascade_enabled
   redis_node_type               = var.redis_node_type
+  redis_durable_node_type       = var.redis_durable_node_type
+  redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
+  redis_durable_snapshot_window = var.redis_durable_snapshot_window
   redis_auth_token              = var.redis_auth_token
   audio_domain                  = var.audio_domain
+  cloudflare_zone_id            = var.cloudflare_zone_id
+  caa_records_override          = var.caa_records_override
   instance_type                 = var.instance_type
   instance_architecture         = var.instance_architecture
   ssh_public_key_path           = var.ssh_public_key_path
@@ -178,7 +194,7 @@ module "region_mumbai" {
 
 module "region_frankfurt" {
   source    = "./modules/region"
-  providers = { aws = aws.frankfurt }
+  providers = { aws = aws.frankfurt, cloudflare = cloudflare }
   count     = contains(var.enabled_regions, "frankfurt") ? 1 : 0
 
   region_name           = "frankfurt"
@@ -195,8 +211,13 @@ module "region_frankfurt" {
   cascade_ports_open            = var.cascade_ports_open
   cascade_enabled               = var.cascade_enabled
   redis_node_type               = var.redis_node_type
+  redis_durable_node_type       = var.redis_durable_node_type
+  redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
+  redis_durable_snapshot_window = var.redis_durable_snapshot_window
   redis_auth_token              = var.redis_auth_token
   audio_domain                  = var.audio_domain
+  cloudflare_zone_id            = var.cloudflare_zone_id
+  caa_records_override          = var.caa_records_override
   instance_type                 = var.instance_type
   instance_architecture         = var.instance_architecture
   ssh_public_key_path           = var.ssh_public_key_path
@@ -225,7 +246,7 @@ module "region_frankfurt" {
 
 module "region_singapore" {
   source    = "./modules/region"
-  providers = { aws = aws.singapore }
+  providers = { aws = aws.singapore, cloudflare = cloudflare }
   count     = contains(var.enabled_regions, "singapore") ? 1 : 0
 
   region_name           = "singapore"
@@ -242,8 +263,13 @@ module "region_singapore" {
   cascade_ports_open            = var.cascade_ports_open
   cascade_enabled               = var.cascade_enabled
   redis_node_type               = var.redis_node_type
+  redis_durable_node_type       = var.redis_durable_node_type
+  redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
+  redis_durable_snapshot_window = var.redis_durable_snapshot_window
   redis_auth_token              = var.redis_auth_token
   audio_domain                  = var.audio_domain
+  cloudflare_zone_id            = var.cloudflare_zone_id
+  caa_records_override          = var.caa_records_override
   instance_type                 = var.instance_type
   instance_architecture         = var.instance_architecture
   ssh_public_key_path           = var.ssh_public_key_path

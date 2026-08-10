@@ -86,6 +86,8 @@ resource "aws_launch_template" "msab" {
     rtc_max_port            = var.rtc_max_port
     redis_host              = var.redis_host
     redis_port              = var.redis_port
+    redis_cache_host        = var.redis_cache_host
+    redis_cache_port        = var.redis_cache_port
     laravel_internal_key    = var.laravel_internal_key
     jwt_secret              = var.jwt_secret
     session_secret          = var.session_secret

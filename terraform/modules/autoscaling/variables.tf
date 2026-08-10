@@ -93,6 +93,17 @@ variable "redis_port" {
   default     = 6379
 }
 
+variable "redis_cache_host" {
+  description = "Cache-store ElastiCache host (evict-freely; rate limits, presence, socket.io pub/sub). The redis_host above is the DURABLE store."
+  type        = string
+}
+
+variable "redis_cache_port" {
+  description = "Cache-store Redis port"
+  type        = number
+  default     = 6379
+}
+
 variable "laravel_internal_key" {
   description = "Shared secret key for Laravel API authentication"
   type        = string

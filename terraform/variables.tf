@@ -89,9 +89,32 @@ variable "ssh_public_key_path" {
 }
 
 variable "redis_node_type" {
-  description = "ElastiCache node type"
+  description = "ElastiCache node type for the CACHE store (evict-freely; rate limits, presence, socket.io pub/sub)"
   type        = string
   default     = "cache.r7g.large"
+}
+
+variable "redis_durable_node_type" {
+  description = "ElastiCache node type for the DURABLE store (noeviction + snapshots; money queue, room/seat/block state). Its node size IS its memory ceiling. null = same as redis_node_type."
+  type        = string
+  default     = null
+}
+
+variable "redis_durable_snapshot_retention_days" {
+  description = "Automated snapshot retention (days) for the durable store. Must be > 0 (aws-platform-build/21)."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.redis_durable_snapshot_retention_days > 0
+    error_message = "The durable store must keep snapshots (aws-platform-build/21): retention must be > 0 — its snapshots are the only backup of the in-flight money queue."
+  }
+}
+
+variable "redis_durable_snapshot_window" {
+  description = "Daily UTC snapshot window for the durable store (21:00-22:00 UTC ≈ 02:00-03:00 PKT off-peak)"
+  type        = string
+  default     = "21:00-22:00"
 }
 
 variable "redis_auth_token" {
@@ -162,6 +185,33 @@ variable "audio_domain" {
   description = "Domain for the audio server"
   type        = string
   default     = "audio.flyliveapp.com"
+}
+
+# --- Cloudflare (DNS zone hosting audio_domain — used for unattended ACM validation) ---
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token (DNS Read + DNS Write on the audio_domain zone) — used to create ACM DNS validation records and read CAA records for the pre-issuance check"
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for the zone hosting audio_domain"
+  type        = string
+}
+
+variable "caa_records_override" {
+  description = <<-EOT
+    TEST SEAM — substitutes the live Cloudflare CAA lookup in offline
+    terraform tests (see modules/ssl/variables.tf for why: the provider's
+    nested cloudflare_dns_records result schema cannot be mocked). null =
+    query Cloudflare (the production path — default everywhere outside
+    tests). Never set this outside tests.
+  EOT
+  type = list(object({
+    tag   = string
+    value = string
+  }))
+  default = null
 }
 
 # Secrets — passed via environment variables (TF_VAR_*) or terraform.tfvars

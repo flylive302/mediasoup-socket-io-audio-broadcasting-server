@@ -163,11 +163,19 @@ NODE_ENV=production
 PORT=${app_port}
 LOG_LEVEL=info
 
-# Redis (host/port only — password passed via docker -e)
+# Redis (host/port only — passwords passed via docker -e).
+# REDIS_* = DURABLE store (money queue, room/seat/block state — noeviction,
+# snapshotted). REDIS_CACHE_* = evict-freely store (rate limits, presence,
+# socket.io pub/sub). Both are dedicated MSAB ElastiCache groups, so DB 0 —
+# the old DB 3 existed only to avoid Laravel on a shared host.
 REDIS_HOST=${redis_host}
 REDIS_PORT=${redis_port}
-REDIS_DB=3
+REDIS_DB=0
 REDIS_TLS=true
+REDIS_CACHE_HOST=${redis_cache_host}
+REDIS_CACHE_PORT=${redis_cache_port}
+REDIS_CACHE_DB=0
+REDIS_CACHE_TLS=true
 
 # JWT Authentication
 # Max age must match Laravel's MSAB JWT expiry (services.msab.jwt_expiry_hours)
@@ -260,6 +268,7 @@ docker run -d \
   -e "SESSION_SECRET=$SECRET_SESSION" \
   -e "CLOUDFLARE_TURN_API_KEY=$SECRET_TURN_API_KEY" \
   -e "REDIS_PASSWORD=$SECRET_REDIS_AUTH" \
+  -e "REDIS_CACHE_PASSWORD=$SECRET_REDIS_AUTH" \
   -e "HLS_R2_ACCESS_KEY_ID=$SECRET_HLS_R2_ACCESS_KEY_ID" \
   -e "HLS_R2_SECRET_ACCESS_KEY=$SECRET_HLS_R2_SECRET_ACCESS_KEY" \
   $ECR_REPO_URL:${image_tag}

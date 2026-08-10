@@ -4,7 +4,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import type { Redis } from "ioredis";
 import { config } from "@src/config/index.js";
 
-import { getRedisClient } from "./redis.js";
+import { getRedisClient, getCacheRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
 import { createEventIngestRoutes } from "./event-ingest.js";
 import { createAdminRoutes } from "./drain.js";
@@ -63,8 +63,11 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
         loggerInstance: logger,
       })) as unknown as FastifyInstance;
 
-  // Setup Socket.IO with Redis adapter for horizontal scaling
-  const pubClient = getRedisClient();
+  // Setup Socket.IO with Redis adapter for horizontal scaling. Pub/sub is
+  // cache-class traffic — it rides the cache store (falls back to the durable
+  // client when no separate cache store is configured).
+  const durableClient = getRedisClient();
+  const pubClient = getCacheRedisClient();
   const subClient = pubClient.duplicate();
 
   const io = new Server(fastify.server, {
@@ -132,7 +135,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     // grace + presence-count regression tests.
   });
 
-  const appContext = await initializeSocket(io, pubClient);
+  const appContext = await initializeSocket(io, durableClient, pubClient);
   const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, statusCoalescer } = appContext;
 
   // SFU Cascade — conditionally wire coordinator and relay

@@ -27,7 +27,11 @@ import type { PresenceService } from "./domains/presence/index.js";
 
 export interface AppContext {
   io: Server;
+  /** Durable store — money queue, room/seat/block state, revocation, dedup. */
   redis: Redis;
+  /** Cache store — rate limits, presence, socket mappings; may evict freely.
+   *  Same instance as `redis` when no separate cache store is configured. */
+  redisCache: Redis;
   workerManager: WorkerManager;
   roomManager: RoomManager;
   clientManager: ClientManager;

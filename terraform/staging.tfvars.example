@@ -38,3 +38,7 @@ redis_auth_token     = "CHANGE_ME_16_to_128_chars_no_@_/_or_quotes"
 # --- Cloudflare Realtime TURN (staging key from Cloudflare dashboard) ---
 cloudflare_turn_api_key = "CHANGE_ME"
 cloudflare_turn_key_id  = "CHANGE_ME"
+
+# --- Cloudflare DNS zone (unattended ACM validation — needs DNS Read + DNS Write on the zone) ---
+cloudflare_api_token = "CHANGE_ME"
+cloudflare_zone_id   = "CHANGE_ME"

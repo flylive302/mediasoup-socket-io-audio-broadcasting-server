@@ -78,6 +78,19 @@ const configSchema = z.object({
   // it. Unset (AWS ElastiCache path): Node's default trust store is used, unchanged.
   REDIS_TLS_CA_PATH: z.string().optional(),
 
+  // Cache-store split (aws-platform-build/21). REDIS_* above is the DURABLE
+  // store (money queue, room/seat/block state, revocation, dedup/ordering).
+  // These target the evict-freely CACHE store (rate limits, presence, socket
+  // mappings, socket.io pub/sub). Unset REDIS_CACHE_HOST ⇒ the cache client IS
+  // the durable client — single-store behaviour, unchanged (ship-inert).
+  REDIS_CACHE_HOST: z.string().optional(),
+  REDIS_CACHE_PORT: z.coerce.number().optional(),
+  REDIS_CACHE_USERNAME: z.string().optional(),
+  REDIS_CACHE_PASSWORD: z.string().optional(),
+  REDIS_CACHE_DB: z.coerce.number().optional(),
+  REDIS_CACHE_TLS: booleanEnvSchema,
+  REDIS_CACHE_TLS_CA_PATH: z.string().optional(),
+
   // JWT Authentication (shared secret with Laravel)
   JWT_SECRET: z.string().min(32),
   // Rotation overlap only. Comma-separated OUTGOING secrets that stay valid for

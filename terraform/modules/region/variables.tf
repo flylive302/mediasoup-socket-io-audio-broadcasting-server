@@ -26,12 +26,46 @@ variable "cascade_ports_open" { type = bool }
 variable "cascade_enabled" { type = bool }
 
 variable "redis_node_type" { type = string }
+
+# --- Durable/cache store split (aws-platform-build/21) ---
+variable "redis_durable_node_type" {
+  description = "Node type for the DURABLE store (its own memory ceiling, distinct from the cache store's). null = same as redis_node_type."
+  type        = string
+  default     = null
+}
+
+variable "redis_durable_snapshot_retention_days" {
+  description = "Automated snapshot retention for the durable store. Must be > 0 — its snapshots are the only backup of the in-flight money queue."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.redis_durable_snapshot_retention_days > 0
+    error_message = "The durable store must keep snapshots (aws-platform-build/21 AC): retention must be > 0."
+  }
+}
+
+variable "redis_durable_snapshot_window" {
+  description = "Daily UTC snapshot window for the durable store (default 21:00-22:00 UTC ≈ 02:00-03:00 PKT, off-peak for the Pakistan-centric audience)."
+  type        = string
+  default     = "21:00-22:00"
+}
 variable "redis_auth_token" {
   type      = string
   sensitive = true
 }
 
 variable "audio_domain" { type = string }
+variable "cloudflare_zone_id" { type = string }
+
+variable "caa_records_override" {
+  description = "TEST SEAM — see modules/ssl/variables.tf. null = query Cloudflare (production path). Never set outside tests."
+  type = list(object({
+    tag   = string
+    value = string
+  }))
+  default = null
+}
 variable "instance_type" { type = string }
 variable "instance_architecture" { type = string }
 variable "ssh_public_key_path" { type = string }

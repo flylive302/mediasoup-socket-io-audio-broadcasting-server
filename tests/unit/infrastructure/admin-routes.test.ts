@@ -23,10 +23,16 @@ vi.mock("@src/infrastructure/logger.js", () => ({
 }));
 
 // Mock Redis so the health-check sub-case doesn't need a live connection.
-// health.ts calls getRedisClient().ping() when not draining.
-vi.mock("@src/infrastructure/redis.js", () => ({
-  getRedisClient: () => ({ ping: vi.fn().mockResolvedValue("PONG") }),
-}));
+// health.ts pings both stores when not draining. Return ONE shared object so
+// the handler sees cache === durable and issues a single ping (the inert,
+// single-store configuration).
+vi.mock("@src/infrastructure/redis.js", () => {
+  const shared = { ping: vi.fn().mockResolvedValue("PONG") };
+  return {
+    getRedisClient: () => shared,
+    getCacheRedisClient: () => shared,
+  };
+});
 
 import Fastify from "fastify";
 import {

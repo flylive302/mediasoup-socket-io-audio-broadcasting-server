@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/node";
 import { logger } from "./infrastructure/logger.js";
 import { config, initializeConfig } from "./config/index.js";
 import { bootstrapServer } from "./infrastructure/server.js";
-import { getRedisClient } from "./infrastructure/redis.js";
+import { getRedisClient, getCacheRedisClient } from "./infrastructure/redis.js";
 import { startCloudWatchPublisher, stopCloudWatchPublisher } from "./infrastructure/cloudwatch.js";
 import { startQualitySampler, stopQualitySampler } from "./domains/media/quality/qualitySampler.js";
 import { startRtpStatisticsSweeper, stopRtpStatisticsSweeper } from "./domains/media/quality/rtpStatisticsSweeper.js";
@@ -174,10 +174,15 @@ const start = async () => {
         stopQualitySampler();
         stopRtpStatisticsSweeper();
 
-        // 6. Close Redis connections (both pub and sub clients)
-        const pubClient = getRedisClient();
-        if (pubClient.status === "ready") {
-          await pubClient.quit();
+        // 6. Close Redis connections (durable + cache stores and the
+        // adapter's sub duplicate; cache may be the same instance as durable)
+        const durableClient = getRedisClient();
+        const cacheClient = getCacheRedisClient();
+        if (cacheClient !== durableClient && cacheClient.status === "ready") {
+          await cacheClient.quit();
+        }
+        if (durableClient.status === "ready") {
+          await durableClient.quit();
         }
         if (subClient.status === "ready") {
           await subClient.quit();
@@ -226,9 +231,13 @@ const start = async () => {
       giftPendingCount: () => (giftHandler ? giftHandler.pendingCount() : Promise.resolve(0)),
       shutdownWorkers: () => workerManager.shutdown(),
       quitRedis: async () => {
-        const pubClient = getRedisClient();
+        const durableClient = getRedisClient();
+        const cacheClient = getCacheRedisClient();
         await Promise.all([
-          pubClient.status === "ready" ? pubClient.quit() : Promise.resolve(),
+          durableClient.status === "ready" ? durableClient.quit() : Promise.resolve(),
+          cacheClient !== durableClient && cacheClient.status === "ready"
+            ? cacheClient.quit()
+            : Promise.resolve(),
           subClient.status === "ready" ? subClient.quit() : Promise.resolve(),
         ]).then(() => undefined);
       },

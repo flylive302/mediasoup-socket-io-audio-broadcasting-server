@@ -13,6 +13,9 @@ terraform {
     aws = {
       source = "hashicorp/aws"
     }
+    cloudflare = {
+      source = "cloudflare/cloudflare"
+    }
   }
 }
 
@@ -27,6 +30,9 @@ module "networking" {
   cascade_ports_open = var.cascade_ports_open
 }
 
+# CACHE store (aws-platform-build/21): evict-freely, no backups — rate limits,
+# presence, socket mappings, socket.io pub/sub. Keeps the original "-redis"
+# resource names.
 module "redis" {
   source = "../redis"
 
@@ -37,11 +43,32 @@ module "redis" {
   redis_auth_token        = var.redis_auth_token
 }
 
-module "ssl" {
-  source = "../ssl"
+# DURABLE store (aws-platform-build/21): noeviction + automated snapshots —
+# in-flight money queue (gifts:pending), room/seat/block state, CAS ownership,
+# revocation, dedup/ordering. Separate replication group because a per-key
+# memory ceiling is not expressible inside one group (ticket 21 decision).
+module "redis_durable" {
+  source = "../redis"
 
-  project_name = var.project_name
-  audio_domain = var.audio_domain
+  project_name             = var.project_name
+  name_suffix              = "-durable"
+  redis_node_type          = coalesce(var.redis_durable_node_type, var.redis_node_type)
+  private_subnet_ids       = module.networking.private_subnet_ids
+  redis_security_group_id  = module.networking.redis_security_group_id
+  redis_auth_token         = var.redis_auth_token
+  maxmemory_policy         = "noeviction"
+  snapshot_retention_limit = var.redis_durable_snapshot_retention_days
+  snapshot_window          = var.redis_durable_snapshot_window
+}
+
+module "ssl" {
+  source    = "../ssl"
+  providers = { aws = aws, cloudflare = cloudflare }
+
+  project_name          = var.project_name
+  audio_domain          = var.audio_domain
+  cloudflare_zone_id    = var.cloudflare_zone_id
+  caa_records_override  = var.caa_records_override
 }
 
 module "loadbalancer" {
@@ -95,8 +122,11 @@ module "autoscaling" {
   app_port                = var.app_port
   rtc_min_port            = var.rtc_min_port
   rtc_max_port            = var.rtc_max_port
-  redis_host              = module.redis.redis_host
-  redis_port              = module.redis.redis_port
+  # REDIS_* = durable store; REDIS_CACHE_* = evict-freely store (ticket 21).
+  redis_host              = module.redis_durable.redis_host
+  redis_port              = module.redis_durable.redis_port
+  redis_cache_host        = module.redis.redis_host
+  redis_cache_port        = module.redis.redis_port
   laravel_internal_key    = var.laravel_internal_key
   jwt_secret              = var.jwt_secret
   session_secret          = var.session_secret

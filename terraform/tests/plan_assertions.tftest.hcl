@@ -14,6 +14,14 @@
 # The root module wires three region-aliased providers (main.tf: mumbai,
 # frankfurt, singapore) plus the default — every one must be mocked or the
 # plan reaches out to real AWS for credentials.
+#
+# cloudflare_dns_record.validation is a SINGLE resource (the apex and its
+# wildcard SAN share one identical ACM validation CNAME — two would 81057 at
+# apply) with no for_each, so nothing here depends on the Computed
+# domain_validation_options being known at plan time and no mock_resource
+# default is needed. (A for_each keyed on that attribute cannot plan offline:
+# mock providers don't replicate the real AWS provider's plan-time
+# partial-known behavior for it. Confirmed: hashicorp/terraform#35851.)
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = {
@@ -80,10 +88,21 @@ mock_provider "aws" {
   }
 }
 
+# CAA precondition is exercised entirely via var.caa_records_override (see
+# modules/ssl/variables.tf) — the cloudflare_dns_records data source's
+# nested result schema cannot be mocked offline, so it's skipped here
+# (count = 0) by leaving caa_records_override non-null below.
+mock_provider "cloudflare" {}
+
 variables {
-  project_name = "flylive-audio"
-  environment  = "production"
-  audio_domain = "audio.flyliveapp.com"
+  project_name       = "flylive-audio"
+  environment        = "production"
+  audio_domain       = "audio.flyliveapp.com"
+  cloudflare_zone_id = "mock-zone-id"
+
+  # Test seam (modules/ssl/variables.tf) — empty = no CAA records = the ssl
+  # module's CAA precondition passes. Skips the unmockable data source.
+  caa_records_override = []
 
   # ssh_public_key_path defaults to ~/.ssh/id_ed25519.pub, which won't exist in
   # CI — modules/autoscaling/main.tf:41 reads it via file() at plan time
@@ -95,6 +114,7 @@ variables {
   redis_auth_token     = "test-redis-auth-token-0123456789ab"
   laravel_internal_key = "test-internal-key-0123456789abcdef"
   jwt_secret            = "test-jwt-secret-0123456789abcdef"
+  cloudflare_api_token  = "test-cloudflare-api-token-0123456789ab"
 }
 
 # -----------------------------------------------------------------------------
@@ -139,6 +159,7 @@ run "asg_is_fixed_size_when_variables_set_equal" {
     target_group_arn       = "arn:aws:elasticloadbalancing:ap-south-1:111111111111:targetgroup/mock/abc"
     ecr_repo_url           = "111111111111.dkr.ecr.ap-south-1.amazonaws.com/flylive-audio/msab"
     redis_host             = "mock-redis"
+    redis_cache_host       = "mock-redis-cache"
     laravel_internal_key   = "test-internal-key-0123456789abcdef"
     jwt_secret             = "test-jwt-secret-0123456789abcdef"
     audio_domain           = "audio.flyliveapp.com"

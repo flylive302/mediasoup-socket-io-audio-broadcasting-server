@@ -8,6 +8,19 @@ output "nlb_arn" {
   value = module.loadbalancer.nlb_arn
 }
 
+output "redis_durable_host" {
+  value = module.redis_durable.redis_host
+}
+
+# Plan-known store configs for the offline test suite (aws-platform-build/21).
+output "redis_durable_config" {
+  value = module.redis_durable.store_config
+}
+
+output "redis_cache_config" {
+  value = module.redis.store_config
+}
+
 output "redis_host" {
   value = module.redis.redis_host
 }

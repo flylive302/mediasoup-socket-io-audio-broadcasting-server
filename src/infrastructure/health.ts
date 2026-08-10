@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { getRedisClient } from "./redis.js";
+import { getRedisClient, getCacheRedisClient } from "./redis.js";
 import type { WorkerManager } from "./worker.manager.js";
 import { isDraining } from "./drain.js";
 
@@ -23,16 +23,23 @@ export const createHealthRoutes = (
       }
 
       const redis = getRedisClient();
-      // AUDIT-012 FIX: actual PING probe with timeout instead of trusting status property
+      const redisCache = getCacheRedisClient();
+      // AUDIT-012 FIX: actual PING probe with timeout instead of trusting
+      // status property. Both stores must answer (they are the same client
+      // when no separate cache store is configured).
       let redisOk = false;
       try {
-        const pingResult = await Promise.race([
-          redis.ping(),
+        const pings =
+          redisCache === redis
+            ? [redis.ping()]
+            : [redis.ping(), redisCache.ping()];
+        const pingResults = await Promise.race([
+          Promise.all(pings),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("Redis ping timeout")), 2_000),
           ),
         ]);
-        redisOk = pingResult === "PONG";
+        redisOk = pingResults.every((r) => r === "PONG");
       } catch {
         // Redis unreachable or timed out
       }

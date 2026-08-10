@@ -12,7 +12,7 @@ terraform {
 
 # --- Subnet Group ---
 resource "aws_elasticache_subnet_group" "main" {
-  name       = "${var.project_name}-redis-subnet"
+  name       = "${var.project_name}-redis${var.name_suffix}-subnet"
   subnet_ids = var.private_subnet_ids
 
   tags = {
@@ -23,11 +23,11 @@ resource "aws_elasticache_subnet_group" "main" {
 # --- Parameter Group ---
 resource "aws_elasticache_parameter_group" "main" {
   family = "redis7"
-  name   = "${var.project_name}-redis-params"
+  name   = "${var.project_name}-redis${var.name_suffix}-params"
 
   parameter {
     name  = "maxmemory-policy"
-    value = "allkeys-lru"
+    value = var.maxmemory_policy
   }
 
   tags = {
@@ -37,8 +37,8 @@ resource "aws_elasticache_parameter_group" "main" {
 
 # --- ElastiCache Replication Group (Multi-AZ, TLS, AUTH) ---
 resource "aws_elasticache_replication_group" "main" {
-  replication_group_id = "${var.project_name}-redis"
-  description          = "${var.project_name} Redis - Multi-AZ with TLS and AUTH"
+  replication_group_id = "${var.project_name}-redis${var.name_suffix}"
+  description          = "${var.project_name} Redis${var.name_suffix} - Multi-AZ with TLS and AUTH"
 
   engine               = "redis"
   engine_version       = "7.1"
@@ -58,11 +58,24 @@ resource "aws_elasticache_replication_group" "main" {
   at_rest_encryption_enabled = true
   auth_token                 = var.redis_auth_token
 
+  # Durability (aws-platform-build/21): 0/null on the cache store; the durable
+  # store sets both explicitly — its snapshots are the only backup of the
+  # in-flight money queue.
+  snapshot_retention_limit = var.snapshot_retention_limit
+  snapshot_window          = var.snapshot_window
+
   # Maintenance
   apply_immediately = true
 
+  lifecycle {
+    precondition {
+      condition     = var.snapshot_retention_limit == 0 || var.snapshot_window != null
+      error_message = "snapshot_window must be set explicitly when snapshots are enabled (snapshot_retention_limit > 0)."
+    }
+  }
+
   tags = {
-    Name    = "${var.project_name}-redis"
+    Name    = "${var.project_name}-redis${var.name_suffix}"
     Project = var.project_name
   }
 }

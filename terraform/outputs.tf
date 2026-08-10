@@ -21,6 +21,10 @@ output "nlb_dns_singapore" {
 }
 
 # --- Redis (per region) ---
+output "redis_durable_host_mumbai" {
+  value = one(module.region_mumbai[*].redis_durable_host)
+}
+
 output "redis_host_mumbai" {
   value = one(module.region_mumbai[*].redis_host)
 }
@@ -54,10 +58,11 @@ output "sns_topic_arn" {
 }
 
 # --- ACM Certificate Validation Records ---
-# Run `terraform output acm_validation_mumbai` DURING apply to get the exact
-# CNAME records to add in Cloudflare (required for the cert to issue).
+# The ssl module now creates these CNAMEs in Cloudflare automatically
+# (cloudflare_dns_record.validation, proxied = false) — no operator hand-edit
+# needed. Outputs kept for visibility/debugging only.
 output "acm_validation_mumbai" {
-  description = "ACM DNS validation records for Mumbai cert — add these CNAMEs in Cloudflare (DNS only, not proxied)"
+  description = "ACM DNS validation records for Mumbai cert — created automatically in Cloudflare (DNS only, not proxied); shown here for visibility"
   value       = one(module.region_mumbai[*].acm_validation_records)
 }
 
