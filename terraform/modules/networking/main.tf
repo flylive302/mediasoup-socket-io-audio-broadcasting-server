@@ -16,7 +16,9 @@ data "aws_availability_zones" "available" {
 
 # --- VPC ---
 resource "aws_vpc" "main" {
-  cidr_block           = "10.10.0.0/16"
+  # CIDR comes from the ticket-11 allocation table — non-overlapping per
+  # region+environment so future peering/transit never needs renumbering.
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
 
@@ -40,7 +42,7 @@ resource "aws_internet_gateway" "main" {
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.10.${count.index + 1}.0/24"
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index + 1)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
@@ -54,7 +56,7 @@ resource "aws_subnet" "public" {
 resource "aws_subnet" "private" {
   count             = 2
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.10.${count.index + 10}.0/24"
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
@@ -101,22 +103,43 @@ resource "aws_security_group" "msab" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # WebRTC UDP (includes SFU cascade ports 40000–49999 — cross-region traffic comes from public IPs)
+  # WebRTC — deliberately NARROW (ticket 11). The app binds one shared port per
+  # mediasoup worker (WebRtcServer: rtc_min_port + worker index, same number on
+  # UDP and TCP); it does NOT allocate a port per user. 64 ports covers a
+  # 32-vCPU instance with headroom. The app crashes loudly if WebRtcServer
+  # creation ever fails (worker.manager.ts) so the old silent per-transport
+  # fallback can never bind ports this firewall blocks.
   ingress {
-    description = "WebRTC UDP + SFU cascade"
+    description = "WebRTC UDP (one shared port per worker)"
     from_port   = var.rtc_min_port
     to_port     = var.rtc_max_port
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # WebRTC TCP fallback
   ingress {
-    description = "WebRTC TCP"
+    description = "WebRTC TCP fallback (same per-worker ports)"
     from_port   = var.rtc_min_port
     to_port     = var.rtc_max_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # SFU cascade relay (plainTransport 40000-49999, UDP only). NOT dormant at
+  # single-region: cascade also pipes audio between two instances in the SAME
+  # region when a room spans them (cross-region-join.ts "same-region edge"),
+  # and it announces instance PUBLIC IPs — traffic hairpins through the IGW and
+  # arrives internet-sourced, so a security-group source reference cannot match.
+  # Gated: close via cascade_ports_open=false once affinity replaces cascade.
+  dynamic "ingress" {
+    for_each = var.cascade_ports_open ? [1] : []
+    content {
+      description = "SFU cascade relay UDP (instance public IPs; see cascade_ports_open)"
+      from_port   = var.cascade_relay_min_port
+      to_port     = var.cascade_relay_max_port
+      protocol    = "udp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
 
   # All outbound

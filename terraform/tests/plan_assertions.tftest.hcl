@@ -189,15 +189,14 @@ run "loadbalancer_stickiness_is_disabled" {
 }
 
 # -----------------------------------------------------------------------------
-# Mediasoup RTC port range is consistent between root variables and every
-# region's networking + autoscaling module (terraform/variables.tf
-# rtc_min_port=10000 / rtc_max_port=59999, passed unchanged into
-# module.networking_* — main.tf:103-104,149-150,199-200 — and
-# module.autoscaling_* — main.tf:385-386,443-444,500-501). Asserted via the
-# root variables (the single source both module families consume) rather than
-# re-deriving from rendered security-group/launch-template internals.
+# Mediasoup RTC port range (ticket 11): deliberately NARROW — 10000-10063,
+# 64 ports. The app binds one shared UDP+TCP port per worker (WebRtcServer,
+# worker.manager.ts: rtc_min_port + index); 64 covers a 32-vCPU instance with
+# headroom. The old 50,000-port opening (max 59999) was never used and must
+# not come back. Root variables are the single source consumed by both the
+# networking (firewall) and autoscaling (app env) modules.
 # -----------------------------------------------------------------------------
-run "rtc_port_range_consistent_across_modules" {
+run "rtc_port_range_is_narrow" {
   command = plan
 
   assert {
@@ -206,13 +205,106 @@ run "rtc_port_range_consistent_across_modules" {
   }
 
   assert {
-    condition     = var.rtc_max_port == 59999
-    error_message = "rtc_max_port must default to 59999 (shared by networking + autoscaling modules in every region)"
+    condition     = var.rtc_max_port == 10063
+    error_message = "rtc_max_port must default to 10063 — 64 per-worker WebRtcServer ports (ticket 11); the 50,000-port opening must not return"
   }
 
   assert {
     condition     = var.rtc_min_port < var.rtc_max_port
     error_message = "rtc_min_port must be less than rtc_max_port"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Regions: Mumbai-only at launch (operator decision 2026-08-10, epic
+# 00-INPUTS.md §10). enabled_regions defaults to exactly ["mumbai"];
+# Frankfurt/Singapore exist in code but render zero resources.
+# -----------------------------------------------------------------------------
+run "enabled_regions_default_is_mumbai_only" {
+  command = plan
+
+  assert {
+    condition     = var.enabled_regions == toset(["mumbai"])
+    error_message = "enabled_regions must default to exactly [\"mumbai\"] (Mumbai-only launch)"
+  }
+}
+
+run "enabled_regions_rejects_set_without_mumbai" {
+  command = plan
+
+  variables {
+    enabled_regions = ["frankfurt"]
+  }
+
+  expect_failures = [
+    var.enabled_regions,
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# Networking security group (ticket 11): only three ingress openings — the app
+# port, the narrow WebRTC per-worker range (UDP+TCP), and the cascade relay
+# UDP range (which is NOT dormant at single region: cascade pipes audio
+# between two same-region instances via their PUBLIC IPs, so it needs an
+# internet-facing rule while cascade is enabled). With cascade_ports_open =
+# false the relay rule disappears entirely.
+# -----------------------------------------------------------------------------
+run "networking_opens_only_deliberate_ports" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    project_name       = "flylive-audio"
+    vpc_cidr           = "10.20.0.0/16"
+    app_port           = 3030
+    rtc_min_port       = 10000
+    rtc_max_port       = 10063
+    cascade_ports_open = true
+  }
+
+  assert {
+    condition     = alltrue([for i in aws_security_group.msab.ingress : contains([3030, 10000, 40000], i.from_port)])
+    error_message = "MSAB security group must only open the app port, the narrow WebRTC range, and the cascade relay range"
+  }
+
+  assert {
+    condition     = anytrue([for i in aws_security_group.msab.ingress : i.from_port == 40000 && i.to_port == 49999 && i.protocol == "udp"])
+    error_message = "Cascade relay UDP 40000-49999 must be open while cascade_ports_open=true (same-region instance-to-instance audio uses public IPs)"
+  }
+
+  assert {
+    condition     = !anytrue([for i in aws_security_group.msab.ingress : i.to_port > 10063 && i.protocol == "tcp"])
+    error_message = "No TCP ingress may extend beyond the narrow WebRTC range (the old 50,000-port TCP opening must not return)"
+  }
+
+  assert {
+    condition     = aws_subnet.public[0].cidr_block == "10.20.1.0/24"
+    error_message = "Subnets must derive from var.vpc_cidr via cidrsubnet, not a hardcoded 10.10.x block"
+  }
+}
+
+run "networking_cascade_rule_absent_when_closed" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    project_name       = "flylive-audio"
+    vpc_cidr           = "10.20.0.0/16"
+    app_port           = 3030
+    rtc_min_port       = 10000
+    rtc_max_port       = 10063
+    cascade_ports_open = false
+  }
+
+  assert {
+    condition     = !anytrue([for i in aws_security_group.msab.ingress : i.from_port == 40000])
+    error_message = "cascade_ports_open=false must remove the relay ingress rule entirely"
   }
 }
 

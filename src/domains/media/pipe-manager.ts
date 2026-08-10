@@ -4,7 +4,11 @@
  * Manages the creation and teardown of mediasoup plainTransports
  * used to relay audio between origin and edge instances.
  *
- * Port range: 40000–49999 (distinct from WebRTC range 10000–59999)
+ * Port range: 40000–49999. NOTE: this is NOT beside the historical WebRTC
+ * range (10000–59999) — it sits NESTED INSIDE it. The two only became
+ * disjoint when the AWS firewall narrowed the WebRTC opening to the
+ * per-worker WebRtcServer ports (rtc_min_port + worker index); the relay
+ * range needs its own UDP firewall rule (see terraform/modules/networking).
  */
 import * as mediasoup from "mediasoup";
 import type { Logger } from "@src/infrastructure/logger.js";

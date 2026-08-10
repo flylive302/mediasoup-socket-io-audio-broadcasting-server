@@ -113,9 +113,49 @@ variable "rtc_min_port" {
 }
 
 variable "rtc_max_port" {
-  description = "Maximum WebRTC UDP port"
+  description = <<-EOT
+    Last WebRTC port (ticket 11). The app binds ONE shared UDP+TCP port per
+    mediasoup worker (WebRtcServer: rtc_min_port + worker index) — not one per
+    user — so 64 ports covers a 32-vCPU instance with headroom. Was 59999
+    (50,000 ports) on Vultr; that width was never used. The app crashes loudly
+    if the shared-port mode fails, so the firewalled per-transport fallback can
+    never engage silently (worker.manager.ts).
+  EOT
   type        = number
-  default     = 59999
+  default     = 10063
+}
+
+variable "enabled_regions" {
+  description = <<-EOT
+    Regions that actually render resources (ticket 11, operator decision
+    2026-08-10): Mumbai-only at launch; Frankfurt/Singapore stay defined in
+    code but OFF until deliberately enabled. Must include "mumbai" — it hosts
+    the global resources' home region (state, ECR, SNS).
+  EOT
+  type        = set(string)
+  default     = ["mumbai"]
+
+  validation {
+    condition     = alltrue([for r in var.enabled_regions : contains(["mumbai", "frankfurt", "singapore"], r)]) && contains(var.enabled_regions, "mumbai")
+    error_message = "enabled_regions must be a subset of {mumbai, frankfurt, singapore} and must include mumbai."
+  }
+}
+
+variable "cascade_enabled" {
+  description = "Enable the SFU cascade relay in the MSAB app (CASCADE_ENABLED). Cascade pipes audio between instances when a room spans them — required until room affinity (affinity epic) is attested live."
+  type        = bool
+  default     = true
+}
+
+variable "cascade_ports_open" {
+  description = "Open UDP 40000-49999 (cascade plainTransport range) to the internet. Must stay true while cascade_enabled=true: cascade uses instance PUBLIC IPs even between two instances in the same region. Close only when cascade is retired."
+  type        = bool
+  default     = true
+
+  validation {
+    condition     = var.cascade_ports_open || !var.cascade_enabled
+    error_message = "cascade_enabled=true requires cascade_ports_open=true — cascade audio between instances (same region included) arrives on UDP 40000-49999 from public IPs; closing the ports while cascade is on silently breaks multi-instance rooms."
+  }
 }
 
 variable "audio_domain" {

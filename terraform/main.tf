@@ -1,7 +1,11 @@
 # =============================================================================
 # FlyLive Audio Server — Terraform Root Configuration
 # =============================================================================
-# Phase 2: Multi-region deployment (Mumbai, Frankfurt; Singapore ap-southeast-1 planned 3rd region)
+# Multi-region-capable, single-region-deployed (ticket 11): all three regions
+# are defined in code, but only var.enabled_regions (default ["mumbai"]) render
+# resources. Everything one region needs lives in modules/region — the three
+# stanzas below exist only because Terraform cannot for_each over provider
+# aliases; each is a thin gate, not a copy of the region.
 # =============================================================================
 
 terraform {
@@ -33,7 +37,37 @@ terraform {
 }
 
 # =============================================================================
-# Provider Aliases — one per region
+# Region metadata + CIDR allocation (ticket 11 — one-way once applied)
+# =============================================================================
+# Full allocation table: docs/issues/aws-platform-build/11-CIDR-ALLOCATION.md.
+# Non-overlapping per region AND per environment so peering/transit routing
+# never needs renumbering. 10.10.0.0/16 (old Vultr/legacy value) is retired.
+# Second-region headroom: 10.23-10.29 (prod) / 10.123-10.129 (staging) reserved.
+
+locals {
+  regions = {
+    mumbai    = { aws_region = "ap-south-1" }
+    frankfurt = { aws_region = "eu-central-1" }
+    singapore = { aws_region = "ap-southeast-1" }
+  }
+
+  vpc_cidrs = {
+    production = {
+      mumbai    = "10.20.0.0/16"
+      frankfurt = "10.21.0.0/16"
+      singapore = "10.22.0.0/16"
+    }
+    staging = {
+      mumbai    = "10.120.0.0/16"
+      frankfurt = "10.121.0.0/16"
+      singapore = "10.122.0.0/16"
+    }
+  }
+
+}
+
+# =============================================================================
+# Provider Aliases — one per region (must be static; cannot be iterated)
 # =============================================================================
 
 provider "aws" {
@@ -49,7 +83,6 @@ provider "aws" {
     }
   }
 }
-
 
 provider "aws" {
   alias  = "frankfurt"
@@ -79,7 +112,7 @@ provider "aws" {
   }
 }
 
-# Default provider (Mumbai) — used by global resources like SNS
+# Default provider (Mumbai) — used by global resources (ECR, SNS, IAM)
 provider "aws" {
   region = "ap-south-1"
 
@@ -93,164 +126,161 @@ provider "aws" {
 }
 
 # =============================================================================
-# Region: Mumbai (ap-south-1) — existing infrastructure
+# Regions — thin gated stanzas over modules/region (see header)
 # =============================================================================
 
-module "networking_mumbai" {
-  source    = "./modules/networking"
+module "region_mumbai" {
+  source    = "./modules/region"
   providers = { aws = aws.mumbai }
+  count     = contains(var.enabled_regions, "mumbai") ? 1 : 0
 
-  project_name = var.project_name
-  app_port     = var.app_port
-  rtc_min_port = var.rtc_min_port
-  rtc_max_port = var.rtc_max_port
+  region_name           = "mumbai"
+  aws_region            = local.regions.mumbai.aws_region
+  vpc_cidr              = local.vpc_cidrs[var.environment].mumbai
+  instance_profile_name = module.iam.instance_profile_name
+  ecr_repo_url          = module.ecr.repository_url
+
+  project_name                  = var.project_name
+  environment                   = var.environment
+  app_port                      = var.app_port
+  rtc_min_port                  = var.rtc_min_port
+  rtc_max_port                  = var.rtc_max_port
+  cascade_ports_open            = var.cascade_ports_open
+  cascade_enabled               = var.cascade_enabled
+  redis_node_type               = var.redis_node_type
+  redis_auth_token              = var.redis_auth_token
+  audio_domain                  = var.audio_domain
+  instance_type                 = var.instance_type
+  instance_architecture         = var.instance_architecture
+  ssh_public_key_path           = var.ssh_public_key_path
+  laravel_internal_key          = var.laravel_internal_key
+  jwt_secret                    = var.jwt_secret
+  session_secret                = var.session_secret
+  cloudflare_turn_api_key       = var.cloudflare_turn_api_key
+  cloudflare_turn_key_id        = var.cloudflare_turn_key_id
+  cors_origins                  = var.cors_origins
+  laravel_api_url               = var.laravel_api_url
+  jwt_max_age_seconds           = var.jwt_max_age_seconds
+  laravel_api_timeout_ms        = var.laravel_api_timeout_ms
+  ice_stun_urls                 = var.ice_stun_urls
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+  broadcast_hls_enabled         = var.broadcast_hls_enabled
+  hls_r2_endpoint               = var.hls_r2_endpoint
+  hls_r2_bucket                 = var.hls_r2_bucket
+  hls_public_base_url           = var.hls_public_base_url
+  hls_r2_access_key_id          = var.hls_r2_access_key_id
+  hls_r2_secret_access_key      = var.hls_r2_secret_access_key
+  min_instances                 = var.min_instances
+  desired_instances             = var.desired_instances
+  max_instances                 = var.max_instances
 }
 
-module "redis_mumbai" {
-  source    = "./modules/redis"
-  providers = { aws = aws.mumbai }
-
-  project_name            = var.project_name
-  redis_node_type         = var.redis_node_type
-  private_subnet_ids      = module.networking_mumbai.private_subnet_ids
-  redis_security_group_id = module.networking_mumbai.redis_security_group_id
-  redis_auth_token        = var.redis_auth_token
-}
-
-module "ssl_mumbai" {
-  source    = "./modules/ssl"
-  providers = { aws = aws.mumbai }
-
-  project_name = var.project_name
-  audio_domain = var.audio_domain
-}
-
-module "loadbalancer_mumbai" {
-  source    = "./modules/loadbalancer"
-  providers = { aws = aws.mumbai }
-
-  project_name      = var.project_name
-  vpc_id            = module.networking_mumbai.vpc_id
-  public_subnet_ids = module.networking_mumbai.public_subnet_ids
-  app_port          = var.app_port
-  certificate_arn   = module.ssl_mumbai.certificate_arn
-  # instance_id omitted — ASG manages target group registration
-}
-
-
-# =============================================================================
-# Region: Frankfurt (eu-central-1)
-# =============================================================================
-
-module "networking_frankfurt" {
-  source    = "./modules/networking"
+module "region_frankfurt" {
+  source    = "./modules/region"
   providers = { aws = aws.frankfurt }
+  count     = contains(var.enabled_regions, "frankfurt") ? 1 : 0
 
-  project_name = var.project_name
-  app_port     = var.app_port
-  rtc_min_port = var.rtc_min_port
-  rtc_max_port = var.rtc_max_port
+  region_name           = "frankfurt"
+  aws_region            = local.regions.frankfurt.aws_region
+  vpc_cidr              = local.vpc_cidrs[var.environment].frankfurt
+  instance_profile_name = module.iam.instance_profile_name
+  ecr_repo_url          = module.ecr.repository_url
+
+  project_name                  = var.project_name
+  environment                   = var.environment
+  app_port                      = var.app_port
+  rtc_min_port                  = var.rtc_min_port
+  rtc_max_port                  = var.rtc_max_port
+  cascade_ports_open            = var.cascade_ports_open
+  cascade_enabled               = var.cascade_enabled
+  redis_node_type               = var.redis_node_type
+  redis_auth_token              = var.redis_auth_token
+  audio_domain                  = var.audio_domain
+  instance_type                 = var.instance_type
+  instance_architecture         = var.instance_architecture
+  ssh_public_key_path           = var.ssh_public_key_path
+  laravel_internal_key          = var.laravel_internal_key
+  jwt_secret                    = var.jwt_secret
+  session_secret                = var.session_secret
+  cloudflare_turn_api_key       = var.cloudflare_turn_api_key
+  cloudflare_turn_key_id        = var.cloudflare_turn_key_id
+  cors_origins                  = var.cors_origins
+  laravel_api_url               = var.laravel_api_url
+  jwt_max_age_seconds           = var.jwt_max_age_seconds
+  laravel_api_timeout_ms        = var.laravel_api_timeout_ms
+  ice_stun_urls                 = var.ice_stun_urls
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+  broadcast_hls_enabled         = var.broadcast_hls_enabled
+  hls_r2_endpoint               = var.hls_r2_endpoint
+  hls_r2_bucket                 = var.hls_r2_bucket
+  hls_public_base_url           = var.hls_public_base_url
+  hls_r2_access_key_id          = var.hls_r2_access_key_id
+  hls_r2_secret_access_key      = var.hls_r2_secret_access_key
+  min_instances                 = var.min_instances
+  desired_instances             = var.desired_instances
+  max_instances                 = var.max_instances
 }
 
-module "redis_frankfurt" {
-  source    = "./modules/redis"
-  providers = { aws = aws.frankfurt }
-
-  project_name            = var.project_name
-  redis_node_type         = var.redis_node_type
-  private_subnet_ids      = module.networking_frankfurt.private_subnet_ids
-  redis_security_group_id = module.networking_frankfurt.redis_security_group_id
-  redis_auth_token        = var.redis_auth_token
-}
-
-module "ssl_frankfurt" {
-  source    = "./modules/ssl"
-  providers = { aws = aws.frankfurt }
-
-  project_name = var.project_name
-  audio_domain = var.audio_domain
-}
-
-module "loadbalancer_frankfurt" {
-  source    = "./modules/loadbalancer"
-  providers = { aws = aws.frankfurt }
-
-  project_name      = var.project_name
-  vpc_id            = module.networking_frankfurt.vpc_id
-  public_subnet_ids = module.networking_frankfurt.public_subnet_ids
-  app_port          = var.app_port
-  certificate_arn   = module.ssl_frankfurt.certificate_arn
-  # instance_id omitted — ASG manages target group registration
-}
-
-# =============================================================================
-# Region: Singapore (ap-southeast-1) — realtime-07, 3rd region
-# =============================================================================
-# Replaces the originally-planned UAE (me-south-1), which the AWS account cannot
-# enable. Mirrors the Mumbai/Frankfurt modules exactly; activated in
-# backend/config/realtime.php ONLY after the CNAME resolves and instances pass
-# health (see realtime-07 runbook).
-# =============================================================================
-
-module "networking_singapore" {
-  source    = "./modules/networking"
+module "region_singapore" {
+  source    = "./modules/region"
   providers = { aws = aws.singapore }
+  count     = contains(var.enabled_regions, "singapore") ? 1 : 0
 
-  project_name = var.project_name
-  app_port     = var.app_port
-  rtc_min_port = var.rtc_min_port
-  rtc_max_port = var.rtc_max_port
-}
+  region_name           = "singapore"
+  aws_region            = local.regions.singapore.aws_region
+  vpc_cidr              = local.vpc_cidrs[var.environment].singapore
+  instance_profile_name = module.iam.instance_profile_name
+  ecr_repo_url          = module.ecr.repository_url
 
-module "redis_singapore" {
-  source    = "./modules/redis"
-  providers = { aws = aws.singapore }
-
-  project_name            = var.project_name
-  redis_node_type         = var.redis_node_type
-  private_subnet_ids      = module.networking_singapore.private_subnet_ids
-  redis_security_group_id = module.networking_singapore.redis_security_group_id
-  redis_auth_token        = var.redis_auth_token
-}
-
-module "ssl_singapore" {
-  source    = "./modules/ssl"
-  providers = { aws = aws.singapore }
-
-  project_name = var.project_name
-  audio_domain = var.audio_domain
-}
-
-module "loadbalancer_singapore" {
-  source    = "./modules/loadbalancer"
-  providers = { aws = aws.singapore }
-
-  project_name      = var.project_name
-  vpc_id            = module.networking_singapore.vpc_id
-  public_subnet_ids = module.networking_singapore.public_subnet_ids
-  app_port          = var.app_port
-  certificate_arn   = module.ssl_singapore.certificate_arn
-  # instance_id omitted — ASG manages target group registration
-}
-
-# =============================================================================
-# Global: AWS Global Accelerator
-# =============================================================================
-
-module "global_accelerator" {
-  source = "./modules/global-accelerator"
-
-  project_name = var.project_name
-
-  regional_endpoints = {
-    "ap-south-1"     = { nlb_arn = module.loadbalancer_mumbai.nlb_arn }
-    "eu-central-1"   = { nlb_arn = module.loadbalancer_frankfurt.nlb_arn }
-    "ap-southeast-1" = { nlb_arn = module.loadbalancer_singapore.nlb_arn }
-  }
+  project_name                  = var.project_name
+  environment                   = var.environment
+  app_port                      = var.app_port
+  rtc_min_port                  = var.rtc_min_port
+  rtc_max_port                  = var.rtc_max_port
+  cascade_ports_open            = var.cascade_ports_open
+  cascade_enabled               = var.cascade_enabled
+  redis_node_type               = var.redis_node_type
+  redis_auth_token              = var.redis_auth_token
+  audio_domain                  = var.audio_domain
+  instance_type                 = var.instance_type
+  instance_architecture         = var.instance_architecture
+  ssh_public_key_path           = var.ssh_public_key_path
+  laravel_internal_key          = var.laravel_internal_key
+  jwt_secret                    = var.jwt_secret
+  session_secret                = var.session_secret
+  cloudflare_turn_api_key       = var.cloudflare_turn_api_key
+  cloudflare_turn_key_id        = var.cloudflare_turn_key_id
+  cors_origins                  = var.cors_origins
+  laravel_api_url               = var.laravel_api_url
+  jwt_max_age_seconds           = var.jwt_max_age_seconds
+  laravel_api_timeout_ms        = var.laravel_api_timeout_ms
+  ice_stun_urls                 = var.ice_stun_urls
+  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+  room_broadcast_threshold_down = var.room_broadcast_threshold_down
+  broadcast_hls_enabled         = var.broadcast_hls_enabled
+  hls_r2_endpoint               = var.hls_r2_endpoint
+  hls_r2_bucket                 = var.hls_r2_bucket
+  hls_public_base_url           = var.hls_public_base_url
+  hls_r2_access_key_id          = var.hls_r2_access_key_id
+  hls_r2_secret_access_key      = var.hls_r2_secret_access_key
+  min_instances                 = var.min_instances
+  desired_instances             = var.desired_instances
+  max_instances                 = var.max_instances
 }
 
 # =============================================================================
-# Global: ECR Container Registry (one repo, all regions pull from it)
+# Global Accelerator — DROPPED (ticket 11 verdict, operator-approved 2026-08-10)
+# =============================================================================
+# Single-region launch: GA's nearest-region routing has nothing to route, it
+# costs ~$18/mo + per-GB, and it forced the stickiness-disabled constraint
+# (TIER0 F-85). Clients reach the Mumbai NLB directly via DNS. Re-evaluate only
+# when a second region actually turns on (modules/global-accelerator removed;
+# recover from git history if ever needed).
+
+# =============================================================================
+# Global: ECR Container Registry (one repo, enabled regions pull from it)
 # =============================================================================
 
 module "ecr" {
@@ -258,16 +288,18 @@ module "ecr" {
 
   project_name = var.project_name
 
-  # realtime-06: replicate pushed images into every consuming region so each
-  # region's instances pull from a LOCAL registry (no cross-region pull from Mumbai).
-  # realtime-07: Singapore (ap-southeast-1) added as the 3rd consuming region.
-  # NOTE: replication only copies images pushed AFTER the rule exists — Singapore's
-  # replica is empty until the next build-and-push, so sequence a deploy after apply.
-  replication_destination_regions = ["eu-central-1", "ap-southeast-1"]
+  # Replicate pushed images into every ENABLED consuming region so instances
+  # pull from a LOCAL registry. Mumbai is the home registry — excluded.
+  # NOTE: replication only copies images pushed AFTER the rule exists — a newly
+  # enabled region's replica is empty until the next build-and-push.
+  replication_destination_regions = [
+    for name, meta in local.regions : meta.aws_region
+    if contains(var.enabled_regions, name) && name != "mumbai"
+  ]
 }
 
 # =============================================================================
-# Global: SNS Event Bus (stays in Mumbai, fans out to all regions)
+# Global: SNS Event Bus (stays in Mumbai, fans out to enabled regions)
 # =============================================================================
 
 data "aws_caller_identity" "current" {}
@@ -279,22 +311,18 @@ module "sns" {
   aws_account_id       = data.aws_caller_identity.current.account_id
   laravel_internal_key = var.laravel_internal_key
 
-  # Fan-out to BOTH regional MSAB endpoints via custom domains (not raw NLB DNS names).
-  # SNS verifies TLS certificates — the ACM cert covers *.${audio_domain} but NOT
-  # the raw NLB hostnames (*.elb.amazonaws.com). Using raw NLB URLs causes
-  # SubscriptionConfirmation to fail permanently (SNS rejects the TLS handshake).
-  # GA would route to nearest region only — we need ALL regions to receive every event.
-  # Map keys are static region names so for_each is resolvable at plan time.
-  # Derived from var.audio_domain so staging (audio.staging.flyliveapp.com) works unchanged.
+  # Fan-out to every ENABLED region's MSAB endpoint via custom domains (not raw
+  # NLB DNS names — SNS verifies TLS and the ACM cert only covers
+  # *.${audio_domain}). Keys are static region names so for_each resolves at
+  # plan time. Derived from var.audio_domain so staging works unchanged.
   msab_endpoint_urls = {
-    mumbai    = "https://mumbai.${var.audio_domain}/api/events"
-    frankfurt = "https://frankfurt.${var.audio_domain}/api/events"
-    singapore = "https://singapore.${var.audio_domain}/api/events"
+    for name in var.enabled_regions :
+    name => "https://${name}.${var.audio_domain}/api/events"
   }
 }
 
 # =============================================================================
-# Phase 3: IAM Role + Instance Profile (global — IAM is not regional)
+# IAM Role + Instance Profile (global — IAM is not regional)
 # =============================================================================
 
 module "iam" {
@@ -302,269 +330,4 @@ module "iam" {
 
   project_name       = var.project_name
   ecr_repository_arn = module.ecr.repository_arn
-}
-
-# =============================================================================
-# Secrets: SSM Parameter Store (encrypted at rest, fetched at boot via IAM)
-# =============================================================================
-
-module "ssm" {
-  source = "./modules/ssm"
-
-  project_name            = var.project_name
-  jwt_secret              = var.jwt_secret
-  laravel_internal_key    = var.laravel_internal_key
-  session_secret          = var.session_secret
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  redis_auth_token        = var.redis_auth_token
-
-  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
-  broadcast_hls_enabled    = var.broadcast_hls_enabled
-  hls_r2_access_key_id     = var.hls_r2_access_key_id
-  hls_r2_secret_access_key = var.hls_r2_secret_access_key
-}
-
-# Frankfurt SSM — replicate secrets to eu-central-1
-# Without this, Frankfurt instances boot with empty secrets (Redis AUTH fails → health 503 loop)
-module "ssm_frankfurt" {
-  source    = "./modules/ssm"
-  providers = { aws = aws.frankfurt }
-
-  project_name            = var.project_name
-  jwt_secret              = var.jwt_secret
-  laravel_internal_key    = var.laravel_internal_key
-  session_secret          = var.session_secret
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  redis_auth_token        = var.redis_auth_token
-
-  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
-  broadcast_hls_enabled    = var.broadcast_hls_enabled
-  hls_r2_access_key_id     = var.hls_r2_access_key_id
-  hls_r2_secret_access_key = var.hls_r2_secret_access_key
-}
-
-# Singapore SSM — replicate secrets to ap-southeast-1 (realtime-07)
-module "ssm_singapore" {
-  source    = "./modules/ssm"
-  providers = { aws = aws.singapore }
-
-  project_name            = var.project_name
-  jwt_secret              = var.jwt_secret
-  laravel_internal_key    = var.laravel_internal_key
-  session_secret          = var.session_secret
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  redis_auth_token        = var.redis_auth_token
-
-  # realtime-09 broadcast HLS R2 keys (only stored when enabled).
-  broadcast_hls_enabled    = var.broadcast_hls_enabled
-  hls_r2_access_key_id     = var.hls_r2_access_key_id
-  hls_r2_secret_access_key = var.hls_r2_secret_access_key
-}
-
-# =============================================================================
-# Phase 3: Auto Scaling Groups (one per region)
-# =============================================================================
-# These run ALONGSIDE existing compute modules during cutover.
-# Both old (compute) and new (ASG) instances serve traffic via the same NLB.
-# After ASG instances are healthy, the compute modules will be removed.
-# =============================================================================
-
-module "autoscaling_mumbai" {
-  source    = "./modules/autoscaling"
-  providers = { aws = aws.mumbai }
-
-  region                  = "ap-south-1"
-  project_name            = var.project_name
-  instance_type           = var.instance_type
-  instance_architecture   = var.instance_architecture
-  ssh_public_key_path     = var.ssh_public_key_path
-  instance_profile_name   = module.iam.instance_profile_name
-  msab_security_group_id  = module.networking_mumbai.msab_security_group_id
-  public_subnet_ids       = module.networking_mumbai.public_subnet_ids
-  target_group_arn        = module.loadbalancer_mumbai.target_group_arn
-  ecr_repo_url            = module.ecr.repository_url
-  app_port                = var.app_port
-  rtc_min_port            = var.rtc_min_port
-  rtc_max_port            = var.rtc_max_port
-  redis_host              = module.redis_mumbai.redis_host
-  redis_port              = module.redis_mumbai.redis_port
-  laravel_internal_key    = var.laravel_internal_key
-  jwt_secret              = var.jwt_secret
-  session_secret          = var.session_secret
-  audio_domain            = var.audio_domain
-  cors_origins            = var.cors_origins
-  laravel_api_url         = var.laravel_api_url
-  cascade_enabled         = true
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
-
-  # MSAB Application Config
-  jwt_max_age_seconds    = var.jwt_max_age_seconds
-  laravel_api_timeout_ms = var.laravel_api_timeout_ms
-  ice_stun_urls          = var.ice_stun_urls
-
-  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
-  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
-  room_broadcast_threshold_down = var.room_broadcast_threshold_down
-
-  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
-  broadcast_hls_enabled = var.broadcast_hls_enabled
-  hls_r2_endpoint       = var.hls_r2_endpoint
-  hls_r2_bucket         = var.hls_r2_bucket
-  hls_public_base_url   = var.hls_public_base_url
-
-  # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
-  # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
-  # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
-  min_instances     = var.min_instances
-  desired_instances = var.desired_instances
-  max_instances     = var.max_instances
-
-  # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix      = module.loadbalancer_mumbai.target_group_arn_suffix
-  load_balancer_arn_suffix     = module.loadbalancer_mumbai.nlb_arn_suffix
-  alarm_notification_topic_arn = module.cloudwatch_mumbai.alerts_topic_arn
-}
-
-
-module "autoscaling_frankfurt" {
-  source    = "./modules/autoscaling"
-  providers = { aws = aws.frankfurt }
-
-  region                  = "eu-central-1"
-  project_name            = var.project_name
-  instance_type           = var.instance_type
-  instance_architecture   = var.instance_architecture
-  ssh_public_key_path     = var.ssh_public_key_path
-  instance_profile_name   = module.iam.instance_profile_name
-  msab_security_group_id  = module.networking_frankfurt.msab_security_group_id
-  public_subnet_ids       = module.networking_frankfurt.public_subnet_ids
-  target_group_arn        = module.loadbalancer_frankfurt.target_group_arn
-  ecr_repo_url            = module.ecr.repository_url
-  app_port                = var.app_port
-  rtc_min_port            = var.rtc_min_port
-  rtc_max_port            = var.rtc_max_port
-  redis_host              = module.redis_frankfurt.redis_host
-  redis_port              = module.redis_frankfurt.redis_port
-  laravel_internal_key    = var.laravel_internal_key
-  jwt_secret              = var.jwt_secret
-  session_secret          = var.session_secret
-  audio_domain            = var.audio_domain
-  cors_origins            = var.cors_origins
-  laravel_api_url         = var.laravel_api_url
-  cascade_enabled         = true
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
-
-  # MSAB Application Config
-  jwt_max_age_seconds    = var.jwt_max_age_seconds
-  laravel_api_timeout_ms = var.laravel_api_timeout_ms
-  ice_stun_urls          = var.ice_stun_urls
-
-  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
-  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
-  room_broadcast_threshold_down = var.room_broadcast_threshold_down
-
-  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
-  broadcast_hls_enabled = var.broadcast_hls_enabled
-  hls_r2_endpoint       = var.hls_r2_endpoint
-  hls_r2_bucket         = var.hls_r2_bucket
-  hls_public_base_url   = var.hls_public_base_url
-
-  # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
-  # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
-  # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
-  min_instances     = var.min_instances
-  desired_instances = var.desired_instances
-  max_instances     = var.max_instances
-
-  # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix      = module.loadbalancer_frankfurt.target_group_arn_suffix
-  load_balancer_arn_suffix     = module.loadbalancer_frankfurt.nlb_arn_suffix
-  alarm_notification_topic_arn = module.cloudwatch_frankfurt.alerts_topic_arn
-}
-
-module "autoscaling_singapore" {
-  source    = "./modules/autoscaling"
-  providers = { aws = aws.singapore }
-
-  region                  = "ap-southeast-1"
-  project_name            = var.project_name
-  instance_type           = var.instance_type
-  instance_architecture   = var.instance_architecture
-  ssh_public_key_path     = var.ssh_public_key_path
-  instance_profile_name   = module.iam.instance_profile_name
-  msab_security_group_id  = module.networking_singapore.msab_security_group_id
-  public_subnet_ids       = module.networking_singapore.public_subnet_ids
-  target_group_arn        = module.loadbalancer_singapore.target_group_arn
-  ecr_repo_url            = module.ecr.repository_url
-  app_port                = var.app_port
-  rtc_min_port            = var.rtc_min_port
-  rtc_max_port            = var.rtc_max_port
-  redis_host              = module.redis_singapore.redis_host
-  redis_port              = module.redis_singapore.redis_port
-  laravel_internal_key    = var.laravel_internal_key
-  jwt_secret              = var.jwt_secret
-  session_secret          = var.session_secret
-  audio_domain            = var.audio_domain
-  cors_origins            = var.cors_origins
-  laravel_api_url         = var.laravel_api_url
-  cascade_enabled         = true
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  cloudflare_turn_key_id  = var.cloudflare_turn_key_id
-
-  # MSAB Application Config
-  jwt_max_age_seconds    = var.jwt_max_age_seconds
-  laravel_api_timeout_ms = var.laravel_api_timeout_ms
-  ice_stun_urls          = var.ice_stun_urls
-
-  # realtime-08 broadcast flip thresholds (tunable for smoke tests).
-  room_broadcast_threshold_up   = var.room_broadcast_threshold_up
-  room_broadcast_threshold_down = var.room_broadcast_threshold_down
-
-  # realtime-09 broadcast HLS tier (non-sensitive; R2 keys via SSM).
-  broadcast_hls_enabled = var.broadcast_hls_enabled
-  hls_r2_endpoint       = var.hls_r2_endpoint
-  hls_r2_bucket         = var.hls_r2_bucket
-  hls_public_base_url   = var.hls_public_base_url
-
-  # AUDIT-004 FIX: HA — default 2 instances to eliminate single point of failure.
-  # Parametrized so staging can scale to 1 (or 0) between test cycles to cut cost
-  # WITHOUT terraform destroy (which would break deploy.yml ASG discovery). Prod keeps 2.
-  min_instances     = var.min_instances
-  desired_instances = var.desired_instances
-  max_instances     = var.max_instances
-
-  # Zero Healthy Hosts alarm dimensions
-  target_group_arn_suffix      = module.loadbalancer_singapore.target_group_arn_suffix
-  load_balancer_arn_suffix     = module.loadbalancer_singapore.nlb_arn_suffix
-  alarm_notification_topic_arn = module.cloudwatch_singapore.alerts_topic_arn
-}
-
-# =============================================================================
-# Phase 3: CloudWatch Operational Alarms
-# =============================================================================
-
-module "cloudwatch_mumbai" {
-  source    = "./modules/cloudwatch"
-  providers = { aws = aws.mumbai }
-
-  project_name = var.project_name
-  aws_region   = "ap-south-1"
-}
-
-module "cloudwatch_frankfurt" {
-  source    = "./modules/cloudwatch"
-  providers = { aws = aws.frankfurt }
-
-  project_name = var.project_name
-  aws_region   = "eu-central-1"
-}
-
-module "cloudwatch_singapore" {
-  source    = "./modules/cloudwatch"
-  providers = { aws = aws.singapore }
-
-  project_name = var.project_name
-  aws_region   = "ap-southeast-1"
 }

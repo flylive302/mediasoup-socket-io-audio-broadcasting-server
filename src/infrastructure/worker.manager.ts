@@ -231,10 +231,20 @@ export class WorkerManager {
           "WebRtcServer created",
         );
       } catch (error) {
-        this.logger.warn(
+        // FATAL: the AWS security group only opens the per-worker WebRtcServer
+        // ports (rtc_min_port + worker index). Falling back to per-transport
+        // ports would bind ports the firewall blocks — clients would connect,
+        // then hear nothing. Crash loudly instead of degrading silently.
+        this.logger.fatal(
           { error, index },
-          "Failed to create WebRtcServer, falling back to per-transport ports",
+          "Failed to create WebRtcServer — per-transport port fallback is firewalled, aborting",
         );
+        Sentry.captureException(error, {
+          level: "fatal",
+          tags: { path: "worker.webRtcServerFailed" },
+          extra: { index },
+        });
+        throw error;
       }
 
       // Pin worker to a dedicated CPU core (eliminates context-switch overhead)
