@@ -45,9 +45,140 @@ const EventPayloadSchema = z.object({
  * flood the event loop — ping/pong timeouts → mass socket disconnects during
  * the burst. Over the cap we return 503 so the SNS delivery policy retries
  * with backoff instead of piling more work on.
+ *
+ * Shared across BOTH transports (HTTP route + SQS consumer, ticket 26): the
+ * cap protects the event loop, and the event loop is one.
  */
 const MAX_CONCURRENT_EVENTS = 100;
 let inFlightEvents = 0;
+
+/**
+ * Ticket 26 (seam 2): the transport-agnostic outcome of ingesting one
+ * envelope. Both the HTTP route and the queue consumer map these to their own
+ * transport semantics (HTTP status codes vs delete/keep-on-queue).
+ */
+export type IngestOutcome =
+  | { kind: "invalid"; errors: Record<string, string[] | undefined> }
+  | { kind: "capacity" }
+  | { kind: "duplicate" }
+  | { kind: "ok"; delivered: boolean; targetCount: number };
+
+/** Minimal logger shape both fastify.log and the app Logger satisfy. */
+interface IngestLogger {
+  info(obj: object, msg: string): void;
+  warn(obj: object, msg: string): void;
+}
+
+/**
+ * Ticket 26 (seam 2): the ONE envelope-handling pipeline — schema validation,
+ * concurrency shed, at-least-once dedup, correlation adoption, routing, and
+ * claim release on throw. Every transport MUST route through this function;
+ * a second ingest path would let the transports drift.
+ *
+ * Transport-specific concerns stay OUT of here: HTTP auth, SNS envelope
+ * unwrapping, and content-type parsing belong to the HTTP route; message
+ * deletion/redelivery belongs to the queue consumer.
+ */
+export async function ingestEnvelope(
+  raw: unknown,
+  deps: {
+    eventRouter: EventRouter;
+    redis?: Redis | undefined;
+    log: IngestLogger;
+    /** Secondary vendor trace header (HTTP transport only) — see route. */
+    vendorTraceId?: string | undefined;
+  },
+): Promise<IngestOutcome> {
+  const { eventRouter, redis, log, vendorTraceId } = deps;
+
+  const result = EventPayloadSchema.safeParse(raw);
+  if (!result.success) {
+    log.warn(
+      { errors: result.error.flatten().fieldErrors },
+      "Invalid event payload",
+    );
+    return { kind: "invalid", errors: result.error.flatten().fieldErrors };
+  }
+
+  const event: LaravelEvent = result.data;
+
+  // F-40: backpressure — shed load past the concurrency cap so a burst
+  // can't saturate the event loop.
+  if (inFlightEvents >= MAX_CONCURRENT_EVENTS) {
+    log.warn(
+      { inFlight: inFlightEvents, event: event.event },
+      "Event ingest at capacity — shedding",
+    );
+    return { kind: "capacity" };
+  }
+
+  // --- GATE: at-least-once deduplication ---
+  //
+  // Deliberately placed AFTER the capacity shed above. Claiming the event
+  // first would mark a shed event as seen, and the sender's retry of that
+  // very event would then be dropped at this gate — silent event loss
+  // precisely when load is highest. With the shed ahead of it, no failure
+  // path exists downstream of the claim except a routing throw, which
+  // releases it.
+  //
+  // See event-dedup.ts for why the key is not `correlation_id` alone.
+  const dedupKey = redis ? buildDedupKey(event) : null;
+  if (redis && dedupKey && !(await claimEvent(redis, dedupKey))) {
+    metrics.laravelEventsDeduplicated.inc({ event_type: event.event });
+    log.info(
+      {
+        event: event.event,
+        userId: event.user_id,
+        roomId: event.room_id,
+        correlationId: event.correlation_id,
+      },
+      "Event ingest: duplicate suppressed",
+    );
+    return { kind: "duplicate" };
+  }
+
+  log.info(
+    {
+      event: event.event,
+      userId: event.user_id,
+      roomId: event.room_id,
+      correlationId: event.correlation_id,
+    },
+    "Event ingest: routing event",
+  );
+
+  // --- Route Event ---
+  //
+  // Adopt the sender's identifier as the ambient one for the whole routing
+  // operation — a Laravel request and the socket delivery it caused appear as
+  // one trace. The schema defaults `correlation_id` to the literal "unknown"
+  // when absent, which resolveCorrelationId treats as missing and replaces
+  // with a minted id.
+  inFlightEvents++;
+  try {
+    const routingResult = await withCorrelation(event.correlation_id, () => {
+      // Secondary field on the same operation — see the HTTP route's header read.
+      if (vendorTraceId !== undefined) setVendorTraceId(vendorTraceId);
+      return eventRouter.route(event);
+    });
+
+    return {
+      kind: "ok",
+      delivered: routingResult.delivered,
+      targetCount: routingResult.targetCount,
+    };
+  } catch (err) {
+    // Hand the claim back so a retry of this envelope is allowed through.
+    // Insurance only: `route()` catches everything internally and returns a
+    // result object, so this covers a throw from outside its own try/catch.
+    // A returned `{delivered:false}` is a terminal OUTCOME (e.g. the user
+    // has no sockets), not a failure — it must keep its claim.
+    if (redis && dedupKey) await releaseClaim(redis, dedupKey);
+    throw err;
+  } finally {
+    inFlightEvents--;
+  }
+}
 
 export const createEventIngestRoutes = (
   eventRouter: EventRouter,
@@ -167,104 +298,39 @@ export const createEventIngestRoutes = (
         }
       }
 
-      const result = EventPayloadSchema.safeParse(raw);
-      if (!result.success) {
-        fastify.log.warn(
-          { errors: result.error.flatten().fieldErrors },
-          "Invalid event payload",
-        );
-        return reply.code(422).send({
-          status: "error",
-          message: "Invalid event: schema validation failed",
-          errors: result.error.flatten().fieldErrors,
-        });
-      }
+      // --- Shared pipeline (seam 2) — one core for HTTP and queue transports ---
+      const outcome = await ingestEnvelope(raw, {
+        eventRouter,
+        redis,
+        log: fastify.log,
+        vendorTraceId,
+      });
 
-      const event: LaravelEvent = result.data;
-
-      // F-40: backpressure — shed load past the concurrency cap so a burst
-      // can't saturate the event loop. SNS retries 503s with backoff.
-      if (inFlightEvents >= MAX_CONCURRENT_EVENTS) {
-        fastify.log.warn(
-          { inFlight: inFlightEvents, event: event.event },
-          "Event ingest at capacity — shedding (503)",
-        );
-        return reply.code(503).header("Retry-After", "1").send({
-          status: "error",
-          message: "Event ingest at capacity, retry",
-        });
-      }
-
-      // --- GATE: at-least-once deduplication ---
-      //
-      // Deliberately placed AFTER the 503 shed above. Claiming the event first
-      // would mark a shed event as seen, and Laravel's retry of that very event
-      // would then be dropped at this gate — silent event loss precisely when
-      // load is highest. With the shed ahead of it, no non-2xx reply exists
-      // downstream of the claim.
-      //
-      // See event-dedup.ts for why the key is not `correlation_id` alone.
-      const dedupKey = redis ? buildDedupKey(event) : null;
-      if (redis && dedupKey && !(await claimEvent(redis, dedupKey))) {
-        metrics.laravelEventsDeduplicated.inc({ event_type: event.event });
-        fastify.log.info(
-          {
-            event: event.event,
-            userId: event.user_id,
-            roomId: event.room_id,
-            correlationId: event.correlation_id,
-          },
-          "Event ingest: duplicate suppressed",
-        );
-        // 200, not 4xx: a non-2xx makes the sender retry the delivery we just
-        // suppressed, turning one duplicate into a retry loop.
-        return reply
-          .code(200)
-          .send({ status: "ok", duplicate: true, delivered: false, target_count: 0 });
-      }
-
-      fastify.log.info(
-        {
-          event: event.event,
-          userId: event.user_id,
-          roomId: event.room_id,
-          correlationId: event.correlation_id,
-        },
-        "Event ingest: routing event",
-      );
-
-      // --- Route Event ---
-      //
-      // Adopt the API's identifier as the ambient one for the whole routing operation. This is the
-      // join that makes a Laravel request and the socket delivery it caused appear as one trace:
-      // every log line written beneath this point carries the sender's id without naming it.
-      //
-      // The schema defaults `correlation_id` to the literal "unknown" when absent, which
-      // resolveCorrelationId treats as missing and replaces with a minted id — a real identifier
-      // that joins nothing beats the string "unknown" repeated across unrelated events.
-      inFlightEvents++;
-      try {
-        const routingResult = await withCorrelation(event.correlation_id, () => {
-          // Secondary field on the same operation — see the header read above for why.
-          if (vendorTraceId !== undefined) setVendorTraceId(vendorTraceId);
-          return eventRouter.route(event);
-        });
-
-        return reply.code(200).send({
-          status: "ok",
-          delivered: routingResult.delivered,
-          target_count: routingResult.targetCount,
-        });
-      } catch (err) {
-        // Hand the claim back so a retry of this envelope is allowed through.
-        // Insurance only: `route()` catches everything internally and returns a
-        // result object, so this covers a throw from outside its own try/catch.
-        // A returned `{delivered:false}` is a terminal OUTCOME (e.g. the user
-        // has no sockets), not a failure — it must keep its claim.
-        if (redis && dedupKey) await releaseClaim(redis, dedupKey);
-        throw err;
-      } finally {
-        inFlightEvents--;
+      switch (outcome.kind) {
+        case "invalid":
+          return reply.code(422).send({
+            status: "error",
+            message: "Invalid event: schema validation failed",
+            errors: outcome.errors,
+          });
+        case "capacity":
+          // 503 so the sender retries with backoff instead of piling on.
+          return reply.code(503).header("Retry-After", "1").send({
+            status: "error",
+            message: "Event ingest at capacity, retry",
+          });
+        case "duplicate":
+          // 200, not 4xx: a non-2xx makes the sender retry the delivery we
+          // just suppressed, turning one duplicate into a retry loop.
+          return reply
+            .code(200)
+            .send({ status: "ok", duplicate: true, delivered: false, target_count: 0 });
+        case "ok":
+          return reply.code(200).send({
+            status: "ok",
+            delivered: outcome.delivered,
+            target_count: outcome.targetCount,
+          });
       }
     });
   };

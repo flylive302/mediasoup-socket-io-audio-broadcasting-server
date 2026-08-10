@@ -65,7 +65,7 @@ const start = async () => {
     // Validate config and connect to Redis early
     getRedisClient();
 
-    const { server, io, subClient, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer, presenceService } =
+    const { server, io, subClient, queueConsumer, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer, presenceService } =
       await bootstrapServer();
 
     const address = await server.listen({
@@ -86,6 +86,11 @@ const start = async () => {
 
     // Start CloudWatch metrics publisher (disabled in dev)
     await startCloudWatchPublisher(roomManager, workerManager);
+
+    // Ticket 26: start the SQS event consumer (null unless EVENT_QUEUE_URL is
+    // set — inert until cutover). After listen, so the instance is reachable
+    // before it starts applying events.
+    queueConsumer?.start();
 
     // observability-audio-quality 01: republish the fleet audio-quality
     // percentiles on their own interval. Started after initializeConfig() has
@@ -128,6 +133,14 @@ const start = async () => {
       }, timeoutMs);
 
       try {
+        // 0. Ticket 26: stop pulling queue messages FIRST — polling stops,
+        // the in-flight batch finishes routing (milliseconds), and everything
+        // undeleted redelivers to a healthy instance. Runs well inside the
+        // same F-5 ceiling below.
+        if (queueConsumer) {
+          await queueConsumer.stop();
+        }
+
         // 1. Enter drain mode and wait for rooms to close (or timeout)
         if (!isDraining()) {
           const report = await new Promise<DrainReport | null>((resolve) => {

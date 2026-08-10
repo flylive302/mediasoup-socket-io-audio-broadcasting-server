@@ -7,6 +7,7 @@ import { config } from "@src/config/index.js";
 import { getRedisClient, getCacheRedisClient } from "./redis.js";
 import { createHealthRoutes } from "./health.js";
 import { createEventIngestRoutes } from "./event-ingest.js";
+import { createQueueConsumer, type QueueConsumer } from "./queue-consumer.js";
 import { createAdminRoutes } from "./drain.js";
 import { createInternalRoutes } from "@src/api/internal.js";
 import { initializeSocket } from "@src/socket/index.js";
@@ -33,6 +34,8 @@ export interface BootstrapResult {
   server: FastifyInstance;
   io: Server;
   subClient: Redis;
+  /** Ticket 26: null unless EVENT_QUEUE_URL is set (inert until cutover). */
+  queueConsumer: QueueConsumer | null;
   roomManager: RoomManager;
   workerManager: WorkerManager;
   giftHandler: GiftHandler;
@@ -180,6 +183,15 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   // pubClient backs the at-least-once dedup gate — see event-dedup.ts.
   await fastify.register(createEventIngestRoutes(eventRouter, pubClient));
 
+  // Ticket 26: SQS queue consumer — the second transport into the SAME ingest
+  // seam. Null unless EVENT_QUEUE_URL is set (inert until cutover). Started by
+  // index.ts after listen; stopped first in graceful shutdown.
+  const queueConsumer = createQueueConsumer({
+    eventRouter,
+    logger,
+    redis: pubClient,
+  });
+
   // Register admin routes (drain mode, status)
   await fastify.register(createAdminRoutes(roomManager));
 
@@ -203,6 +215,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     server: fastify,
     io,
     subClient,
+    queueConsumer,
     roomManager,
     workerManager,
     giftHandler,

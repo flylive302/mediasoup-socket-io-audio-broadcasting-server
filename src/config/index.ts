@@ -314,6 +314,12 @@ const configSchema = z.object({
   // AWS Region (for cross-region room routing)
   AWS_REGION: z.string().default("ap-south-1"),
 
+  // Ticket 26: SQS queue consumer for Laravel economy events (queue built by
+  // ticket 25, shape per ADR 0029). Unset = consumer disabled — the HTTP
+  // ingest path carries events, production behaviour unchanged. Set to the
+  // msab-events.fifo queue URL at cutover. Auth is the instance IAM role.
+  EVENT_QUEUE_URL: z.string().default(""),
+
   // observability-audio-quality 01: how often the audio-quality sampler
   // snapshots live client legs and republishes the percentile gauges.
   // Scores themselves are pushed by the SFU as they change, so this only
