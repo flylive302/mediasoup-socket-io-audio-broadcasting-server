@@ -338,6 +338,21 @@ variable "bootstrap_overhead_seconds" {
   default     = 260
 }
 
+variable "canary_soak_seconds" {
+  description = <<-EOT
+    Ticket 29: how long the instance refresh pauses at each checkpoint — i.e. how long the
+    canary instance serves real production traffic before the rollout continues. Must exceed
+    the abort alarm's full detection window, or the soak could end before a sick canary can
+    fire it: NLB flags a target unhealthy after unhealthy_threshold(3) × interval(30s) = 90s,
+    then refresh_unhealthy_sustained needs 3 × 60s in that state = 270s worst-case
+    detection. 300s default = 270s + margin. (The dormant deploy.yml soak was 180s — below
+    the detection window; this replaces it, it does not merely port it.)
+    Ordering asserted in tests/rollout.tftest.hcl.
+  EOT
+  type        = number
+  default     = 300
+}
+
 variable "cascade_enabled" {
   description = "Enable SFU cross-region room cascading"
   type        = bool

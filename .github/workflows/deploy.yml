@@ -218,11 +218,32 @@ jobs:
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           echo "🚀 Starting instance refresh for $ASG_NAME in ${{ matrix.region.aws_region }}..."
-          echo "📦 New instances will pull image tag: ${{ needs.build-and-push.outputs.image_tag }}"
 
+          # ⚠️ Ticket 29: this CLI-triggered refresh CANNOT ship a new image. The image tag
+          # is baked into user-data by terraform (modules/autoscaling/user-data.sh pulls
+          # $ECR_REPO_URL:${image_tag}) — a bare refresh relaunches the SAME pinned tag.
+          # A real deploy = bump var.image_tag → terraform apply → new launch-template
+          # version → the ASG's own terraform-configured instance_refresh (which carries
+          # AutoRollback and is the canonical canary path). This workflow remains useful
+          # as a same-image re-roll (e.g. host rot, config re-read) only.
+          #
+          # Preferences MIRROR modules/autoscaling/main.tf `instance_refresh` — if you
+          # change one, change both (tests/rollout.tftest.hcl pins the terraform side):
+          #   InstanceWarmup 350 = container_warmup(90) + bootstrap_overhead(260)
+          #   Checkpoint 25% ≈ one canary instance at fleet_size 4 (ceil(100/N))
+          #   CheckpointDelay 300 = canary_soak_seconds (≥ 270s abort-detection window)
+          #   Alarms = the automated continue-or-abort signals
+          # AutoRollback is terraform-path only: a same-image CLI refresh has no previous
+          # launch-template version to roll back to.
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG_NAME" \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
+            --preferences '{
+              "MinHealthyPercentage": 50,
+              "InstanceWarmup": 350,
+              "CheckpointPercentages": [25, 100],
+              "CheckpointDelay": 300,
+              "AlarmSpecification": {"Alarms": ["flylive-audio-zero-healthy-hosts", "flylive-audio-refresh-unhealthy-sustained"]}
+            }' \
             --query 'InstanceRefreshId' \
             --output text)
 
@@ -339,6 +360,11 @@ jobs:
           exit 1
 
       - name: Health Soak — Verify stability (${{ matrix.region.name }})
+        # Ticket 29: this whole-region soak is now the SECONDARY gate. The primary
+        # canary gate runs INSIDE the refresh above (CheckpointDelay + AlarmSpecification):
+        # one instance soaks under real traffic and any abort alarm fails the refresh
+        # automatically. This step remains as a final cross-region barrier before the
+        # matrix moves on.
         run: |
           echo "🕐 Starting 3-minute health soak for ${{ matrix.region.name }}..."
           echo "   New instances must stay healthy for 180s before proceeding to next region."
@@ -380,6 +406,64 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ matrix.region.aws_region }}
+
+      - name: Rescue — un-drain any stranded InService instance (${{ matrix.region.name }})
+        # Ticket 29 AC: a halted rollout must un-drain, not strand. On AWS the drain
+        # script only fires in Terminating:Wait (irreversible — that instance dies
+        # regardless), so a drained-but-InService instance should be impossible; this
+        # step is the belt-and-braces check that makes the property observable. It
+        # cancels any still-running refresh on failure, then checks/undrains each
+        # InService instance via SSM Run Command: the curl runs ON the instance
+        # against localhost, reading X-Internal-Key from the instance's own
+        # /opt/msab/.env.secrets — the credential never crosses the network and
+        # this workflow never holds it (no plaintext-HTTP transport of the key).
+        if: failure()
+        run: |
+          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
+          [ -n "$ASG_NAME" ] || { echo "No ASG discovered — nothing to rescue"; exit 0; }
+
+          echo "🛟 Rollout failed — cancelling any in-flight refresh and checking for stranded drains..."
+          aws autoscaling cancel-instance-refresh --auto-scaling-group-name "$ASG_NAME" 2>/dev/null \
+            && echo "  🚫 Cancelled in-flight instance refresh" \
+            || echo "  (no refresh in flight)"
+
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
+            --output text)
+
+          # Runs on the instance as root; secrets file is 600 root-owned.
+          REMOTE_SCRIPT='set -a; . /opt/msab/.env.secrets; set +a;
+            STATUS=$(curl -sf -m 10 -H "X-Internal-Key: $LARAVEL_INTERNAL_KEY" http://localhost:3030/admin/status);
+            DRAINING=$(echo "$STATUS" | grep -o "\"draining\":[a-z]*" | cut -d: -f2);
+            if [ "$DRAINING" = "true" ]; then
+              curl -sf -m 10 -X POST -H "X-Internal-Key: $LARAVEL_INTERNAL_KEY" http://localhost:3030/admin/undrain && echo UNDRAINED;
+            else
+              echo "draining=$DRAINING";
+            fi'
+
+          # jq builds the parameter JSON so the script's own quotes survive intact.
+          SSM_PARAMS=$(jq -n --arg c "$REMOTE_SCRIPT" '{commands: [$c]}')
+
+          for ID in $INSTANCE_IDS; do
+            echo "  🔍 $ID — checking drain state via SSM Run Command..."
+            CMD_ID=$(aws ssm send-command \
+              --instance-ids "$ID" \
+              --document-name "AWS-RunShellScript" \
+              --comment "rollout rescue: un-drain if stranded (ticket 29)" \
+              --parameters "$SSM_PARAMS" \
+              --query 'Command.CommandId' --output text) || { echo "  ⚠️ send-command failed for $ID"; continue; }
+
+            for _ in $(seq 1 10); do
+              sleep 3
+              STATE=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$ID" \
+                --query 'Status' --output text 2>/dev/null || echo "Pending")
+              [ "$STATE" = "Success" ] || [ "$STATE" = "Failed" ] && break
+            done
+            OUTPUT=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$ID" \
+              --query 'StandardOutputContent' --output text 2>/dev/null || echo "?")
+            echo "  📋 $ID: status=$STATE output: $OUTPUT"
+          done
 
       - name: Complete job
         if: always()

@@ -334,6 +334,29 @@ resource "aws_iam_policy" "github_actions_boundary" {
         ]
         Resource = "*"
       },
+      {
+        # Ticket 29: deploy.yml's failure-rescue step un-drains a stranded instance
+        # via SSM Run Command — the curl runs ON the instance against localhost, so
+        # the internal key never crosses the network. SendCommand is scoped to the
+        # stock shell document + this project's tagged instances only.
+        Effect = "Allow"
+        Action = ["ssm:SendCommand"]
+        Resource = [
+          "arn:aws:ssm:*::document/AWS-RunShellScript",
+          "arn:aws:ec2:*:*:instance/*",
+        ]
+        Condition = {
+          StringEqualsIfExists = {
+            "ssm:resourceTag/Project" = var.project_name
+          }
+        }
+      },
+      {
+        # Result readback for the rescue step. Read-only; not resource-scopable.
+        Effect   = "Allow"
+        Action   = ["ssm:GetCommandInvocation"]
+        Resource = "*"
+      },
     ]
   })
 
@@ -434,6 +457,25 @@ resource "aws_iam_role_policy" "github_actions_asg_refresh" {
           "autoscaling:CancelInstanceRefresh",
           "autoscaling:CompleteLifecycleAction",
         ]
+        Resource = "*"
+      },
+      {
+        # Ticket 29: un-drain rescue via SSM Run Command — see the boundary copy above.
+        Effect = "Allow"
+        Action = ["ssm:SendCommand"]
+        Resource = [
+          "arn:aws:ssm:*::document/AWS-RunShellScript",
+          "arn:aws:ec2:*:*:instance/*",
+        ]
+        Condition = {
+          StringEqualsIfExists = {
+            "ssm:resourceTag/Project" = var.project_name
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetCommandInvocation"]
         Resource = "*"
       }
     ]

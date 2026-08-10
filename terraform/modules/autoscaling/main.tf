@@ -49,6 +49,14 @@ locals {
   # One number for both: the same physical event (instance boots → serves traffic)
   # gates "don't health-check me yet" and "don't rotate the next instance yet".
   instance_warmup_seconds = var.container_warmup_seconds + var.bootstrap_overhead_seconds
+
+  # --- Canary checkpoints, DERIVED from fleet_size (ticket 29) --------------
+  # First checkpoint = exactly ONE instance (ceil(100/N)%), then 100%. The one
+  # replaced instance serves real NLB traffic for canary_soak_seconds before
+  # the refresh continues; the abort alarms below are watched the whole time.
+  # fleet_size = 1 collapses to [100] — a single box has no subset to canary
+  # with, the soak alarms still gate the (whole-fleet) replacement.
+  canary_checkpoint_percentages = distinct([ceil(100 / var.fleet_size), 100])
 }
 
 # --- Get latest Ubuntu 24.04 AMI ---
@@ -242,11 +250,38 @@ resource "aws_autoscaling_group" "msab" {
   # budget (ticket 18 AC #4): container warmup measured in ticket 17 (90s) + the itemised
   # user-data bootstrap cost (var.bootstrap_overhead_seconds) that runs BEFORE the
   # container starts — re-itemised by ticket 19's bootstrap reorder.
+  #
+  # Ticket 29 — canary rollout, decided here:
+  #  * Checkpoints make the first batch exactly ONE instance; checkpoint_delay is the
+  #    soak, during which that instance serves real production traffic.
+  #  * alarm_specification is the automated continue-or-abort decision: either alarm
+  #    entering ALARM at ANY point during the refresh (soak included) fails the refresh —
+  #    no human judgment in the loop.
+  #  * auto_rollback = true: a failed/aborted refresh rolls the group back to the
+  #    previous launch-template version, i.e. the previous image_tag baked into
+  #    user-data — the fleet ends on the previous artifact, not mixed.
+  #  * Parallelism: after the canary checkpoint passes, min_healthy_percentage = 50
+  #    lets AWS replace up to half the fleet per batch. Deliberately better than
+  #    serial (halves rollout duration and therefore the mixed-version window) while
+  #    bounding concurrent room displacement to 50% of the fleet — the room-pinning
+  #    interaction is written down in ticket 29's STATUS block. min = max on the ASG
+  #    means terminate-then-launch: the fleet briefly runs below fleet_size (trade-off
+  #    owned by ticket 29; launch-before-terminate would need max_size headroom the
+  #    fixed-fleet design forbids).
   instance_refresh {
     strategy = "Rolling"
     preferences {
       min_healthy_percentage = 50
       instance_warmup        = local.instance_warmup_seconds
+      auto_rollback          = true
+      checkpoint_percentages = local.canary_checkpoint_percentages
+      checkpoint_delay       = var.canary_soak_seconds
+      alarm_specification {
+        alarms = [
+          aws_cloudwatch_metric_alarm.zero_healthy_hosts.alarm_name,
+          aws_cloudwatch_metric_alarm.refresh_unhealthy_sustained.alarm_name,
+        ]
+      }
     }
   }
 
@@ -331,6 +366,35 @@ resource "aws_cloudwatch_metric_alarm" "low_connections" {
   alarm_actions = []
 
   dimensions = {}
+}
+
+# --- CloudWatch Alarm: Sustained Unhealthy Host (ticket 29 — canary abort signal) ---
+# The refresh's alarm_specification watches this: any target unhealthy for 3 consecutive
+# minutes during a rollout means the new build is sick → refresh fails → auto-rollback.
+# 3 × 60s is deliberately LONGER than a normal drain blip: a terminating instance is
+# deregistered from the target group when termination begins, so it leaves the
+# UnHealthyHostCount math quickly — a sustained reading can only be an InService
+# instance that keeps failing /health. treat_missing_data = notBreaching so quiet
+# periods (metric gaps) never abort a rollout.
+resource "aws_cloudwatch_metric_alarm" "refresh_unhealthy_sustained" {
+  alarm_name          = "${var.project_name}-refresh-unhealthy-sustained"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 3
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/NetworkELB"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 1
+  alarm_description   = "Canary/rollout abort: an InService instance has failed /health for 3 consecutive minutes"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    TargetGroup  = var.target_group_arn_suffix
+    LoadBalancer = var.load_balancer_arn_suffix
+  }
+
+  alarm_actions = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
+  ok_actions    = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
 }
 
 # --- CloudWatch Alarm: Zero Healthy Hosts (total outage detector) ---
