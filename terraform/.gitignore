@@ -19,5 +19,8 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Account-specific backend config (do not commit — contains bucket name with account ID)
+# Account-specific backend configs (do not commit — contain the account ID)
 backend.hcl
+backend-*.hcl
+backend.hcl.pre-adr-0028.bak
+!backend-*.hcl.example

@@ -15,13 +15,15 @@ terraform {
   }
 
   # Remote state in S3 (created via scripts/aws/bootstrap-state.sh).
-  # The bucket is account-specific and MUST be supplied at init time — never
-  # hardcoded here (the literal below is an intentional placeholder):
-  #   ./scripts/aws/bootstrap-state.sh           # writes backend.hcl for this account
-  #   terraform init -reconfigure -backend-config=backend.hcl
+  # Single-account, key-per-environment layout (ADR 0028): one bucket, one state
+  # key per environment. Bucket AND key MUST be supplied at init time — the
+  # literals below are intentional placeholders that fail loudly if not overridden:
+  #   ./scripts/aws/bootstrap-state.sh           # writes backend-{staging,production}.hcl
+  #   terraform init -reconfigure -backend-config=backend-production.hcl
+  #   terraform init -reconfigure -backend-config=backend-staging.hcl
   backend "s3" {
-    bucket       = "REPLACED_BY_backend.hcl" # override via -backend-config=backend.hcl
-    key          = "phase1/terraform.tfstate"
+    bucket       = "REPLACED_BY_backend_hcl" # override via -backend-config=backend-<env>.hcl
+    key          = "REPLACED_BY_backend_hcl" # env/<environment>/terraform.tfstate
     region       = "ap-south-1"
     use_lockfile = true
     encrypt      = true

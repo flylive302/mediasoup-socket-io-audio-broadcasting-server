@@ -2,15 +2,19 @@
 # =============================================================================
 # FlyLive Audio Server — Bootstrap Terraform State Backend
 # =============================================================================
-# Creates the S3 bucket for remote Terraform state and writes terraform/backend.hcl
-# for the CURRENT AWS account. Run ONCE per account (staging and production).
+# Creates the S3 bucket for remote Terraform state and writes
+# terraform/backend-staging.hcl + terraform/backend-production.hcl for the
+# CURRENT AWS account. Run ONCE per account.
+#
+# Layout (ADR 0028 — single account, key-per-environment):
+#   one bucket, env/staging/terraform.tfstate + env/production/terraform.tfstate.
+#   Staging and production NEVER share a state file.
 #
 # Locking uses S3 native lockfiles (terraform { backend "s3" { use_lockfile = true }})
 # — no DynamoDB table is required.
 #
 # Usage:
-#   AWS_PROFILE=flylive-staging ./scripts/aws/bootstrap-state.sh
-#   AWS_PROFILE=flylive-prod    ./scripts/aws/bootstrap-state.sh
+#   AWS_PROFILE=flylive-prod ./scripts/aws/bootstrap-state.sh
 # =============================================================================
 
 set -euo pipefail
@@ -50,16 +54,27 @@ aws s3api put-public-access-block \
 
 echo "🔒 Created S3 bucket with versioning + encryption + public access blocked"
 
-# Write the account-specific backend config (gitignored).
+# Write the account-specific per-environment backend configs (gitignored).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_HCL="${SCRIPT_DIR}/../../terraform/backend.hcl"
-printf 'bucket = "%s"\n' "$BUCKET_NAME" > "$BACKEND_HCL"
-echo "📝 Wrote ${BACKEND_HCL}"
+for ENV in staging production; do
+  BACKEND_HCL="${SCRIPT_DIR}/../../terraform/backend-${ENV}.hcl"
+  printf 'bucket = "%s"\nkey    = "env/%s/terraform.tfstate"\n' "$BUCKET_NAME" "$ENV" > "$BACKEND_HCL"
+  echo "📝 Wrote ${BACKEND_HCL}"
+done
+
+# A leftover single-file backend.hcl predates the key-per-environment layout and
+# may point at a closed account — refuse to leave it lying around silently.
+LEGACY="${SCRIPT_DIR}/../../terraform/backend.hcl"
+if [ -f "$LEGACY" ]; then
+  mv "$LEGACY" "${LEGACY}.pre-adr-0028.bak"
+  echo "⚠️  Moved legacy backend.hcl → backend.hcl.pre-adr-0028.bak (do not init with it)"
+fi
 
 echo ""
 echo "✅ State backend ready!"
 echo ""
 echo "Next steps:"
 echo "  cd terraform"
-echo "  terraform init -reconfigure -backend-config=backend.hcl"
-echo "  terraform plan -var-file=<staging|prod>.tfvars -out=tfplan"
+echo "  terraform init -reconfigure -backend-config=backend-production.hcl"
+echo "  terraform plan -var-file=prod.tfvars -out=tfplan"
+echo "  # staging: re-init with -backend-config=backend-staging.hcl and staging.tfvars"
