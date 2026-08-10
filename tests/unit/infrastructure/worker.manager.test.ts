@@ -1,8 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock mediasoup — native module that can't run in test env
 vi.mock("mediasoup", () => ({
   createWorker: vi.fn(),
+}));
+
+// 24-cpu-pinning: pinning must be deterministic in tests — fixed platform and
+// a controllable core count, with taskset captured instead of executed.
+vi.mock("os", () => ({
+  cpus: vi.fn(() => Array.from({ length: 8 }, () => ({}) as never)),
+  platform: vi.fn(() => "linux"),
+}));
+vi.mock("child_process", () => ({
+  execSync: vi.fn(),
 }));
 
 vi.mock("@src/config/mediasoup.js", () => ({
@@ -20,6 +30,9 @@ vi.mock("@src/config/index.js", () => ({
 }));
 
 import * as mediasoup from "mediasoup";
+import { cpus } from "os";
+import { execSync } from "child_process";
+import { config } from "@src/config/index.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -278,6 +291,115 @@ describe("WorkerManager", () => {
       });
 
       // Cancel the timer-based portion
+    });
+  });
+
+  // 24-cpu-pinning-and-router-placement: pinning derives from worker count and
+  // core count, reserves core 0 (the Node.js event loop) at EVERY size, and no
+  // arithmetic is tuned to one instance size. Asserted at multiple worker
+  // counts including the stated minimum (3 vCPU → 2 workers).
+  describe("ticket 24: CPU pinning is size-parametric and reserves core 0", () => {
+    async function initWith(workerCount: number, coreCount: number) {
+      vi.mocked(cpus).mockReturnValue(
+        Array.from({ length: coreCount }, () => ({}) as never),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (config as any).MEDIASOUP_NUM_WORKERS = workerCount;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mediasoup.createWorker as any).mockImplementation(() =>
+        Promise.resolve(createMockWorker()),
+      );
+      const wm = new WorkerManager(mockLogger);
+      await wm.initialize();
+      return wm;
+    }
+
+    function pinnedCores(): number[] {
+      return vi
+        .mocked(execSync)
+        .mock.calls.map(([cmd]) => {
+          const m = String(cmd).match(/taskset -cp (\d+)/);
+          expect(m).not.toBeNull();
+          return Number(m![1]);
+        })
+        .sort((a, b) => a - b);
+    }
+
+    afterEach(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (config as any).MEDIASOUP_NUM_WORKERS = 2;
+    });
+
+    it("minimum size (3 cores, 2 derived workers): each worker gets its own core, core 0 untouched", async () => {
+      await initWith(2, 3);
+      expect(pinnedCores()).toEqual([1, 2]);
+    });
+
+    it("4 cores, 3 derived workers: cores 1..3, core 0 untouched", async () => {
+      await initWith(3, 4);
+      expect(pinnedCores()).toEqual([1, 2, 3]);
+    });
+
+    it("6 cores, 5 derived workers: cores 1..5, core 0 untouched", async () => {
+      await initWith(5, 6);
+      expect(pinnedCores()).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it("oversubscribed explicit override (3 cores, 4 workers): workers share cores 1..2, core 0 STILL reserved, and it is loud", async () => {
+      await initWith(4, 3);
+      expect(pinnedCores()).toEqual([1, 1, 2, 2]);
+      expect(pinnedCores()).not.toContain(0);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining("share cores"),
+      );
+    });
+
+    it("single core: pinning skipped loudly (cannot reserve the event-loop core)", async () => {
+      await initWith(2, 1);
+      expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining("cannot reserve the event-loop core"),
+      );
+    });
+  });
+
+  // 24-cpu-pinning-and-router-placement: distribution-router placement must
+  // spread across the non-source workers — never all forced onto one worker —
+  // whenever more than one non-source worker exists.
+  describe("ticket 24: distribution routers spread across non-source workers", () => {
+    it("at 3 workers, successive distribution placements land on BOTH non-source workers", async () => {
+      const w1 = createMockWorker();
+      const w2 = createMockWorker();
+      const w3 = createMockWorker();
+      let idx = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mediasoup.createWorker as any).mockImplementation(() =>
+        Promise.resolve([w1, w2, w3][idx++]),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (config as any).MEDIASOUP_NUM_WORKERS = 3;
+
+      const wm = new WorkerManager(mockLogger);
+      await wm.initialize();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (config as any).MEDIASOUP_NUM_WORKERS = 2;
+
+      // w1 hosts the source router.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      wm.incrementRouterCount(w1 as any);
+
+      const first = wm.getLeastLoadedWorker(w1.pid);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      wm.incrementRouterCount(first as any);
+      const second = wm.getLeastLoadedWorker(w1.pid);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      wm.incrementRouterCount(second as any);
+
+      const landed = new Set([first.pid, second.pid]);
+      expect(landed.has(w1.pid)).toBe(false);
+      expect(landed.size).toBe(2); // spread, not stacked on one worker
     });
   });
 });

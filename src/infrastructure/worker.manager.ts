@@ -333,16 +333,30 @@ export class WorkerManager {
       return; // CPU pinning only supported on Linux
     }
 
-    // Reserve core 0 for Node.js event loop; workers use cores 1+
-    const targetCore = coreIndex + 1;
     const availableCores = cpus().length;
 
-    if (targetCore >= availableCores) {
+    // 24-cpu-pinning: core 0 is the Node.js event loop's — a worker must NEVER
+    // be left unpinned (floating over core 0) just because workers outnumber
+    // the non-reserved cores. Round-robin over cores 1..N−1 instead: with the
+    // derived count (vCPU − 1) each worker gets its own core; with an explicit
+    // oversubscribing override, workers share the non-reserved cores but the
+    // event-loop core stays reserved at every size ≥ 2 cores.
+    if (availableCores < 2) {
       this.logger.warn(
-        { pid, coreIndex, targetCore, availableCores },
-        "Not enough CPU cores for pinning, skipping",
+        { pid, coreIndex, availableCores },
+        "Only one CPU core — cannot reserve the event-loop core, skipping pinning",
       );
       return;
+    }
+
+    const workerCores = availableCores - 1;
+    const targetCore = 1 + (coreIndex % workerCores);
+
+    if (coreIndex >= workerCores) {
+      this.logger.warn(
+        { pid, coreIndex, targetCore, availableCores },
+        "More workers than non-reserved cores — workers will share cores (core 0 stays reserved for the event loop)",
+      );
     }
 
     try {
