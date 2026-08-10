@@ -315,8 +315,9 @@ variable "container_warmup_seconds" {
 variable "bootstrap_overhead_seconds" {
   description = <<-EOT
     Everything user-data.sh does BEFORE the container can serve traffic. Itemised estimate,
-    not a measurement — the first real apply and ticket 19 (which reorders bootstrap) both
-    revise it:
+    not a measurement. Re-derived by ticket 19's bootstrap reorder: the CloudWatch agent,
+    the drain-service install (incl. its 3s liveness assert) and the launch-hook completion
+    now ALL run before `docker run` — nothing user-data does happens after the container:
 
       apt-get update + upgrade ............  60
       Docker install (get.docker.com) .....  45
@@ -325,14 +326,16 @@ variable "bootstrap_overhead_seconds" {
       ECR login + pull (1.39 GiB image) ...  90
       7 serial SSM get-parameter calls ....  10
       CloudWatch agent download + dpkg ....  20
+      drain service install + assert ......   5
+      launch lifecycle-hook completion ....   5
                                             ---
-                                            250
+                                            260
 
-    ⚠️ PROVISIONAL. Ticket 18's own Notes require re-checking this after ticket 19 reorders the
-    bootstrap sequence, and again against the first real instance launch.
+    ⚠️ PROVISIONAL. Re-check against the first real instance launch (/var/log/user-data.log
+    is timestamped by cloud-init).
   EOT
   type        = number
-  default     = 250
+  default     = 260
 }
 
 variable "cascade_enabled" {

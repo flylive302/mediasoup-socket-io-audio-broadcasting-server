@@ -240,7 +240,8 @@ resource "aws_autoscaling_group" "msab" {
 
   # Instance refresh settings (for rolling deployments). Warmup = the derived cold-boot
   # budget (ticket 18 AC #4): container warmup measured in ticket 17 (90s) + the itemised
-  # user-data bootstrap cost (250s) that runs BEFORE the container starts.
+  # user-data bootstrap cost (var.bootstrap_overhead_seconds) that runs BEFORE the
+  # container starts — re-itemised by ticket 19's bootstrap reorder.
   instance_refresh {
     strategy = "Rolling"
     preferences {
@@ -268,13 +269,18 @@ resource "aws_autoscaling_group" "msab" {
 }
 
 # --- Lifecycle Hook: Launching ---
-# Gives instances time to complete user-data bootstrap before receiving traffic
+# Gives instances time to complete user-data bootstrap before receiving traffic.
+# default_result = ABANDON (ticket 19, fail closed): a bootstrap that dies before
+# completing the hook — or before the aws CLI even exists — must terminate the
+# instance, never let it drift InService. user-data completes the hook explicitly
+# (CONTINUE) only after the CW agent, the drain service and the pre-traffic
+# checks all succeeded, and its EXIT trap sends ABANDON immediately on failure.
 resource "aws_autoscaling_lifecycle_hook" "launching" {
   name                   = "msab-launch-hook"
   autoscaling_group_name = aws_autoscaling_group.msab.name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
   heartbeat_timeout      = 600 # 10 minutes — covers cold start (Docker install + image pull + health)
-  default_result         = "CONTINUE"
+  default_result         = "ABANDON"
 }
 
 # --- Lifecycle Hook: Terminating ---

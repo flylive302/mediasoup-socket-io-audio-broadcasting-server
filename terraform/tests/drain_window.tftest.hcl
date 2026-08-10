@@ -348,3 +348,92 @@ run "rendered_script_sanitizes_secrets_for_the_env_file" {
     error_message = "The bootstrap must reject a secret containing a newline before writing the env-file, not fail opaquely at docker run"
   }
 }
+
+# =============================================================================
+# ticket 19 — bootstrap fails closed on any architecture, stable identity
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# AC #2/#3 — everything an instance needs BEFORE traffic (CW agent, drain
+# service + liveness assert, launch-hook completion) renders AHEAD of
+# `docker run`, and any failure fails closed: EXIT trap ABANDONs the launch
+# hook, and the hook's own default is ABANDON for failures the trap can't reach.
+# Ordering is asserted on the prefix of the rendered script before the docker
+# run — prose alone cannot drift this back.
+# -----------------------------------------------------------------------------
+run "bootstrap_fails_closed_before_traffic" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = aws_autoscaling_lifecycle_hook.launching.default_result == "ABANDON"
+    error_message = "Launch hook default_result must be ABANDON — a bootstrap that dies before completing the hook must terminate the instance, not drift InService"
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "trap on_exit EXIT")
+    error_message = "user-data must install the fail-closed EXIT trap before doing any work"
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "--lifecycle-action-result \"ABANDON\"")
+    error_message = "The EXIT trap must ABANDON the launch hook on failure — fail closed, not fail open"
+  }
+
+  # Ordering: the prefix of the script BEFORE `docker run -d` must already contain…
+  assert {
+    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "systemctl start msab-lifecycle")
+    error_message = "The drain service must be installed and started BEFORE the container starts — the ARM defect was exactly this order reversed"
+  }
+
+  assert {
+    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "systemctl is-active --quiet msab-lifecycle")
+    error_message = "The drain monitor must be PROVEN active (systemctl is-active) before the container starts, not assumed"
+  }
+
+  assert {
+    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "amazon-cloudwatch-agent-ctl")
+    error_message = "The CloudWatch agent must be installed and started BEFORE the container starts"
+  }
+
+  assert {
+    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "--lifecycle-hook-name \"msab-launch-hook\"")
+    error_message = "The launch lifecycle hook must be completed BEFORE the container starts serving traffic"
+  }
+
+  # AC #1 — no hardcoded-architecture monitoring agent package.
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "dpkg --print-architecture")
+    error_message = "The CW agent install must derive its architecture (dpkg --print-architecture), never hardcode one"
+  }
+
+  assert {
+    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "ubuntu/amd64/latest/amazon-cloudwatch-agent.deb")
+    error_message = "The hardcoded amd64 CW-agent .deb URL must never come back — it is what killed the ARM bootstrap after traffic"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# AC #4/#5 — identity is explicit configuration read before any metadata probe,
+# and the public address is asserted genuinely routable, not merely present.
+# -----------------------------------------------------------------------------
+run "identity_is_explicit_and_public_ip_is_asserted_routable" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nINSTANCE_ID_OVERRIDE=$INSTANCE_ID\n")
+    error_message = "The boot .env must set INSTANCE_ID_OVERRIDE — the app checks it before any metadata probe, removing the hostname-fallback split-brain path"
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "is not publicly routable")
+    error_message = "PUBLIC_IP must be asserted routable (private/CGNAT/link-local ranges rejected), not merely non-empty"
+  }
+}

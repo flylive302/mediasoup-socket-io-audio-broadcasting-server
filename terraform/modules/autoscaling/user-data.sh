@@ -2,13 +2,53 @@
 # =============================================================================
 # FlyLive Audio Server — EC2 User Data (ASG Bootstrap Script)
 # =============================================================================
-# Runs on first boot to install Docker, pull the image from ECR, start the app,
-# and install the lifecycle drain service for graceful ASG termination.
+# Runs on first boot to install Docker, pull the image from ECR, install the
+# monitoring agent + lifecycle drain service, and START THE APP LAST.
+#
+# ⚠️ ORDERING IS THE CONTRACT (ticket 19): everything an instance needs before
+# it may safely take traffic — monitoring agent, drain service, lifecycle-hook
+# completion — happens BEFORE `docker run`. A failure at ANY step therefore
+# happens before traffic, and the EXIT trap below fails closed (tears down any
+# partial container and ABANDONs the launch hook). Do not move a step below
+# `docker run` "because it's slow" — that reintroduces the ARM defect this
+# ordering removed (traffic starts, then the script dies, then no drain path).
+#
 # Variables are injected by Terraform templatefile().
 # =============================================================================
 
 set -euo pipefail
 exec > >(tee /var/log/user-data.log) 2>&1
+
+# --- Fail closed on ANY bootstrap failure (ticket 19) ---
+# The launch hook's default_result is ABANDON, so even if this trap itself can't
+# run (e.g. cloud-init kills the shell), an uncompleted hook still terminates the
+# instance at hook expiry instead of putting it InService. The trap just makes
+# that fast and removes any partially started container.
+on_exit() {
+  STATUS=$?
+  if [ "$STATUS" -eq 0 ]; then
+    exit 0
+  fi
+  echo "❌ Bootstrap FAILED (exit $STATUS) — failing closed: this instance must never take traffic."
+  command -v docker >/dev/null 2>&1 && docker rm -f msab 2>/dev/null || true
+  if command -v aws >/dev/null 2>&1; then
+    T=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+    IID=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/instance-id || true)
+    ASG=$(aws autoscaling describe-auto-scaling-instances \
+      --instance-ids "$IID" --region "${region}" \
+      --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || true)
+    if [ -n "$ASG" ] && [ "$ASG" != "None" ]; then
+      aws autoscaling complete-lifecycle-action \
+        --lifecycle-hook-name "msab-launch-hook" \
+        --auto-scaling-group-name "$ASG" \
+        --lifecycle-action-result "ABANDON" \
+        --instance-id "$IID" --region "${region}" 2>/dev/null || true
+      echo "   Launch lifecycle hook ABANDONed — the ASG will terminate this instance."
+    fi
+  fi
+  exit "$STATUS"
+}
+trap on_exit EXIT
 
 echo "=== Starting MSAB ASG bootstrap ==="
 
@@ -90,7 +130,34 @@ if [ -z "$PUBLIC_IP" ]; then
   exit 1
 fi
 
+# --- Assert the public address is genuinely ROUTABLE, not merely present (ticket 19) ---
+# A NAT'd, CGNAT'd or link-local address passes the empty-check above but is
+# unreachable for cross-instance pipe handshakes — media would silently bind to
+# an address nobody can dial (story 61). Reject every non-global range outright.
+case "$PUBLIC_IP" in
+  10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*|169.254.*|127.*|0.*)
+    echo "❌ FATAL: PUBLIC_IP=$PUBLIC_IP is not publicly routable (private/CGNAT/link-local range)."
+    echo "   Fix the subnet / ENI public-IP mapping — do not let media bind to an unreachable address."
+    exit 1
+    ;;
+esac
+
 echo "Public IP: $PUBLIC_IP"
+
+# --- Instance identity, resolved ONCE at provisioning time (ticket 19) ---
+# Written into the .env below as INSTANCE_ID_OVERRIDE, which the app checks
+# BEFORE any metadata probe (src/infrastructure/instance-identity.ts). The value
+# is the EC2 instance id — the same thing the app's own IMDS probe would return —
+# so behaviour is identical, but identity is now explicit configuration: unique
+# per instance, stable across container restarts, deterministic, and validated
+# here instead of falling back to a hostname at runtime (split-brain risk on a
+# fleet sharing one Redis state store).
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+if [ -z "$INSTANCE_ID" ]; then
+  echo "❌ FATAL: IMDSv2 returned empty instance-id. A non-unique fallback identity is a split-brain risk."
+  exit 1
+fi
+echo "Instance ID: $INSTANCE_ID"
 
 # --- Pull Image from ECR ---
 APP_DIR="/opt/msab"
@@ -189,6 +256,10 @@ PORT=${app_port}
 # nothing but secrets.
 MSAB_PORT=${app_port}
 LOG_LEVEL=info
+
+# Instance identity (ticket 19): explicit configuration, checked by the app BEFORE
+# any metadata probe — never a hostname or container-id fallback at runtime.
+INSTANCE_ID_OVERRIDE=$INSTANCE_ID
 
 # Redis (host/port only — passwords ride the 0600 secrets env-file below).
 # REDIS_* = DURABLE store (money queue, room/seat/block state — noeviction,
@@ -289,35 +360,14 @@ HLS_R2_ACCESS_KEY_ID=$SECRET_HLS_R2_ACCESS_KEY_ID
 HLS_R2_SECRET_ACCESS_KEY=$SECRET_HLS_R2_SECRET_ACCESS_KEY
 SECRETSEOF
 
-# --- Run Container ---
-# ⚠️ This invocation is deliberately flag-for-flag identical to the proven production
-# runtime (docs/runbooks/msab-by-hand-deploy.md) — ONLY the substrate differs (ECR
-# instead of GHCR, EC2 instead of the Vultr box). Do not "improve" a flag here without
-# changing the runbook in the same breath; a silent divergence means AWS is running a
-# configuration nothing has ever proven.
-#   --memory / --memory-swap: rendered from the instance type's RAM minus the stated host
-#     reserve (see locals in main.tf). On c7i.xlarge this is 6144m — the same 6g the live
-#     box runs. --memory-swap MUST equal --memory: swap on a mediasoup worker is audible
-#     stutter, not a clean failure.
-#   CPU pinning is NOT a Docker flag — MSAB pins its own workers in-process
-#     (worker.manager.ts), and worker count is derived from nproc, not set here.
-# NOTE: awslogs Docker log driver rejected awslogs-stream-prefix on Docker 29.x/Ubuntu 24.04.
-# Using json-file with rotation instead. CloudWatch shipping is via the CW Agent below.
-docker run -d \
-  --name msab \
-  --restart unless-stopped \
-  --network host \
-  --memory=${container_memory_mib}m \
-  --memory-swap=${container_memory_mib}m \
-  --log-driver=json-file \
-  --log-opt max-size=100m \
-  --log-opt max-file=5 \
-  --env-file /opt/msab/.env \
-  --env-file /opt/msab/.env.secrets \
-  $ECR_REPO_URL:${image_tag}
-
 # --- Install CloudWatch Agent (ship Docker JSON logs to CloudWatch Logs) ---
-wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb \
+# ⚠️ BEFORE the container (ticket 19): the old ordering installed this AFTER
+# `docker run`, so on ARM the hardcoded amd64 .deb failed dpkg, `set -e` killed
+# the script — after traffic, before the drain service existed.
+# Arch-aware: dpkg --print-architecture yields amd64 / arm64, matching the CW
+# agent's Ubuntu package paths exactly.
+CW_ARCH=$(dpkg --print-architecture)
+wget -q "https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/$CW_ARCH/latest/amazon-cloudwatch-agent.deb" \
   -O /tmp/cw-agent.deb
 dpkg -i /tmp/cw-agent.deb
 rm /tmp/cw-agent.deb
@@ -346,50 +396,7 @@ CWEOF
 
 echo "✅ CloudWatch Agent started — logs → /flylive-audio/msab"
 
-# --- Wait for app health + complete launch lifecycle hook ---
-# Ensures ASG only marks instance InService AFTER the app is confirmed healthy.
-# Without this, the 300s hook timeout may expire before the app is ready (especially
-# with cross-region ECR pulls), causing health-check-fail → replace loops.
-echo "Waiting for /health endpoint..."
-HEALTH_MAX_WAIT=120
-HEALTH_ELAPSED=0
-
-while [ $HEALTH_ELAPSED -lt $HEALTH_MAX_WAIT ]; do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" "http://localhost:${app_port}/health" 2>/dev/null || echo "000")
-  if [ "$HTTP_CODE" = "200" ]; then
-    echo "✅ Health check passed (HTTP $HTTP_CODE)"
-    break
-  fi
-  echo "  ⏳ Health check: HTTP $HTTP_CODE ($${HEALTH_ELAPSED}s/$${HEALTH_MAX_WAIT}s)"
-  sleep 5
-  HEALTH_ELAPSED=$((HEALTH_ELAPSED + 5))
-done
-
-if [ $HEALTH_ELAPSED -ge $HEALTH_MAX_WAIT ]; then
-  echo "⚠️ Health check did not pass in $${HEALTH_MAX_WAIT}s — continuing anyway (hook default will apply)"
-fi
-
-# Complete the ASG launch lifecycle hook explicitly
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
-  --instance-ids "$INSTANCE_ID" --region "${region}" \
-  --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || echo "")
-
-if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
-  echo "Completing launch lifecycle hook for instance $INSTANCE_ID in ASG $ASG_NAME..."
-  aws autoscaling complete-lifecycle-action \
-    --lifecycle-hook-name "msab-launch-hook" \
-    --auto-scaling-group-name "$ASG_NAME" \
-    --lifecycle-action-result "CONTINUE" \
-    --instance-id "$INSTANCE_ID" \
-    --region "${region}" 2>/dev/null && \
-    echo "✅ Launch lifecycle hook completed" || \
-    echo "⚠️ Launch lifecycle hook completion failed (may have already timed out)"
-else
-  echo "⚠️ Could not determine ASG name — skipping lifecycle hook completion"
-fi
-
-# --- Install Lifecycle Drain Service ---
+# --- Install Lifecycle Drain Service (BEFORE the container — ticket 19) ---
 # AUDIT-017 FIX: Embed drain script inline (removes GitHub and Docker cp dependencies)
 mkdir -p "$APP_DIR/scripts/aws"
 cat > "$APP_DIR/scripts/aws/lifecycle-drain.sh" << 'DRAINEOF'
@@ -517,6 +524,97 @@ chmod +x /opt/msab/scripts/aws/lifecycle-drain.sh
 systemctl daemon-reload
 systemctl enable msab-lifecycle
 systemctl start msab-lifecycle
+
+# The drain path must be PROVEN alive, not assumed: an EnvironmentFile parse
+# failure leaves the unit restart-looping and would otherwise be discovered at
+# the first scale-in — the moment it must work. 3s is enough to catch an
+# immediate crash (RestartSec=10 means a crashed unit is NOT "active" yet).
+sleep 3
+if ! systemctl is-active --quiet msab-lifecycle; then
+  echo "❌ FATAL: msab-lifecycle drain monitor is not active after start."
+  systemctl status msab-lifecycle --no-pager || true
+  echo "   Refusing to take traffic without a working drain path."
+  exit 1
+fi
+echo "✅ Drain monitor active (msab-lifecycle)"
+
+# --- Complete the ASG launch lifecycle hook (BEFORE the container — ticket 19) ---
+# Everything an instance needs before taking traffic now exists, so the hook can
+# complete here. Actual traffic still waits for the NLB health check to pass —
+# the ASG's ELB health-check grace (derived warmup budget) covers the container
+# start below. A failure to complete leaves the hook to expire with its ABANDON
+# default: the instance is terminated, never InService — fail closed by default.
+ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
+  --instance-ids "$INSTANCE_ID" --region "${region}" \
+  --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || echo "")
+
+if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
+  echo "Completing launch lifecycle hook for instance $INSTANCE_ID in ASG $ASG_NAME..."
+  aws autoscaling complete-lifecycle-action \
+    --lifecycle-hook-name "msab-launch-hook" \
+    --auto-scaling-group-name "$ASG_NAME" \
+    --lifecycle-action-result "CONTINUE" \
+    --instance-id "$INSTANCE_ID" \
+    --region "${region}" 2>/dev/null && \
+    echo "✅ Launch lifecycle hook completed" || \
+    echo "⚠️ Launch lifecycle hook completion failed — hook will expire to its ABANDON default and this instance will be replaced"
+else
+  echo "⚠️ Could not determine ASG name — hook will expire to its ABANDON default (standalone run?)"
+fi
+
+# --- Run Container — LAST, after every pre-traffic requirement (ticket 19) ---
+# ⚠️ This invocation is deliberately flag-for-flag identical to the proven production
+# runtime (docs/runbooks/msab-by-hand-deploy.md) — ONLY the substrate differs (ECR
+# instead of GHCR, EC2 instead of the Vultr box). Do not "improve" a flag here without
+# changing the runbook in the same breath; a silent divergence means AWS is running a
+# configuration nothing has ever proven.
+#   --memory / --memory-swap: rendered from the instance type's RAM minus the stated host
+#     reserve (see locals in main.tf). On c7i.xlarge this is 6144m — the same 6g the live
+#     box runs. --memory-swap MUST equal --memory: swap on a mediasoup worker is audible
+#     stutter, not a clean failure.
+#   CPU pinning is NOT a Docker flag — MSAB pins its own workers in-process
+#     (worker.manager.ts), and worker count is derived from nproc, not set here.
+# NOTE: awslogs Docker log driver rejected awslogs-stream-prefix on Docker 29.x/Ubuntu 24.04.
+# Using json-file with rotation instead. CloudWatch shipping is via the CW Agent above.
+docker run -d \
+  --name msab \
+  --restart unless-stopped \
+  --network host \
+  --memory=${container_memory_mib}m \
+  --memory-swap=${container_memory_mib}m \
+  --log-driver=json-file \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --env-file /opt/msab/.env \
+  --env-file /opt/msab/.env.secrets \
+  $ECR_REPO_URL:${image_tag}
+
+# --- Wait for app health ---
+# Informational for the boot log, and a FAILURE GATE: a container that can't
+# reach /health inside the window is torn down by the EXIT trap (fail closed) —
+# the NLB never sees it healthy and the ASG replaces the instance after the
+# derived grace window.
+echo "Waiting for /health endpoint..."
+HEALTH_MAX_WAIT=120
+HEALTH_ELAPSED=0
+HEALTH_OK=0
+
+while [ $HEALTH_ELAPSED -lt $HEALTH_MAX_WAIT ]; do
+  HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" "http://localhost:${app_port}/health" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ Health check passed (HTTP $HTTP_CODE)"
+    HEALTH_OK=1
+    break
+  fi
+  echo "  ⏳ Health check: HTTP $HTTP_CODE ($${HEALTH_ELAPSED}s/$${HEALTH_MAX_WAIT}s)"
+  sleep 5
+  HEALTH_ELAPSED=$((HEALTH_ELAPSED + 5))
+done
+
+if [ "$HEALTH_OK" -ne 1 ]; then
+  echo "❌ FATAL: /health did not pass within $${HEALTH_MAX_WAIT}s — failing closed (container will be removed)."
+  exit 1
+fi
 
 echo "=== MSAB ASG bootstrap complete ==="
 echo "Health check: http://$PUBLIC_IP:${app_port}/health"
