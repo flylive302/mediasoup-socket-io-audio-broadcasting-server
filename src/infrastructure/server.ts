@@ -141,8 +141,12 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   const appContext = await initializeSocket(io, durableClient, pubClient);
   const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, statusCoalescer } = appContext;
 
-  // SFU Cascade — conditionally wire coordinator and relay
-  const roomRegistry = new RoomRegistry(pubClient, logger);
+  // SFU Cascade — conditionally wire coordinator and relay.
+  // DURABLE, not cache: `cascade:room:{id}:owner` is a CAS lock. `refreshOwnership`
+  // renews it under a `GET == ARGV[1]` guard, so an evicted key cannot be reclaimed
+  // by its own holder — a rival instance's SETNX then wins and both believe they own
+  // the room (duplicate transcode spawn). An evict-freely store must never hold a lock.
+  const roomRegistry = new RoomRegistry(durableClient, logger);
   const pipeManager = new PipeManager(logger);
   let cascadeCoordinator: CascadeCoordinator | null = null;
   let cascadeRelay: CascadeRelay | null = null;
@@ -166,8 +170,13 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   }
 
   // F-67: reconcile any revocations whose real-time SNS emit this instance missed.
+  // DURABLE, not cache: this writes `auth:user_revoked:*` and its `msab:revocation_poll:since`
+  // cursor. `auth/middleware.ts` reads that key off the DURABLE client, and
+  // `EventRouter.writeRevocationKey` writes it there too. On a cache store these
+  // backfilled revocations would land where nothing reads them — the poller exists
+  // precisely for the revocations the real-time path missed, so it would fail silently.
   const revocationPoller = new RevocationBackfillPoller(
-    pubClient,
+    durableClient,
     appContext.laravelClient,
     logger,
   );
@@ -180,8 +189,10 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   await fastify.register(createMetricsRoutes(roomManager, workerManager));
 
   // Register event ingest (Laravel → MSAB via SNS/HTTP).
-  // pubClient backs the at-least-once dedup gate — see event-dedup.ts.
-  await fastify.register(createEventIngestRoutes(eventRouter, pubClient));
+  // DURABLE, not cache: `msab:ingest:dedup:*` is the at-least-once dedup gate
+  // (see event-dedup.ts). It is an idempotency guard, and an evict-freely store
+  // silently turns "exactly once" back into "at least once" under memory pressure.
+  await fastify.register(createEventIngestRoutes(eventRouter, durableClient));
 
   // Ticket 26: SQS queue consumer — the second transport into the SAME ingest
   // seam. Null unless EVENT_QUEUE_URL is set (inert until cutover). Started by
@@ -189,7 +200,9 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
   const queueConsumer = createQueueConsumer({
     eventRouter,
     logger,
-    redis: pubClient,
+    // DURABLE — same dedup gate as the HTTP ingest route above; both transports
+    // must claim against the SAME store or the dedup key is transport-dependent.
+    redis: durableClient,
   });
 
   // Register admin routes (drain mode, status)
@@ -205,7 +218,11 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       cascadeCoordinator,
       io,
       seatRepository: appContext.seatRepository,
-      redis: pubClient,
+      // DURABLE: the only Redis read here is `getMusicPlayerState`, and
+      // `room:{id}:musicPlayer`/`musicState` are WRITTEN on the durable client by
+      // audio-player.handler.ts. On a cache store this cross-instance cascade read
+      // would always see null.
+      redis: durableClient,
     }),
     { prefix: "/" },
   );
