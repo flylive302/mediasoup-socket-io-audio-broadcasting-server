@@ -55,11 +55,23 @@ variable "fleet_size" {
     min_instances / desired_instances / max_instances trio, which could silently drift
     into an elastic fleet by editing one of the three.
 
-    ⚠️ Quota truth (carried over from max_instances): fleet_size × instance vCPU must fit
-    the account's On-Demand Standard vCPU quota (L-1216C47A) in that region. With the
-    default 16-vCPU quota and c7i.xlarge (4 vCPU) the real ceiling is 4 instances. Ticket
-    02's increase is FILED but not yet granted — keep this truthful to the quota in force.
-    The final number comes from ticket 35's saturation curve; 2 is the honest default.
+    🔴 Quota truth, OBSERVED 2026-08-12 in account 505307260926 / ap-south-1 — this block
+    previously said 16 vCPU and "ticket 02's increase is FILED". BOTH WERE WRONG:
+
+      L-1216C47A applied value = 5   (AWS default = 5, utilization 0)
+      Quota request history    = "No requests found"
+
+    fleet_size × instance vCPU must fit that quota. At c7i.xlarge (4 vCPU) the real ceiling
+    is ONE instance — so this variable's own default of 2 (8 vCPU) does NOT currently fit,
+    and an apply will fail at launch with VcpuLimitExceeded rather than at plan.
+
+    The 2026-08-10 filing was almost certainly made against the OLD account 200810847703,
+    which was closed the same day ticket 01 stood up this one; it did not carry over.
+    Operator decision 2026-08-12: generate real usage FIRST (AWS is reluctant to grant
+    increases to an unused account), then file. Set fleet_size = 1 until granted.
+
+    The final number comes from ticket 35's saturation curve; keep this comment truthful to
+    the quota actually in force, and re-read the console rather than trusting this text.
   EOT
   type        = number
   default     = 2
