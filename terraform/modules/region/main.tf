@@ -103,11 +103,24 @@ module "ssm" {
   aws_region    = var.aws_region
 }
 
+# Ticket 32 PART 4: workers_below_expected's threshold is DERIVED, not
+# hardcoded — fleet_size × modules/autoscaling's own workers_per_instance
+# output (vCPU - 1 per instance, mirroring MSAB's boot-time derivation,
+# ticket 24). Forward-referencing module.autoscaling here (declared below) is
+# fine: Terraform resolves dependencies from the reference graph, not file
+# order, and nothing in modules/autoscaling depends on modules/cloudwatch, so
+# this creates no cycle.
+locals {
+  expected_total_workers = var.fleet_size * module.autoscaling.workers_per_instance
+}
+
 module "cloudwatch" {
   source = "../cloudwatch"
 
-  project_name = var.project_name
-  aws_region   = var.aws_region
+  project_name           = var.project_name
+  aws_region             = var.aws_region
+  alerts_topic_arn       = var.alerts_topic_arn
+  expected_total_workers = local.expected_total_workers
 }
 
 module "autoscaling" {
@@ -161,5 +174,5 @@ module "autoscaling" {
   # Zero Healthy Hosts alarm dimensions
   target_group_arn_suffix      = module.loadbalancer.target_group_arn_suffix
   load_balancer_arn_suffix     = module.loadbalancer.nlb_arn_suffix
-  alarm_notification_topic_arn = module.cloudwatch.alerts_topic_arn
+  alarm_notification_topic_arn = var.alerts_topic_arn
 }

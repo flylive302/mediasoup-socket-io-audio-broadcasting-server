@@ -80,6 +80,11 @@ variable "instance_profile_name" { type = string }
 variable "iam_role_name" { type = string }
 variable "ecr_repo_url" { type = string }
 
+# Ticket 32: the alerting SNS topic is created once, globally (modules/alerting)
+# — see that module's header for why. This region forwards the ARN into its
+# own cloudwatch and autoscaling modules rather than creating its own topic.
+variable "alerts_topic_arn" { type = string }
+
 variable "laravel_internal_key" {
   type      = string
   sensitive = true

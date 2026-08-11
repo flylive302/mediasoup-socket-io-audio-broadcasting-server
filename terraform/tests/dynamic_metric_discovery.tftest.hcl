@@ -21,15 +21,6 @@ mock_provider "aws" {
       account_id = "111111111111"
     }
   }
-
-  # aws_cloudwatch_metric_alarm.*.alarm_actions/ok_actions must be valid SNS
-  # ARNs even under a mocked apply — the provider validates the shape of the
-  # value, not just its presence.
-  mock_resource "aws_sns_topic" {
-    defaults = {
-      arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
-    }
-  }
 }
 
 # -----------------------------------------------------------------------------
@@ -54,6 +45,9 @@ run "dashboard_discovers_instances_via_search_not_static_list" {
   variables {
     project_name = "flylive-audio"
     aws_region   = "ap-south-1"
+    # ticket 32: the SNS topic is now created by the global modules/alerting
+    # module, not here — this module only receives its ARN.
+    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
   }
 
   assert {

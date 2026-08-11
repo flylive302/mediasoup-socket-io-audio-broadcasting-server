@@ -46,5 +46,11 @@ cloudflare_turn_key_id  = "CHANGE_ME"
 cloudflare_api_token = "CHANGE_ME"
 cloudflare_zone_id   = "CHANGE_ME"
 
+# --- Alerting (ticket 32) ---
+# Empty = alerting ships INERT (topic exists, nobody subscribed). Set to the
+# on-call inbox to start receiving alarm notifications; requires clicking the
+# SNS confirmation email that arrives after apply.
+alert_email = ""
+
 # Ticket 12: staging runs may only assume the staging deploy role
 github_deploy_environment = "aws-staging"

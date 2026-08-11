@@ -33,10 +33,11 @@ output "acm_validation_records" {
   value = module.ssl.domain_validation_options
 }
 
-output "alerts_topic_arn" {
-  value = module.cloudwatch.alerts_topic_arn
-}
-
 output "vpc_id" {
   value = module.networking.vpc_id
+}
+
+output "alarm_names" {
+  description = "Every alarm name this region declares (cloudwatch + autoscaling modules) — flattened into the root alarm_names output"
+  value       = concat(module.cloudwatch.alarm_names, module.autoscaling.alarm_names)
 }

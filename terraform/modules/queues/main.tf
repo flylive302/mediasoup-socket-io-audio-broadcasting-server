@@ -107,8 +107,11 @@ resource "aws_sqs_queue_redrive_allow_policy" "msab_events_dlq" {
 }
 
 # =============================================================================
-# Alarms — visibility-only for now (alarm_actions stay empty; ticket 32 wires
-# notification actions as code). Each threshold is stated with its reason.
+# Alarms — thresholds stated with their reason. Notification actions are
+# wired as code (ticket 32): alarm_actions/ok_actions point at the global
+# modules/alerting topic via var.alerts_topic_arn when the caller supplies
+# one, and stay empty (visibility-only) when it doesn't — same ships-inert
+# pattern as modules/autoscaling's alarm_notification_topic_arn.
 # =============================================================================
 
 # Depth: at the ~3.1 msg/s average (ADR 0029), 500 visible messages is ~2.7
@@ -126,9 +129,8 @@ resource "aws_cloudwatch_metric_alarm" "queue_depth" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  # Ticket 32 wires actions; until then this alarm is a dashboard/console signal.
-  alarm_actions = []
-  ok_actions    = []
+  alarm_actions = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
+  ok_actions    = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
 
   tags = { Project = var.project_name }
 }
@@ -149,8 +151,8 @@ resource "aws_cloudwatch_metric_alarm" "queue_age" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = []
-  ok_actions    = []
+  alarm_actions = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
+  ok_actions    = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
 
   tags = { Project = var.project_name }
 }
@@ -170,8 +172,8 @@ resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  alarm_actions = []
-  ok_actions    = []
+  alarm_actions = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
+  ok_actions    = var.alerts_topic_arn == "" ? [] : [var.alerts_topic_arn]
 
   tags = { Project = var.project_name }
 }

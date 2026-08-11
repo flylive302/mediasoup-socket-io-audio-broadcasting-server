@@ -429,6 +429,60 @@ export const metrics = {
     labelNames: ["region", "instance", "direction", "metric"] as const,
     registers: [metricsRegistry],
   }),
+
+  // ticket 32 part 3: the broadcast transcoder (HLS/LL-HLS) had zero
+  // instrumentation. Each FFmpeg child is one transcoder encoding a Room's
+  // mix; CPU on the box scales with how many are running concurrently, so
+  // this gauge is the primary saturation signal for that resource.
+  hlsPublishersActive: new Gauge({
+    name: "flylive_hls_publishers_active",
+    help: "Number of currently running HLS/LL-HLS FFmpeg transcoder processes",
+    registers: [metricsRegistry],
+  }),
+
+  // Every FFmpeg exit, split into a SMALL closed set: "expected" (we killed
+  // it — stop() or a debounced restart(), both SIGKILL) vs "unexpected" (it
+  // died on its own). Deliberately no exit code / signal label — unbounded.
+  hlsPublisherExits: new Counter({
+    name: "flylive_hls_publisher_exits_total",
+    help: "HLS FFmpeg transcoder process exits",
+    labelNames: ["reason"] as const, // expected | unexpected
+    registers: [metricsRegistry],
+  }),
+
+  // The mixer's shared UDP port pool (MixerPortRegistry) — instance-wide
+  // saturation signal for concurrent broadcast mixes on one box.
+  hlsMixerPortsInUse: new Gauge({
+    name: "flylive_hls_mixer_ports_in_use",
+    help: "HLS mixer UDP receive ports currently allocated on this instance",
+    registers: [metricsRegistry],
+  }),
+
+  // The pool size, so an alarm can express "% of pool used" instead of
+  // hard-coding the base/max port range.
+  hlsMixerPortsCapacity: new Gauge({
+    name: "flylive_hls_mixer_ports_capacity",
+    help: "Total allocatable HLS mixer UDP receive ports on this instance",
+    registers: [metricsRegistry],
+  }),
+
+  // The pool ran out — a broadcast mix could not get an RTP receive port.
+  hlsMixerPortExhausted: new Counter({
+    name: "flylive_hls_mixer_port_exhausted_total",
+    help: "Times the HLS mixer UDP port pool was exhausted",
+    registers: [metricsRegistry],
+  }),
+
+  // R2 upload failures from HlsUploader's two existing catch blocks. `operation`
+  // matches what each site already logs: "object upload failed" (segments,
+  // init, master, media manifest all go through the same upload()) and "room
+  // cleanup failed" (removeRoom, best-effort R2 delete on stop).
+  hlsUploaderFailures: new Counter({
+    name: "flylive_hls_uploader_failures_total",
+    help: "HLS artifact R2 upload/cleanup failures",
+    labelNames: ["operation"] as const, // object_upload | room_cleanup
+    registers: [metricsRegistry],
+  }),
 };
 
 /**
@@ -494,9 +548,15 @@ export const createMetricsRoutes = (
 };
 
 /**
- * Update per-worker Prometheus gauges
+ * Update per-worker Prometheus gauges.
+ *
+ * Exported (ticket 32 pt.2) so cloudwatch.ts can call this same refresh path
+ * before reading `routersPerWorker` — the gauge is otherwise only refreshed
+ * as a side effect of a `/metrics/prometheus` scrape, which the CloudWatch
+ * publisher's own 60s tick does not perform. Idempotent: safe to call more
+ * often than the scrape route calls it.
  */
-function updateWorkerMetrics(workerManager: WorkerManager): void {
+export function updateWorkerMetrics(workerManager: WorkerManager): void {
   // Reset all labels first to remove stale workers
   metrics.routersPerWorker.reset();
   metrics.workersActive.set(workerManager.getWorkerCount());

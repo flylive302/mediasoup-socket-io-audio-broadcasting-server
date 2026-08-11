@@ -54,7 +54,7 @@ run "queue_is_fifo_with_explicit_dedup_and_redrive" {
   }
 }
 
-run "queue_alarms_have_stated_thresholds_and_no_actions_yet" {
+run "queue_alarms_have_stated_thresholds_and_are_wired_to_alerts_topic" {
   command = plan
 
   module {
@@ -62,7 +62,8 @@ run "queue_alarms_have_stated_thresholds_and_no_actions_yet" {
   }
 
   variables {
-    project_name = "flylive-audio"
+    project_name     = "flylive-audio"
+    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
   }
 
   assert {
@@ -80,9 +81,40 @@ run "queue_alarms_have_stated_thresholds_and_no_actions_yet" {
     error_message = "DLQ alarm must fire on PRESENCE (>0) — one dead-lettered message is already a lost user-visible event"
   }
 
+  # Ticket 32: when alerts_topic_arn is supplied, all three alarms must wire
+  # exactly one alarm_action and one ok_action, both equal to that topic ARN.
+  # alarm_actions/ok_actions are aws_cloudwatch_metric_alarm's set(string)
+  # attributes — sets have no index, so equality is checked via toset(...).
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.queue_depth.alarm_actions) == 1 && aws_cloudwatch_metric_alarm.queue_depth.alarm_actions == toset([var.alerts_topic_arn]) && length(aws_cloudwatch_metric_alarm.queue_depth.ok_actions) == 1 && aws_cloudwatch_metric_alarm.queue_depth.ok_actions == toset([var.alerts_topic_arn])
+    error_message = "queue_depth alarm must wire alarm_actions/ok_actions to the alerts topic when alerts_topic_arn is supplied"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.queue_age.alarm_actions) == 1 && aws_cloudwatch_metric_alarm.queue_age.alarm_actions == toset([var.alerts_topic_arn]) && length(aws_cloudwatch_metric_alarm.queue_age.ok_actions) == 1 && aws_cloudwatch_metric_alarm.queue_age.ok_actions == toset([var.alerts_topic_arn])
+    error_message = "queue_age alarm must wire alarm_actions/ok_actions to the alerts topic when alerts_topic_arn is supplied"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.dlq_messages.alarm_actions) == 1 && aws_cloudwatch_metric_alarm.dlq_messages.alarm_actions == toset([var.alerts_topic_arn]) && length(aws_cloudwatch_metric_alarm.dlq_messages.ok_actions) == 1 && aws_cloudwatch_metric_alarm.dlq_messages.ok_actions == toset([var.alerts_topic_arn])
+    error_message = "dlq_messages alarm must wire alarm_actions/ok_actions to the alerts topic when alerts_topic_arn is supplied"
+  }
+}
+
+run "queue_alarms_stay_visibility_only_when_alerts_topic_arn_omitted" {
+  command = plan
+
+  module {
+    source = "./modules/queues"
+  }
+
+  variables {
+    project_name = "flylive-audio"
+  }
+
   assert {
     condition     = length(aws_cloudwatch_metric_alarm.queue_depth.alarm_actions) == 0 && length(aws_cloudwatch_metric_alarm.queue_age.alarm_actions) == 0 && length(aws_cloudwatch_metric_alarm.dlq_messages.alarm_actions) == 0
-    error_message = "Queue alarms stay visibility-only until ticket 32 wires alerting as code"
+    error_message = "Queue alarms must stay visibility-only (no actions) when alerts_topic_arn is not supplied — the ships-inert default"
   }
 }
 

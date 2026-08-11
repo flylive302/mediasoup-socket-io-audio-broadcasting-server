@@ -18,7 +18,8 @@
     "format": "prettier --write src",
     "typecheck": "tsc --noEmit",
     "architecture:check": "./scripts/architecture-check.sh",
-    "sentry:check": "node scripts/sentry-ingestion-check.mjs"
+    "sentry:check": "node scripts/sentry-ingestion-check.mjs",
+    "alarms:verify": "node scripts/verify-alarms.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.998.0",

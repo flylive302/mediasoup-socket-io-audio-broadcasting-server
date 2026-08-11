@@ -29,6 +29,16 @@ locals {
   instance_memory_mib  = var.instance_memory_mib[var.instance_type]
   container_memory_mib = local.instance_memory_mib - (var.host_reserve_gib * 1024)
 
+  # --- Worker count, DERIVED (ticket 32 PART 4, mirroring ticket 24) --------
+  # MSAB's own boot-time rule (user-data.sh comment, worker.manager.ts) is
+  # vCPU - 1, one core reserved for the Node.js event loop. This mirrors that
+  # rule in Terraform, from the explicit var.instance_vcpu map (NOT inferred
+  # from RAM — see that variable's description), so modules/region can derive
+  # modules/cloudwatch's workers_below_expected alarm threshold as
+  # fleet_size × this value instead of a hand-maintained literal.
+  instance_vcpu_count  = var.instance_vcpu[var.instance_type]
+  workers_per_instance = local.instance_vcpu_count - 1
+
   # --- Drain window, DERIVED ONCE (ticket 18 AC #3) -------------------------
   # Single source of truth: var.app_drain_ceiling_seconds (mirrors the app's own
   # DRAIN_CEILING_MS). The three values below are the only consumers, and the

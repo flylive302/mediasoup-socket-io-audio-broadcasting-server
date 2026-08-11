@@ -190,6 +190,7 @@ module "region_mumbai" {
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
+  alerts_topic_arn                      = module.alerting.alerts_topic_arn
 }
 
 module "region_frankfurt" {
@@ -242,6 +243,7 @@ module "region_frankfurt" {
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
+  alerts_topic_arn                      = module.alerting.alerts_topic_arn
 }
 
 module "region_singapore" {
@@ -294,6 +296,7 @@ module "region_singapore" {
   hls_r2_access_key_id                  = var.hls_r2_access_key_id
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
+  alerts_topic_arn                      = module.alerting.alerts_topic_arn
 }
 
 # =============================================================================
@@ -325,6 +328,21 @@ module "ecr" {
 }
 
 # =============================================================================
+# Global: Alerting — single SNS topic every region + module.queues notify
+# (ticket 32). See modules/alerting/main.tf header for why this is global
+# rather than living inside the regional modules/cloudwatch: a topic there
+# would cycle (queues -> region -> iam -> queues) and collide by name across
+# a second enabled region.
+# =============================================================================
+
+module "alerting" {
+  source = "./modules/alerting"
+
+  project_name = var.project_name
+  alert_email  = var.alert_email
+}
+
+# =============================================================================
 # Queues: SQS FIFO bridge for economy events (ticket 25, shape = ADR 0029)
 # The SNS event-bus module that used to sit here was retired by ticket 28
 # (2026-08-11): it was never applied and never carried traffic — Laravel
@@ -334,7 +352,8 @@ module "ecr" {
 module "queues" {
   source = "./modules/queues"
 
-  project_name = var.project_name
+  project_name     = var.project_name
+  alerts_topic_arn = module.alerting.alerts_topic_arn
 }
 
 # =============================================================================

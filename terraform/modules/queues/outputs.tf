@@ -19,3 +19,12 @@ output "dlq_url" {
   description = "URL of the dead-letter queue (for operator inspection)"
   value       = aws_sqs_queue.msab_events_dlq.id
 }
+
+output "alarm_names" {
+  description = "Names of every CloudWatch alarm this module declares (depth, age, DLQ presence) — consumed by the root alarm_names output for scripts/verify-alarms.mjs"
+  value = [
+    aws_cloudwatch_metric_alarm.queue_depth.alarm_name,
+    aws_cloudwatch_metric_alarm.queue_age.alarm_name,
+    aws_cloudwatch_metric_alarm.dlq_messages.alarm_name,
+  ]
+}

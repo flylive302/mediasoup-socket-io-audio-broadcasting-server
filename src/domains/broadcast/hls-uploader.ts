@@ -16,6 +16,7 @@ import {
 } from "@aws-sdk/client-s3";
 import type { Logger } from "pino";
 import { hlsObjectHeaders } from "./hls-pipeline.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 export interface HlsUploader {
   /** Mirror one local HLS artifact to `<roomId>/<fileName>` in the bucket. */
@@ -67,6 +68,7 @@ export class R2HlsUploader implements HlsUploader {
         }),
       );
     } catch (err) {
+      metrics.hlsUploaderFailures.inc({ operation: "object_upload" });
       // REACT: a lost segment is a brief gap; never surface to the pipeline.
       this.logger.warn(
         { err, roomId, fileName },
@@ -92,6 +94,7 @@ export class R2HlsUploader implements HlsUploader {
         }),
       );
     } catch (err) {
+      metrics.hlsUploaderFailures.inc({ operation: "room_cleanup" });
       // The R2 lifecycle rule (1-day expiry) is the backstop if this fails.
       this.logger.warn({ err, roomId }, "HlsUploader: room cleanup failed");
     }

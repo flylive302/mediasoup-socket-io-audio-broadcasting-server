@@ -52,6 +52,45 @@ variable "instance_memory_mib" {
   }
 }
 
+variable "instance_vcpu" {
+  description = <<-EOT
+    instance_type → vCPU count, from the AWS EC2 instance-type spec sheet (the same
+    sheet instance_memory_mib cites). Kept as its OWN explicit map — deliberately NOT
+    inferred from instance_memory_mib / 2048, even though every entry below happens to
+    hold that 2 GiB-per-vCPU ratio today. Inferring it would silently mis-derive
+    workers_per_instance (ticket 32 PART 4 — feeds modules/cloudwatch's
+    workers_below_expected alarm threshold) the day someone adds an instance type whose
+    RAM:vCPU ratio differs, with no plan-time error — just a threshold that's quietly
+    wrong forever. The validation below forces every instance_memory_mib entry to have
+    a matching instance_vcpu entry, so adding a type means stating BOTH numbers or
+    failing at plan.
+  EOT
+  type        = map(number)
+  default = {
+    # c7i (Intel, amd64)
+    "c7i.large"    = 2
+    "c7i.xlarge"   = 4
+    "c7i.2xlarge"  = 8
+    "c7i.4xlarge"  = 16
+    "c7i.8xlarge"  = 32
+    "c7i.12xlarge" = 48
+    # c7g / c8g (Graviton, arm64)
+    "c7g.large"   = 2
+    "c7g.xlarge"  = 4
+    "c7g.2xlarge" = 8
+    "c7g.4xlarge" = 16
+    "c8g.large"   = 2
+    "c8g.xlarge"  = 4
+    "c8g.2xlarge" = 8
+    "c8g.4xlarge" = 16
+  }
+
+  validation {
+    condition     = length(setsubtract(keys(var.instance_memory_mib), keys(var.instance_vcpu))) == 0 && length(setsubtract(keys(var.instance_vcpu), keys(var.instance_memory_mib))) == 0
+    error_message = "instance_vcpu and instance_memory_mib must declare exactly the same set of instance_type keys — every type needs both its RAM and its vCPU count stated explicitly, not inferred from one another."
+  }
+}
+
 variable "host_reserve_gib" {
   description = <<-EOT
     RAM (GiB) left to the host OS + Docker daemon, subtracted from the instance's RAM

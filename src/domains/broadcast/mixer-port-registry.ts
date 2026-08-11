@@ -13,6 +13,7 @@
  * pool on release (mirrors the old per-mixer release behaviour) and reused.
  */
 import { config } from "@src/config/index.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 /** Default base port for FFmpeg RTP receive — clear of MEDIASOUP_RTC_MIN_PORT. */
 const DEFAULT_BASE_PORT = 5004;
@@ -38,7 +39,11 @@ export class MixerPortRegistry {
     private readonly basePort: number = DEFAULT_BASE_PORT,
     /** Exclusive upper bound — stays clear of the mediasoup WebRTC port range. */
     private readonly maxPort: number = config.MEDIASOUP_RTC_MIN_PORT,
-  ) {}
+  ) {
+    metrics.hlsMixerPortsCapacity.set(
+      Math.ceil((this.maxPort - this.basePort) / PORT_STEP),
+    );
+  }
 
   /** Lowest free even port at/above basePort. Throws loudly when the range is exhausted. */
   allocate(): number {
@@ -46,15 +51,18 @@ export class MixerPortRegistry {
     while (this.usedPorts.has(port)) {
       port += PORT_STEP;
       if (port >= this.maxPort) {
+        metrics.hlsMixerPortExhausted.inc();
         throw new MixerPortsExhaustedError(this.basePort, this.maxPort);
       }
     }
     this.usedPorts.add(port);
+    metrics.hlsMixerPortsInUse.set(this.usedPorts.size);
     return port;
   }
 
   /** Return a port to the pool so a later allocate() can reuse it. */
   release(port: number): void {
     this.usedPorts.delete(port);
+    metrics.hlsMixerPortsInUse.set(this.usedPorts.size);
   }
 }

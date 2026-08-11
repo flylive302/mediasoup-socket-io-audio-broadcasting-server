@@ -32,6 +32,7 @@ import {
 } from "./hls-pipeline.js";
 import type { HlsUploader } from "./hls-uploader.js";
 import { reactError } from "@src/shared/react-error.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 export interface HlsPublisherOptions {
   roomId: string;
@@ -63,6 +64,15 @@ export class HlsPublisher {
   private processing = false;
   private dirty = false;
   private stopped = false;
+  /**
+   * Metrics-only bookkeeping (ticket 32 pt.3): which FFmpeg children we killed
+   * ourselves (stop() / restart()'s SIGKILL), so the exit reason label isn't
+   * fooled by a coincidental SIGKILL from elsewhere — e.g. the kernel OOM
+   * killer, which a saturation alarm specifically needs to see as
+   * "unexpected". Read only by the exit handler; never consulted by any
+   * control-flow decision.
+   */
+  private readonly killedByUs = new WeakSet<ChildProcess>();
 
   constructor(
     private readonly opts: HlsPublisherOptions,
@@ -148,6 +158,18 @@ export class HlsPublisher {
 
     const proc = spawn(this.opts.ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
     this.ffmpeg = proc;
+    metrics.hlsPublishersActive.inc();
+    // Metrics-only backstop: guarantee exactly one dec() per spawned proc even
+    // if 'exit' never fires (e.g. the binary can't be launched at all) — 'close'
+    // is documented to always follow 'exit' or 'error'. Purely additive
+    // bookkeeping; changes no control flow.
+    let activeGaugeHeld = true;
+    const releaseActiveGauge = () => {
+      if (activeGaugeHeld) {
+        activeGaugeHeld = false;
+        metrics.hlsPublishersActive.dec();
+      }
+    };
 
     proc.stderr?.on("data", (chunk: Buffer) => {
       // FFmpeg runs at -loglevel warning, so anything on stderr is already a
@@ -161,6 +183,14 @@ export class HlsPublisher {
     });
     proc.on("exit", (code, signal) => {
       if (this.ffmpeg === proc) this.ffmpeg = null;
+      releaseActiveGauge();
+      // "expected" = we killed it ourselves (stop() or a debounced restart(),
+      // tracked via killedByUs) or the publisher is already stopping.
+      // Deliberately NOT `signal === "SIGKILL"` alone — the kernel OOM killer
+      // also sends SIGKILL, and a saturation alarm specifically needs that
+      // case to read "unexpected".
+      const expected = this.stopped || this.killedByUs.has(proc);
+      metrics.hlsPublisherExits.inc({ reason: expected ? "expected" : "unexpected" });
       // An unexpected exit (not our kill) while still publishing — log; the
       // controller's lifecycle owns recovery on the next mode/seat evaluation.
       if (!this.stopped && signal !== "SIGKILL") {
@@ -170,10 +200,12 @@ export class HlsPublisher {
         );
       }
     });
+    proc.on("close", releaseActiveGauge);
   }
 
   private killFfmpeg(): void {
     if (this.ffmpeg && !this.ffmpeg.killed) {
+      this.killedByUs.add(this.ffmpeg);
       this.ffmpeg.kill("SIGKILL");
     }
     this.ffmpeg = null;

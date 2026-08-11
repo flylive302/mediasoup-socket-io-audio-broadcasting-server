@@ -335,3 +335,13 @@ variable "ice_stun_urls" {
   type        = string
   default     = "stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53"
 }
+
+# --- Alerting (ticket 32) ---
+# Empty (default) ships alerting INERT: the global SNS topic (modules/alerting)
+# is created, alarms are wired to it, but nobody is subscribed — so nothing
+# can page anyone by accident until an operator deliberately sets this.
+variable "alert_email" {
+  description = "Email address to subscribe to the global alerts SNS topic. Empty = topic exists, no subscriber (ships inert). Setting it requires a manual confirmation click in that inbox before delivery starts (SNS behavior, not a bug)."
+  type        = string
+  default     = ""
+}
