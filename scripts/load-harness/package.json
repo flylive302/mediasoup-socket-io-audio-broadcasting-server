@@ -1,0 +1,17 @@
+{
+  "name": "flylive-load-harness",
+  "private": true,
+  "description": "Headless real-media load harness (epic 3b ticket 34). Drives real Opus encode/decode client legs against a dedicated load-test MSAB environment and records the epic-2 SLO queries at every ramp step. NEVER points at production — see src/guard.mjs.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node run.mjs"
+  },
+  "dependencies": {
+    "@roamhq/wrtc": "^0.8.0",
+    "mediasoup-client": "^3.7.16",
+    "socket.io-client": "^4.8.1"
+  }
+}

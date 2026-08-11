@@ -1,0 +1,29 @@
+{
+  "target": {
+    "url": "http://10.20.1.50:3030",
+    "origin": "https://load-harness.invalid",
+    "environmentName": "load-test",
+    "expectedWorkers": 2
+  },
+  "prometheus": {
+    "url": "http://10.20.1.60:9090"
+  },
+  "fleet": {
+    "processes": 4,
+    "staggerMs": 150,
+    "userIdBase": 9000000
+  },
+  "ramp": {
+    "roomPrefix": "load-room",
+    "speakersPerRoom": 2,
+    "holdSeconds": 600,
+    "stopOnFail": true,
+    "steps": [
+      { "rooms": 2, "listenersPerRoom": 10 },
+      { "rooms": 5, "listenersPerRoom": 15 },
+      { "rooms": 10, "listenersPerRoom": 20 },
+      { "rooms": 15, "listenersPerRoom": 25 },
+      { "rooms": 20, "listenersPerRoom": 30 }
+    ]
+  }
+}
