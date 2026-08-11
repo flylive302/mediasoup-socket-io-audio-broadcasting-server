@@ -1,0 +1,126 @@
+name: Terraform — AWS infra apply (manual dispatch only)
+
+# Ticket 30 — the INFRASTRUCTURE pipeline, one of exactly two release paths:
+#
+#   deploy.yml               → application releases (image_tag changes ONLY)
+#   terraform-aws-infra.yml  → infrastructure changes (everything EXCEPT image_tag)
+#
+# Separation rules (ticket 30 ACs):
+#   - Manual dispatch only. No push/PR trigger exists, so merging to master can
+#     never apply infrastructure by itself.
+#   - `apply` runs under the aws-production GitHub environment, whose
+#     required-reviewer setting is the explicit human approval gate (console
+#     setting — see 01-OPERATOR-CHECKLIST.md).
+#   - This pipeline has NO path to trigger an application deploy: the
+#     image-tag guard below fails the run if the plan would change the sha tag
+#     baked into any launch template's user-data. image_tag is a REQUIRED
+#     terraform variable, so this workflow takes it as an input — but it must
+#     be the tag that is ALREADY live. Shipping a new tag is deploy.yml's job.
+#   - No workflow_call / workflow_run wiring in either direction: neither
+#     pipeline can invoke the other. (Operator verification: attempt the
+#     forbidden cross-trigger from each side and confirm GitHub rejects it.)
+#
+# SHIPS INERT (standing rule): until the aws-production environment holds
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY reissued from the fresh account
+# plus TF_BACKEND_PROD / TF_VARS_PROD (same secrets the drift check in
+# terraform-aws-tests.yml documents), every run fails at credential setup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment."
+        required: true
+        type: choice
+        options: [staging, production]
+      action:
+        description: "plan (safe, read-only) or apply."
+        required: true
+        type: choice
+        options: [plan, apply]
+        default: plan
+      image_tag:
+        description: "The CURRENTLY LIVE image tag (sha-<commit8>). This pipeline refuses to change it — new images ship via deploy.yml."
+        required: true
+        type: string
+
+concurrency:
+  group: tf-aws-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    # Carries the required-reviewer gate for production (AC: explicit approval,
+    # same gate for every apply — there is no fast path around it).
+    environment: aws-${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+          terraform_wrapper: false
+
+      - name: Materialize gitignored backend + tfvars from secrets
+        env:
+          TF_BACKEND: ${{ inputs.environment == 'production' && secrets.TF_BACKEND_PROD || secrets.TF_BACKEND_STAGING }}
+          TF_VARS: ${{ inputs.environment == 'production' && secrets.TF_VARS_PROD || secrets.TF_VARS_STAGING }}
+        run: |
+          printf '%s' "$TF_BACKEND" > backend-ci.hcl
+          printf '%s' "$TF_VARS" > ci.tfvars
+          test -s backend-ci.hcl && test -s ci.tfvars
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config=backend-ci.hcl
+
+      - name: Terraform plan
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: terraform plan -input=false -var-file=ci.tfvars -var "image_tag=$IMAGE_TAG" -out=tfplan
+
+      - name: Guard — this pipeline must not change the running image (ticket 30)
+        # An infra change may legitimately touch launch templates (instance
+        # type, volumes) and ASGs (fleet_size) — those still roll the fleet
+        # through ticket 29's canary refresh, which is fine. What it may NOT do
+        # is ship a different application build: if any launch template's
+        # user-data would swap its baked sha-<commit8> tag, that is an
+        # application deploy wearing an infra hat — refuse and point at
+        # deploy.yml. A null "before" (resource not created yet) is allowed:
+        # greenfield provisioning necessarily bakes an initial tag.
+        run: |
+          terraform show -json tfplan > plan.json
+          VIOLATIONS=$(jq -r '
+            [.resource_changes[]?
+              | select(.type == "aws_launch_template")
+              | select(.change.before != null)
+              | {addr: .address,
+                 before: (.change.before.user_data // ""),
+                 after:  (.change.after.user_data  // "")}
+              | select(.before != .after)
+              | {addr,
+                 before_tags: ([.before | @base64d | capture("(?<t>sha-[0-9a-f]{8})"; "g") | .t] | sort),
+                 after_tags:  ([.after  | @base64d | capture("(?<t>sha-[0-9a-f]{8})"; "g") | .t] | sort)}
+              | select(.before_tags != .after_tags)
+              | "\(.addr): \(.before_tags | join(",")) -> \(.after_tags | join(","))"
+            ] | .[]' plan.json)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Plan would change the running application image — that is deploy.yml's job, not this pipeline's:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "OK: no launch template changes its baked image tag."
+
+      - name: Terraform apply
+        if: ${{ inputs.action == 'apply' }}
+        run: terraform apply -input=false tfplan

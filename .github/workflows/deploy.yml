@@ -1,18 +1,54 @@
-name: Deploy via ECR + ASG Instance Refresh
+name: App Release — ECR build + scoped Terraform apply + ASG refresh
 
-# AWS account is suspended (see docs/prd-msab-vultr-migration.md) — kept as a
-# dormant, manually-redeployable backup. No longer runs on push; ghcr-publish.yml
-# is the live image pipeline.
+# Ticket 30 — the APPLICATION pipeline, one of exactly two release paths:
+#
+#   deploy.yml               → application releases (image_tag changes ONLY)
+#   terraform-aws-infra.yml  → infrastructure changes (everything EXCEPT image_tag)
+#
+# How an app release actually ships (ticket 29): the image tag is baked into
+# launch-template user-data by terraform, so a release is `terraform apply` with
+# a new image_tag → new launch-template version → the ASG's own
+# terraform-configured instance_refresh (canary checkpoint + soak + abort alarms
+# + auto_rollback). This workflow drives that apply — but through a SCOPE GUARD:
+# the plan may only touch launch templates and autoscaling groups. Anything else
+# in the plan (drift, or an infra edit riding along) fails the run and points at
+# the infra pipeline. That closes the ticket's core gap: the untargeted
+# fleet-wide apply is no longer reachable from an application release.
+#
+# Separation rules (ticket 30 ACs):
+#   - Manual dispatch only — merging to master never deploys by itself
+#     (ghcr-publish.yml builds an image on push; publishing is not releasing).
+#   - The aws-production GitHub environment's required-reviewer setting is the
+#     explicit human approval, for forward deploys AND rollbacks alike.
+#   - Rollback = dispatch with the `image_tag` input pinned to a previous
+#     sha-<commit8> tag (ticket 14's mechanism) — same pipeline, same guard,
+#     same approval. No second mechanism.
+#   - No workflow_call / workflow_run wiring in either direction between the
+#     two pipelines.
+#
+# AWS account status: fresh account, fleet not yet applied (see epic
+# aws-platform-build) — runnable end-to-end only once the environment holds the
+# reissued credentials + TF_BACKEND_PROD / TF_VARS_PROD.
+
 on:
-  workflow_dispatch: # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing ECR tag (sha-<commit8>) to deploy — the ROLLBACK / redeploy path. Leave empty to build and release the current commit."
+        required: false
+        type: string
+        default: ""
 
-# Only one deploy workflow at a time (queues, doesn't cancel)
+# Only one release at a time (queues, doesn't cancel)
 concurrency:
   group: aws-deploy
   cancel-in-progress: false
 
 jobs:
   ci:
+    # Skipped when redeploying an already-built tag: that image's commit passed
+    # CI when it was built, and a rollback must not be blocked by HEAD's state.
+    if: ${{ inputs.image_tag == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +75,7 @@ jobs:
         run: npm test
 
   build-and-push:
+    if: ${{ inputs.image_tag == '' }}
     needs: ci
     runs-on: ubuntu-latest
     environment: aws-production
@@ -110,8 +147,142 @@ jobs:
             --output table
           echo "✅ Image pushed and verified"
 
-  deploy:
+  release:
+    # Runs for BOTH paths: after a fresh build, or directly when the image_tag
+    # input pins an existing tag (rollback / redeploy). `!cancelled()` +
+    # explicit result checks let the skipped-build path through while a FAILED
+    # build still blocks the release.
+    if: >-
+      ${{ !cancelled() && (
+        needs.build-and-push.result == 'success' ||
+        (needs.build-and-push.result == 'skipped' && inputs.image_tag != '')
+      ) }}
     needs: build-and-push
+    runs-on: ubuntu-latest
+    # Required-reviewer gate (ticket 30 AC: explicit approval before production,
+    # rollback included — no fast path around it).
+    environment: aws-production
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      applied: ${{ steps.scope.outputs.applied }}
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          BUILT_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          TAG="${INPUT_TAG:-$BUILT_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "::error::No image tag — neither built nor supplied as input."
+            exit 1
+          fi
+          case "$TAG" in
+            sha-????????) ;;
+            *)
+              echo "::error::image_tag must be sha-<commit8> (ticket 14 pinned-tag rule), got: $TAG"
+              exit 1
+              ;;
+          esac
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "🏷  Releasing $TAG"
+
+      - name: Verify tag exists in ECR (rollback path)
+        # The build path already verified its own push; the pinned-tag path must
+        # prove the artifact exists before terraform bakes it into user-data.
+        if: ${{ inputs.image_tag != '' }}
+        env:
+          TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          aws ecr describe-images \
+            --repository-name "flylive-audio/msab" \
+            --image-ids imageTag="$TAG" \
+            --query 'imageDetails[0].{Pushed: imagePushedAt, Tags: imageTags}' \
+            --output table
+          echo "✅ $TAG exists in ECR"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+          terraform_wrapper: false
+
+      - name: Materialize gitignored backend + tfvars from secrets
+        env:
+          TF_BACKEND_PROD: ${{ secrets.TF_BACKEND_PROD }}
+          TF_VARS_PROD: ${{ secrets.TF_VARS_PROD }}
+        run: |
+          printf '%s' "$TF_BACKEND_PROD" > backend-ci.hcl
+          printf '%s' "$TF_VARS_PROD" > ci.tfvars
+          test -s backend-ci.hcl && test -s ci.tfvars
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config=backend-ci.hcl
+
+      - name: Terraform plan (image_tag only)
+        env:
+          TAG: ${{ steps.tag.outputs.image_tag }}
+        run: terraform plan -input=false -var-file=ci.tfvars -var "image_tag=$TAG" -out=tfplan
+
+      - name: Scope guard — an app release may only roll the fleet (ticket 30)
+        id: scope
+        # The core of the ticket: this pipeline is FORBIDDEN from making
+        # infrastructure changes. The plan may touch launch templates (the new
+        # user-data with the new tag) and autoscaling groups (the refresh
+        # trigger) — nothing else. Any other resource in the plan means drift or
+        # an infra edit riding along with an app release; either way the release
+        # stops and the change goes through terraform-aws-infra.yml, where the
+        # full plan is reviewed and approved as an infra change.
+        run: |
+          terraform show -json tfplan > plan.json
+          DISALLOWED=$(jq -r '
+            [.resource_changes[]?
+              | select((.change.actions | join(",")) as $a
+                       | $a != "no-op" and $a != "read")
+              | select(.type != "aws_launch_template"
+                       and .type != "aws_autoscaling_group")
+              | "\(.address) [\(.change.actions | join(","))]"
+            ] | .[]' plan.json)
+          if [ -n "$DISALLOWED" ]; then
+            echo "::error::Plan contains changes outside the app-release scope — use terraform-aws-infra.yml for these:"
+            echo "$DISALLOWED"
+            exit 1
+          fi
+
+          CHANGES=$(jq -r '
+            [.resource_changes[]?
+              | select((.change.actions | join(",")) as $a
+                       | $a != "no-op" and $a != "read")
+              | .address
+            ] | length' plan.json)
+          if [ "$CHANGES" -eq 0 ]; then
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  Plan is a no-op — this tag is already live. Nothing to apply."
+          else
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Scope OK: $CHANGES change(s), all launch-template/ASG."
+          fi
+
+      - name: Terraform apply (starts the canary refresh in every region)
+        if: ${{ steps.scope.outputs.applied == 'true' }}
+        run: terraform apply -input=false tfplan
+
+  monitor:
+    # The apply above bumped each region's launch template, which starts that
+    # region's ASG instance refresh (ticket 29: canary checkpoint + soak +
+    # abort alarms + auto_rollback). This job only OBSERVES — the refresh
+    # succeeds or auto-rolls-back on its own; failing here still triggers the
+    # un-drain rescue step and marks the run red for humans.
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.release.outputs.applied == 'true' }}
     runs-on: ubuntu-latest
     environment: aws-production
     # Ticket 12: OIDC federation — see build-and-push.
@@ -119,9 +290,8 @@ jobs:
       id-token: write
       contents: read
     strategy:
-      fail-fast: false # Don't cancel other regions if one fails
-      # AUDIT-005 FIX: Deploy sequentially — if Mumbai breaks, Frankfurt stays healthy
-      max-parallel: 1
+      fail-fast: false # Don't stop watching other regions if one fails
+      max-parallel: 3 # Observation only — the refreshes run concurrently regardless
       matrix:
         region:
           - name: mumbai
@@ -153,108 +323,42 @@ jobs:
           echo "✅ Found ASG: $ASG_NAME"
           echo "asg_name=$ASG_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Cancel existing Instance Refresh (${{ matrix.region.name }})
+      - name: Wait for the terraform-triggered refresh (${{ matrix.region.name }})
+        id: find-refresh
+        # The refresh is started BY the apply (launch-template change trigger),
+        # not by this workflow. Give the ASG up to 3 minutes to register it. If
+        # none appears, this region's plan was a no-op for the fleet (e.g. a
+        # region whose template already carried the tag) — report and pass.
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
-
-          # Check if there's an active refresh
-          ACTIVE_STATUS=$(aws autoscaling describe-instance-refreshes \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --max-records 1 \
-            --query 'InstanceRefreshes[0].Status' \
-            --output text 2>/dev/null || echo "None")
-
-          if [ "$ACTIVE_STATUS" = "InProgress" ] || [ "$ACTIVE_STATUS" = "Pending" ]; then
-            echo "⚠️  Active refresh found (status: $ACTIVE_STATUS). Cancelling..."
-            aws autoscaling cancel-instance-refresh \
-              --auto-scaling-group-name "$ASG_NAME" || true
-
-            # Wait for cancellation to complete
-            for i in $(seq 1 20); do
-              sleep 15
-              STATUS=$(aws autoscaling describe-instance-refreshes \
+          for i in $(seq 1 12); do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --max-records 1 \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text 2>/dev/null || echo "None")
+            if [ "$STATUS" = "InProgress" ] || [ "$STATUS" = "Pending" ]; then
+              REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
                 --auto-scaling-group-name "$ASG_NAME" \
                 --max-records 1 \
-                --query 'InstanceRefreshes[0].Status' \
-                --output text 2>/dev/null || echo "None")
-
-              echo "  ⏳ Cancellation status: $STATUS (${i}/20)"
-
-              if [ "$STATUS" != "Cancelling" ] && [ "$STATUS" != "InProgress" ] && [ "$STATUS" != "Pending" ]; then
-                echo "✅ Previous refresh resolved (status: $STATUS)"
-                break
-              fi
-            done
-          else
-            echo "✅ No active refresh to cancel (status: $ACTIVE_STATUS)"
-          fi
-
-          # Also complete any stuck lifecycle hooks
-          PENDING_INSTANCES=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --query "AutoScalingGroups[0].Instances[?LifecycleState=='Pending:Wait'].InstanceId" \
-            --output text 2>/dev/null || echo "")
-
-          if [ -n "$PENDING_INSTANCES" ] && [ "$PENDING_INSTANCES" != "None" ]; then
-            LAUNCH_HOOK=$(aws autoscaling describe-lifecycle-hooks \
-              --auto-scaling-group-name "$ASG_NAME" \
-              --query "LifecycleHooks[?LifecycleTransition=='autoscaling:EC2_INSTANCE_LAUNCHING'].LifecycleHookName | [0]" \
-              --output text 2>/dev/null || echo "")
-
-            if [ -n "$LAUNCH_HOOK" ] && [ "$LAUNCH_HOOK" != "None" ]; then
-              for INSTANCE_ID in $PENDING_INSTANCES; do
-                echo "  🔧 Completing launch lifecycle hook for $INSTANCE_ID"
-                aws autoscaling complete-lifecycle-action \
-                  --lifecycle-action-result CONTINUE \
-                  --instance-id "$INSTANCE_ID" \
-                  --auto-scaling-group-name "$ASG_NAME" \
-                  --lifecycle-hook-name "$LAUNCH_HOOK" || true
-              done
+                --query 'InstanceRefreshes[0].InstanceRefreshId' \
+                --output text)
+              echo "🔄 Refresh in flight: $REFRESH_ID"
+              echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          fi
+            echo "  ⏳ No active refresh yet (status: $STATUS) — ${i}/12"
+            sleep 15
+          done
+          echo "ℹ️  No refresh started in this region — fleet already on the target template."
+          echo "refresh_id=" >> "$GITHUB_OUTPUT"
 
-      - name: Start Instance Refresh (${{ matrix.region.name }})
-        id: refresh
+      - name: Watch Instance Refresh (${{ matrix.region.name }})
+        if: ${{ steps.find-refresh.outputs.refresh_id != '' }}
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
-          echo "🚀 Starting instance refresh for $ASG_NAME in ${{ matrix.region.aws_region }}..."
-
-          # ⚠️ Ticket 29: this CLI-triggered refresh CANNOT ship a new image. The image tag
-          # is baked into user-data by terraform (modules/autoscaling/user-data.sh pulls
-          # $ECR_REPO_URL:${image_tag}) — a bare refresh relaunches the SAME pinned tag.
-          # A real deploy = bump var.image_tag → terraform apply → new launch-template
-          # version → the ASG's own terraform-configured instance_refresh (which carries
-          # AutoRollback and is the canonical canary path). This workflow remains useful
-          # as a same-image re-roll (e.g. host rot, config re-read) only.
-          #
-          # Preferences MIRROR modules/autoscaling/main.tf `instance_refresh` — if you
-          # change one, change both (tests/rollout.tftest.hcl pins the terraform side):
-          #   InstanceWarmup 350 = container_warmup(90) + bootstrap_overhead(260)
-          #   Checkpoint 25% ≈ one canary instance at fleet_size 4 (ceil(100/N))
-          #   CheckpointDelay 300 = canary_soak_seconds (≥ 270s abort-detection window)
-          #   Alarms = the automated continue-or-abort signals
-          # AutoRollback is terraform-path only: a same-image CLI refresh has no previous
-          # launch-template version to roll back to.
-          REFRESH_ID=$(aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --preferences '{
-              "MinHealthyPercentage": 50,
-              "InstanceWarmup": 350,
-              "CheckpointPercentages": [25, 100],
-              "CheckpointDelay": 300,
-              "AlarmSpecification": {"Alarms": ["flylive-audio-zero-healthy-hosts", "flylive-audio-refresh-unhealthy-sustained"]}
-            }' \
-            --query 'InstanceRefreshId' \
-            --output text)
-
-          echo "🔄 Instance refresh started: $REFRESH_ID"
-          echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for Instance Refresh (${{ matrix.region.name }})
-        run: |
-          ASG_NAME="${{ steps.asg.outputs.asg_name }}"
-          REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
-          MAX_WAIT=2400  # 40 minutes (increased from 30 for cross-region ECR pulls)
+          REFRESH_ID="${{ steps.find-refresh.outputs.refresh_id }}"
+          MAX_WAIT=2400  # 40 minutes (cross-region ECR pulls are slow)
           ELAPSED=0
           INTERVAL=30
           LAST_PROGRESS=""
@@ -281,7 +385,15 @@ jobs:
                 echo "✅ Instance refresh completed successfully!"
                 exit 0
                 ;;
-              Failed|Cancelled|RollbackSuccessful|RollbackFailed)
+              RollbackSuccessful)
+                # Ticket 29 AC-3: the automated abort fired and auto_rollback
+                # restored the previous launch-template version — the fleet is
+                # back on the previous artifact. The release FAILED; the fleet
+                # is safe.
+                echo "↩️  Refresh aborted and rolled back to the previous artifact."
+                exit 1
+                ;;
+              Failed|Cancelled|RollbackFailed)
                 echo "❌ Instance refresh $STATUS"
                 aws autoscaling describe-instance-refreshes \
                   --auto-scaling-group-name "$ASG_NAME" \
@@ -304,14 +416,12 @@ jobs:
                   echo ""
                   echo "  ⚠️  Progress stuck at ${PROGRESS}% for $((STALL_COUNT * INTERVAL))s — running diagnostics..."
 
-                  # Diagnostic: Show instance lifecycle states
                   echo "  📊 Instance states:"
                   aws autoscaling describe-auto-scaling-groups \
                     --auto-scaling-group-name "$ASG_NAME" \
                     --query "AutoScalingGroups[0].Instances[].{Id:InstanceId,State:LifecycleState,Health:HealthStatus}" \
                     --output table 2>/dev/null || true
 
-                  # Diagnostic: Show recent scaling activities
                   echo "  📊 Recent scaling activities:"
                   aws autoscaling describe-scaling-activities \
                     --auto-scaling-group-name "$ASG_NAME" \
@@ -360,14 +470,15 @@ jobs:
           exit 1
 
       - name: Health Soak — Verify stability (${{ matrix.region.name }})
-        # Ticket 29: this whole-region soak is now the SECONDARY gate. The primary
-        # canary gate runs INSIDE the refresh above (CheckpointDelay + AlarmSpecification):
-        # one instance soaks under real traffic and any abort alarm fails the refresh
-        # automatically. This step remains as a final cross-region barrier before the
-        # matrix moves on.
+        if: ${{ steps.find-refresh.outputs.refresh_id != '' }}
+        # Ticket 29: this whole-region soak is the SECONDARY gate. The primary
+        # canary gate runs INSIDE the refresh (CheckpointDelay + AlarmSpecification):
+        # one instance soaks under real traffic and any abort alarm fails the
+        # refresh automatically. This step remains as a final barrier before the
+        # run goes green.
         run: |
           echo "🕐 Starting 3-minute health soak for ${{ matrix.region.name }}..."
-          echo "   New instances must stay healthy for 180s before proceeding to next region."
+          echo "   New instances must stay healthy for 180s."
 
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           SOAK_DURATION=180
@@ -378,7 +489,6 @@ jobs:
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
 
-            # Check healthy instance count
             HEALTHY=$(aws autoscaling describe-auto-scaling-groups \
               --auto-scaling-group-name "$ASG_NAME" \
               --query "AutoScalingGroups[0].Instances[?HealthStatus=='Healthy'] | length(@)" \
@@ -392,8 +502,7 @@ jobs:
             echo "  ⏳ Health soak: ${ELAPSED}s/${SOAK_DURATION}s — ${HEALTHY}/${TOTAL} instances healthy"
 
             if [ "$HEALTHY" -lt 1 ]; then
-              echo "❌ SOAK FAILED: Zero healthy instances at ${ELAPSED}s — aborting deploy!"
-              echo "   ⛔ Next region will NOT be deployed."
+              echo "❌ SOAK FAILED: Zero healthy instances at ${ELAPSED}s!"
               exit 1
             fi
           done
@@ -417,6 +526,10 @@ jobs:
         # against localhost, reading X-Internal-Key from the instance's own
         # /opt/msab/.env.secrets — the credential never crosses the network and
         # this workflow never holds it (no plaintext-HTTP transport of the key).
+        # NOTE (ticket 30): cancelling a terraform-triggered refresh does NOT
+        # revert the launch template — auto_rollback only acts on alarm/health
+        # aborts, not manual cancels. After a cancel, roll back by dispatching
+        # this workflow with the previous image_tag.
         if: failure()
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
@@ -467,4 +580,4 @@ jobs:
 
       - name: Complete job
         if: always()
-        run: echo "Deploy job for ${{ matrix.region.name }} finished with status ${{ job.status }}"
+        run: echo "Monitor job for ${{ matrix.region.name }} finished with status ${{ job.status }}"
