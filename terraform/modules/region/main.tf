@@ -102,6 +102,18 @@ module "loadbalancer" {
   # attachment surface at all; the ASG's target_group_arns does the work.
 }
 
+# Base audio hostname → NLB. DNS-only (never proxied): the NLB terminates TLS
+# itself with the ACM cert, and WebRTC/socket traffic is not Cloudflare-HTTP.
+# Per-instance hostnames are a separate surface (aws-production ticket 16).
+resource "cloudflare_dns_record" "audio" {
+  zone_id = var.cloudflare_zone_id
+  name    = var.audio_domain
+  type    = "CNAME"
+  content = module.loadbalancer.nlb_dns_name
+  proxied = false
+  ttl     = 60
+}
+
 # Secrets replicated into this region's SSM (SSM Parameter Store is regional —
 # without this, instances boot with empty secrets: Redis AUTH fails → 503 loop).
 module "ssm" {
