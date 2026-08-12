@@ -36,3 +36,8 @@ output "alarm_names" {
     aws_cloudwatch_metric_alarm.refresh_unhealthy_sustained.alarm_name,
   ]
 }
+
+output "user_data_rendered" {
+  description = "Plain-text rendered user-data script (the launch template carries it gzipped). For tests."
+  value       = local.user_data_rendered
+}

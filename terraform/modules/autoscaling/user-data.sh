@@ -339,10 +339,19 @@ ROOM_BROADCAST_THRESHOLD_UP=${room_broadcast_threshold_up}
 ROOM_BROADCAST_THRESHOLD_DOWN=${room_broadcast_threshold_down}
 
 # realtime-09 — broadcast HLS tier (non-sensitive; R2 keys ride the secrets env-file).
+# URL vars are OMITTED when empty: the app schema is optional-but-must-be-a-URL,
+# so `HLS_R2_ENDPOINT=` (empty string) fails z.string().url() and crash-loops the
+# container even with the tier disabled (found on the first staging boot).
 BROADCAST_HLS_ENABLED=${broadcast_hls_enabled}
+%{ if hls_r2_endpoint != "" ~}
 HLS_R2_ENDPOINT=${hls_r2_endpoint}
+%{ endif ~}
+%{ if hls_r2_bucket != "" ~}
 HLS_R2_BUCKET=${hls_r2_bucket}
+%{ endif ~}
+%{ if hls_public_base_url != "" ~}
 HLS_PUBLIC_BASE_URL=${hls_public_base_url}
+%{ endif ~}
 ENVEOF
 
 # --- Write secrets env file (0600) ---

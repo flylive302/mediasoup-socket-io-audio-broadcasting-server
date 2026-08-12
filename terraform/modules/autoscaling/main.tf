@@ -147,50 +147,10 @@ resource "aws_launch_template" "msab" {
     }
   }
 
-  # User data script — same as compute module
-  user_data = base64encode(templatefile("${path.module}/user-data.sh", {
-    region                 = var.region
-    name_prefix            = local.env_prefix
-    ecr_repo_url           = var.ecr_repo_url
-    app_port               = var.app_port
-    rtc_min_port           = var.rtc_min_port
-    rtc_max_port           = var.rtc_max_port
-    redis_host             = var.redis_host
-    redis_port             = var.redis_port
-    redis_cache_host       = var.redis_cache_host
-    redis_cache_port       = var.redis_cache_port
-    cors_origins           = var.cors_origins
-    laravel_api_url        = var.laravel_api_url
-    cascade_enabled        = var.cascade_enabled
-    cloudflare_turn_key_id = var.cloudflare_turn_key_id
-    image_tag              = var.image_tag
-    jwt_max_age_seconds    = var.jwt_max_age_seconds
-    laravel_api_timeout_ms = var.laravel_api_timeout_ms
-    ice_stun_urls          = var.ice_stun_urls
-
-    # Container memory cap, computed from the instance type's RAM (AC #6).
-    container_memory_mib = local.container_memory_mib
-
-    # Drain window — all three derived from var.app_drain_ceiling_seconds (AC #3).
-    drain_request_seconds       = local.drain_request_seconds
-    drain_poll_ceiling_seconds  = local.drain_poll_ceiling_seconds
-    drain_poll_interval_seconds = var.drain_poll_interval_seconds
-    # Detection lag before the drain even starts — same budget as the drain (AC #3).
-    lifecycle_poll_interval_seconds = var.lifecycle_poll_interval_seconds
-
-    # Health-gate ceiling (aws-production 02 / F6): the docker-run→healthy budget,
-    # from the SAME variable that feeds the ELB grace period and the launch-hook
-    # heartbeat derivation — never a free-standing literal in the script.
-    health_max_wait_seconds = var.container_warmup_seconds
-
-    room_broadcast_threshold_up   = var.room_broadcast_threshold_up
-    room_broadcast_threshold_down = var.room_broadcast_threshold_down
-    broadcast_hls_enabled         = var.broadcast_hls_enabled
-    hls_r2_endpoint               = var.hls_r2_endpoint
-    hls_r2_bucket                 = var.hls_r2_bucket
-    hls_public_base_url           = var.hls_public_base_url
-  }))
-
+  # User data script — same as compute module. Gzipped because the rendered
+  # script (~28KB) exceeds EC2's 16KB user-data limit; cloud-init decompresses
+  # transparently. Tests assert on the user_data_rendered output, not this attr.
+  user_data = base64gzip(local.user_data_rendered)
   # Metadata options (IMDSv2 required)
   metadata_options {
     http_endpoint               = "enabled"
@@ -468,4 +428,52 @@ resource "aws_cloudwatch_metric_alarm" "zero_healthy_hosts" {
 
   alarm_actions = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
   ok_actions    = var.alarm_notification_topic_arn != "" ? [var.alarm_notification_topic_arn] : []
+}
+
+# Rendered user-data script. Kept as a local (and exposed via the
+# user_data_rendered output) so tests can assert on the plain text — the
+# launch template carries it gzipped, which base64decode() alone can't unpack.
+locals {
+  user_data_rendered = templatefile("${path.module}/user-data.sh", {
+    region                 = var.region
+    name_prefix            = local.env_prefix
+    ecr_repo_url           = var.ecr_repo_url
+    app_port               = var.app_port
+    rtc_min_port           = var.rtc_min_port
+    rtc_max_port           = var.rtc_max_port
+    redis_host             = var.redis_host
+    redis_port             = var.redis_port
+    redis_cache_host       = var.redis_cache_host
+    redis_cache_port       = var.redis_cache_port
+    cors_origins           = var.cors_origins
+    laravel_api_url        = var.laravel_api_url
+    cascade_enabled        = var.cascade_enabled
+    cloudflare_turn_key_id = var.cloudflare_turn_key_id
+    image_tag              = var.image_tag
+    jwt_max_age_seconds    = var.jwt_max_age_seconds
+    laravel_api_timeout_ms = var.laravel_api_timeout_ms
+    ice_stun_urls          = var.ice_stun_urls
+
+    # Container memory cap, computed from the instance type's RAM (AC #6).
+    container_memory_mib = local.container_memory_mib
+
+    # Drain window — all three derived from var.app_drain_ceiling_seconds (AC #3).
+    drain_request_seconds       = local.drain_request_seconds
+    drain_poll_ceiling_seconds  = local.drain_poll_ceiling_seconds
+    drain_poll_interval_seconds = var.drain_poll_interval_seconds
+    # Detection lag before the drain even starts — same budget as the drain (AC #3).
+    lifecycle_poll_interval_seconds = var.lifecycle_poll_interval_seconds
+
+    # Health-gate ceiling (aws-production 02 / F6): the docker-run→healthy budget,
+    # from the SAME variable that feeds the ELB grace period and the launch-hook
+    # heartbeat derivation — never a free-standing literal in the script.
+    health_max_wait_seconds = var.container_warmup_seconds
+
+    room_broadcast_threshold_up   = var.room_broadcast_threshold_up
+    room_broadcast_threshold_down = var.room_broadcast_threshold_down
+    broadcast_hls_enabled         = var.broadcast_hls_enabled
+    hls_r2_endpoint               = var.hls_r2_endpoint
+    hls_r2_bucket                 = var.hls_r2_bucket
+    hls_public_base_url           = var.hls_public_base_url
+  })
 }

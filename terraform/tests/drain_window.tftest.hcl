@@ -65,20 +65,20 @@ run "drain_window_values_cannot_diverge" {
   #    `MAX_DRAIN_WAIT - 60` offset, carried onto the 150s window, asked for 90s
   #    — below the 120s MSAB needs. That regression fails here.
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nDRAIN_REQUEST=${var.app_drain_ceiling_seconds}\n")
+    condition     = strcontains(output.user_data_rendered, "\nDRAIN_REQUEST=${var.app_drain_ceiling_seconds}\n")
     error_message = "The drain script must ask MSAB for at least its own drain ceiling — never a smaller derived value"
   }
 
   # Matches the arithmetic form, not prose — the script's own comment explains the
   # retired offset and must not trip this.
   assert {
-    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "$((MAX_DRAIN_WAIT - 60))")
+    condition     = !strcontains(output.user_data_rendered, "$((MAX_DRAIN_WAIT - 60))")
     error_message = "The retired `$((MAX_DRAIN_WAIT - 60))` offset must not return — it was tuned against a 900s window and silently under-asks on a 150s one"
   }
 
   # 3. The script's own poll ceiling gives the app its full ceiling plus one tick.
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nMAX_DRAIN_WAIT=${var.app_drain_ceiling_seconds + var.drain_poll_interval_seconds}\n")
+    condition     = strcontains(output.user_data_rendered, "\nMAX_DRAIN_WAIT=${var.app_drain_ceiling_seconds + var.drain_poll_interval_seconds}\n")
     error_message = "The drain script's poll ceiling must be app_drain_ceiling_seconds + one poll interval"
   }
 
@@ -92,7 +92,7 @@ run "drain_window_values_cannot_diverge" {
 
   # 5. No stale 900s literal anywhere in the rendered script.
   assert {
-    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "\nMAX_DRAIN_WAIT=900\n")
+    condition     = !strcontains(output.user_data_rendered, "\nMAX_DRAIN_WAIT=900\n")
     error_message = "The 900s MAX_DRAIN_WAIT literal must never come back — AWS closes the window at 150s"
   }
 
@@ -100,7 +100,7 @@ run "drain_window_values_cannot_diverge" {
   #    transitions the instance, not when the monitor notices, so this interval is charged
   #    against the same window — and the margin is validated to exceed it.
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nPOLL_INTERVAL=${var.lifecycle_poll_interval_seconds}\n")
+    condition     = strcontains(output.user_data_rendered, "\nPOLL_INTERVAL=${var.lifecycle_poll_interval_seconds}\n")
     error_message = "The lifecycle detection poll interval must be rendered from a variable — it is part of the drain budget, not free"
   }
 }
@@ -173,12 +173,12 @@ run "drain_window_still_ordered_at_a_different_ceiling" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nMAX_DRAIN_WAIT=205\n")
+    condition     = strcontains(output.user_data_rendered, "\nMAX_DRAIN_WAIT=205\n")
     error_message = "Script poll ceiling must track a changed app ceiling (200 + 5 = 205)"
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nDRAIN_REQUEST=200\n")
+    condition     = strcontains(output.user_data_rendered, "\nDRAIN_REQUEST=200\n")
     error_message = "App-facing drain request must track a changed app ceiling"
   }
 
@@ -251,17 +251,17 @@ run "container_memory_is_computed_from_instance_ram" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "--memory=6144m")
+    condition     = strcontains(output.user_data_rendered, "--memory=6144m")
     error_message = "c7i.xlarge (8192 MiB) minus the 2 GiB host reserve must render --memory=6144m — the same cap the proven production runtime uses"
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "--memory-swap=6144m")
+    condition     = strcontains(output.user_data_rendered, "--memory-swap=6144m")
     error_message = "--memory-swap must equal --memory (no swap headroom for a mediasoup worker)"
   }
 
   assert {
-    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "--memory=7g")
+    condition     = !strcontains(output.user_data_rendered, "--memory=7g")
     error_message = "The hardcoded 7g memory literal must never come back"
   }
 }
@@ -278,7 +278,7 @@ run "container_memory_tracks_a_larger_instance_type" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "--memory=14336m")
+    condition     = strcontains(output.user_data_rendered, "--memory=14336m")
     error_message = "c7i.2xlarge (16384 MiB) minus the 2 GiB host reserve must render --memory=14336m — proving the cap is computed, not restated"
   }
 }
@@ -313,14 +313,14 @@ run "container_run_matches_the_proven_runtime" {
   }
 
   assert {
-    condition     = alltrue([for f in ["--name msab", "--restart unless-stopped", "--network host", "--log-driver=json-file", "--log-opt max-size=100m", "--log-opt max-file=5", "--env-file /opt/msab/.env", "--env-file /opt/msab/.env.secrets"] : strcontains(base64decode(aws_launch_template.msab.user_data), f)])
+    condition     = alltrue([for f in ["--name msab", "--restart unless-stopped", "--network host", "--log-driver=json-file", "--log-opt max-size=100m", "--log-opt max-file=5", "--env-file /opt/msab/.env", "--env-file /opt/msab/.env.secrets"] : strcontains(output.user_data_rendered, f)])
     error_message = "The rendered docker run must match the proven production runtime flag-for-flag (docs/runbooks/msab-by-hand-deploy.md)"
   }
 
   # Secrets ride the 0600 env-file, never the command line — the proven runtime
   # passes no -e flags either.
   assert {
-    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "-e \"JWT_SECRET=")
+    condition     = !strcontains(output.user_data_rendered, "-e \"JWT_SECRET=")
     error_message = "Secrets must not be passed as docker -e flags — they belong in the 0600 env-file, as on the live box"
   }
 }
@@ -340,12 +340,12 @@ run "rendered_script_sanitizes_secrets_for_the_env_file" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "| tr -d '\\r'")
+    condition     = strcontains(output.user_data_rendered, "| tr -d '\\r'")
     error_message = "fetch_ssm must strip CR — a CRLF-pasted SSM value would otherwise land inside the env-file value"
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "contains a newline")
+    condition     = strcontains(output.user_data_rendered, "contains a newline")
     error_message = "The bootstrap must reject a secret containing a newline before writing the env-file, not fail opaquely at docker run"
   }
 }
@@ -375,28 +375,28 @@ run "bootstrap_fails_closed_before_traffic" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "trap on_exit EXIT")
+    condition     = strcontains(output.user_data_rendered, "trap on_exit EXIT")
     error_message = "user-data must install the fail-closed EXIT trap before doing any work"
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "--lifecycle-action-result \"ABANDON\"")
+    condition     = strcontains(output.user_data_rendered, "--lifecycle-action-result \"ABANDON\"")
     error_message = "The EXIT trap must ABANDON the launch hook on failure — fail closed, not fail open"
   }
 
   # Ordering: the prefix of the script BEFORE `docker run -d` must already contain…
   assert {
-    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "systemctl start msab-lifecycle")
+    condition     = strcontains(split("docker run -d", output.user_data_rendered)[0], "systemctl start msab-lifecycle")
     error_message = "The drain service must be installed and started BEFORE the container starts — the ARM defect was exactly this order reversed"
   }
 
   assert {
-    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "systemctl is-active --quiet msab-lifecycle")
+    condition     = strcontains(split("docker run -d", output.user_data_rendered)[0], "systemctl is-active --quiet msab-lifecycle")
     error_message = "The drain monitor must be PROVEN active (systemctl is-active) before the container starts, not assumed"
   }
 
   assert {
-    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "amazon-cloudwatch-agent-ctl")
+    condition     = strcontains(split("docker run -d", output.user_data_rendered)[0], "amazon-cloudwatch-agent-ctl")
     error_message = "The CloudWatch agent must be installed and started BEFORE the container starts"
   }
 
@@ -407,18 +407,18 @@ run "bootstrap_fails_closed_before_traffic" {
   # ("Completing launch lifecycle hook" is the block's marker — the hook NAME also
   # appears earlier, in the EXIT trap's ABANDON, which legitimately stays on top.)
   assert {
-    condition     = !strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "Completing launch lifecycle hook")
+    condition     = !strcontains(split("docker run -d", output.user_data_rendered)[0], "Completing launch lifecycle hook")
     error_message = "The launch-hook CONTINUE block must NOT run before `docker run` — a hook completed early makes the trap's ABANDON a no-op and leaves an InService instance serving nothing (aws-production 02, F4)"
   }
 
   # AC #1 — no hardcoded-architecture monitoring agent package.
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "dpkg --print-architecture")
+    condition     = strcontains(output.user_data_rendered, "dpkg --print-architecture")
     error_message = "The CW agent install must derive its architecture (dpkg --print-architecture), never hardcode one"
   }
 
   assert {
-    condition     = !strcontains(base64decode(aws_launch_template.msab.user_data), "ubuntu/amd64/latest/amazon-cloudwatch-agent.deb")
+    condition     = !strcontains(output.user_data_rendered, "ubuntu/amd64/latest/amazon-cloudwatch-agent.deb")
     error_message = "The hardcoded amd64 CW-agent .deb URL must never come back — it is what killed the ARM bootstrap after traffic"
   }
 }
@@ -435,12 +435,12 @@ run "identity_is_explicit_and_public_ip_is_asserted_routable" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nINSTANCE_ID_OVERRIDE=$INSTANCE_ID\n")
+    condition     = strcontains(output.user_data_rendered, "\nINSTANCE_ID_OVERRIDE=$INSTANCE_ID\n")
     error_message = "The boot .env must set INSTANCE_ID_OVERRIDE — the app checks it before any metadata probe, removing the hostname-fallback split-brain path"
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "is not publicly routable")
+    condition     = strcontains(output.user_data_rendered, "is not publicly routable")
     error_message = "PUBLIC_IP must be asserted routable (private/CGNAT/link-local ranges rejected), not merely non-empty"
   }
 }
@@ -492,25 +492,25 @@ run "launch_hook_completes_only_after_health_gate" {
   # HEALTH_OK=1). The drain script's terminate-hook CONTINUE renders far earlier,
   # so both the hook name and the result are asserted on this suffix.
   assert {
-    condition     = strcontains(split("did not pass within", base64decode(aws_launch_template.msab.user_data))[1], "--lifecycle-hook-name \"msab-launch-hook\"")
+    condition     = strcontains(split("did not pass within", output.user_data_rendered)[1], "--lifecycle-hook-name \"msab-launch-hook\"")
     error_message = "The launch hook's CONTINUE must be the LAST act of a successful boot — strictly after the /health 200 gate"
   }
 
   assert {
-    condition     = strcontains(split("did not pass within", base64decode(aws_launch_template.msab.user_data))[1], "--lifecycle-action-result \"CONTINUE\"")
+    condition     = strcontains(split("did not pass within", output.user_data_rendered)[1], "--lifecycle-action-result \"CONTINUE\"")
     error_message = "The block after the health gate must complete the hook with CONTINUE — release-to-fleet is the reward for passing /health, nothing else"
   }
 
   # …and the health gate itself sits after `docker run` (the container must exist
   # before its health can gate anything).
   assert {
-    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[1], "\nHEALTH_MAX_WAIT=")
+    condition     = strcontains(split("docker run -d", output.user_data_rendered)[1], "\nHEALTH_MAX_WAIT=")
     error_message = "The /health wait must run after `docker run` — it is the release gate for the container just started"
   }
 
   # F6 — the ceiling is rendered from container_warmup_seconds, never a literal.
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nHEALTH_MAX_WAIT=${var.container_warmup_seconds}\n")
+    condition     = strcontains(output.user_data_rendered, "\nHEALTH_MAX_WAIT=${var.container_warmup_seconds}\n")
     error_message = "HEALTH_MAX_WAIT must render from var.container_warmup_seconds — the free-standing 120 literal was the only underived number in the script (F6)"
   }
 
@@ -552,7 +552,7 @@ run "health_ceiling_and_hook_heartbeat_move_together" {
   }
 
   assert {
-    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nHEALTH_MAX_WAIT=77\n")
+    condition     = strcontains(output.user_data_rendered, "\nHEALTH_MAX_WAIT=77\n")
     error_message = "HEALTH_MAX_WAIT must track a changed container_warmup_seconds (77)"
   }
 
