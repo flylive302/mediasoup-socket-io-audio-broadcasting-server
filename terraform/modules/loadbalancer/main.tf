@@ -88,19 +88,22 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
-# --- Listener: TCP app port (direct, non-SSL) ---
-resource "aws_lb_listener" "app" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = var.app_port
-  protocol          = "TCP"
+# --- Listener: TCP app port (direct, non-SSL) --- DELETED 2026-08-12 ---
+#
+# Operator decision 2026-08-12: 443/TLS is the ONLY public entry point. The
+# plaintext `aws_lb_listener.app` on var.app_port was a second, unencrypted front
+# door to the same target group — carried over from the Vultr era and confirmed
+# stale. Removing it deletes a whole class of "a client connected in the clear".
+#
+# ⛔ DO NOT also remove the instance security group's 0.0.0.0/0 ingress on
+# var.app_port (modules/networking/main.tf, "App HTTP/WS"). That rule is still
+# LOAD-BEARING: an NLB preserves the client's source IP and `aws_lb.main` has no
+# security group of its own, so traffic arriving from the TLS listener still hits
+# the instance on app_port sourced from arbitrary client addresses. Closing that
+# rule breaks 443 as well — the exact mistake this comment exists to prevent.
+# The HTTP health check on app_port rides the target group and is unaffected.
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
-  }
-}
-
-# --- Listener: TLS on port 443 (SSL termination) ---
+# --- Listener: TLS on port 443 (SSL termination) — the only public entry ---
 resource "aws_lb_listener" "tls" {
   load_balancer_arn = aws_lb.main.arn
   port              = 443
