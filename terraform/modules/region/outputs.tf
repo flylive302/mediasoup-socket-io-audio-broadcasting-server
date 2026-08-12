@@ -41,6 +41,11 @@ output "vpc_id" {
 # this module — it is test tooling, not a per-region resource) needs a public
 # subnet to place the loadgen box in. Additive output, forwarded straight
 # through — this module doesn't otherwise expose subnets at all.
+output "ssm_kms_key_arn" {
+  description = "ARN of this region's SSM SecureString CMK. Exposed for the root-scope loadgen module (aws-production/08): reading a SecureString needs kms:Decrypt on this key IN ADDITION to ssm:GetParameter — modules/ssm colocates that grant for the shared EC2 instance role, but the loadgen role lives outside this module and cannot be granted from in here."
+  value       = module.ssm.kms_key_arn
+}
+
 output "public_subnet_ids" {
   description = "Public subnet ids in this region (2 AZs) — forwarded from modules/networking for root-level consumers (currently just modules/loadgen)."
   value       = module.networking.public_subnet_ids

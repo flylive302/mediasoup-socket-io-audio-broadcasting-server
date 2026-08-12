@@ -61,6 +61,21 @@ variable "msab_target_host" {
   default     = ""
 }
 
+variable "kms_key_arn" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    ARN of the CMK encrypting the SSM SecureString this box reads at boot
+    (modules/ssm's key, surfaced via modules/region's ssm_kms_key_arn output).
+
+    🔴 ssm:GetParameter alone is NOT enough for a SecureString — the boot script
+    fails with "not authorized to perform: kms:Decrypt on resource: arn:aws:kms:..."
+    AFTER the instance is already running, so the failure shows up in
+    /var/log/cloud-init-output.log rather than in the apply. Proven on the
+    2026-08-12 first boot. Empty string omits the grant (nothing to scope it to).
+  EOT
+}
+
 variable "msab_app_port" {
   description = "MSAB application port — both the health/metrics port scraped by Prometheus (job \"msab\", metrics_path /metrics/prometheus) and the port the harness itself connects to."
   type        = number

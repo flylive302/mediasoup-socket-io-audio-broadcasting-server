@@ -435,6 +435,11 @@ module "loadgen" {
   vpc_id           = try(module.region_mumbai[0].vpc_id, "")
   public_subnet_id = try(module.region_mumbai[0].public_subnet_ids[0], "")
 
+  # Reading the SecureString below needs kms:Decrypt on the CMK that encrypts it,
+  # not just ssm:GetParameter. Same direction as vpc_id/public_subnet_id above
+  # (loadgen consumes region), so this adds no dependency cycle.
+  kms_key_arn = try(module.region_mumbai[0].ssm_kms_key_arn, "")
+
   instance_type  = var.loadgen_instance_type
   harness_s3_uri = var.loadgen_harness_s3_uri
   msab_app_port  = var.app_port

@@ -76,6 +76,35 @@ else
   echo "Discovered MSAB target: $MSAB_HOST"
 fi
 
+# 🔴 The PRIVATE ip, for the Prometheus scrape ONLY. Not interchangeable with
+# MSAB_HOST above, which stays PUBLIC because that is the address the harness
+# must connect to (src/guard.mjs matches LOAD_HARNESS_ALLOW_TARGET against the
+# config's hostname, and the staging DNS name is deny-listed).
+#
+# Why the scrape cannot use the public ip: the node_exporter port (9100) is
+# opened on the MSAB security group with a SECURITY-GROUP source, not a CIDR.
+# Traffic sent to an instance's public ip from inside the same VPC hairpins out
+# through the internet gateway and arrives internet-sourced, so the
+# security-group source reference can never match and the scrape times out.
+# modules/networking/main.tf already documents this exact trap for the cascade
+# relay ports. Proven here 2026-08-12: private 10.120.x:9100 -> HTTP 200 in
+# 10ms, public 13.x:9100 -> timeout after 6s, with the SG rule correctly in
+# place the whole time.
+MSAB_PRIVATE=$(aws ec2 describe-instances \
+  --region "${region}" \
+  --filters "Name=tag:Project,Values=${project_name}" \
+             "Name=tag:Environment,Values=${environment}" \
+             "Name=tag:Name,Values=*-asg-instance" \
+             "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].PrivateIpAddress | [0]' \
+  --output text 2>/dev/null || echo "")
+if [ -z "$MSAB_PRIVATE" ] || [ "$MSAB_PRIVATE" = "None" ]; then
+  echo "FATAL: resolved MSAB public ip ($MSAB_HOST) but not its private ip."
+  echo "       The Prometheus scrape requires the private address (see comment above)."
+  exit 1
+fi
+echo "MSAB scrape address (private): $MSAB_PRIVATE"
+
 # --- Prometheus system user + dirs, created NOW (not in step f below) ---
 # The internal-key file written next needs an owner; the Prometheus BINARY
 # install happens further down, after the SSM fetch. Same user, just an
@@ -145,7 +174,7 @@ WantedBy=multi-user.target
 PROMSVCEOF
 
 # --- g. Prometheus scrape config ---
-# __MSAB_HOST__ is a boot-time placeholder, not a Terraform variable — the
+# __MSAB_SCRAPE__ is a boot-time placeholder, not a Terraform variable — the
 # real value is only known once step d's discovery runs, so it is substituted
 # with sed AFTER this file is written (task instruction: "substitute the
 # resolved host at boot", never at Terraform render time).
@@ -154,6 +183,25 @@ PROMSVCEOF
 # without honor_labels the scraper renames them exported_* and every SLO
 # query in the harness reads the wrong labels (scripts/load-harness/README.md).
 echo "--- Writing Prometheus config ---"
+#
+# 🔴 The `region` TARGET LABEL is mandatory. Every gate, guard and readout in
+# scripts/load-harness/src/queries.mjs filters on region="<value>" — including
+# V1 (`up{region=...}`), R4 (`nodejs_eventloop_lag_p99_seconds{region=...}`) and
+# R5 (`process_cpu_seconds_total{region=...}`). Those three series are
+# Prometheus-synthesized or prom-client defaults and carry NO region label of
+# their own, so without a target label they match nothing, V1 fails, and the
+# step is VOID before a single threshold is read.
+# Proven here 2026-08-12: with honor_labels set but no target label,
+# `/api/v1/label/region/values` returned [] and `up{region="ap-south-1"}` was
+# empty — the same VOID-at-step-0 failure the harness-side region fix removed,
+# arriving from the scrape side instead.
+#
+# The value MUST equal what MSAB itself publishes on the six audio series
+# (config.AWS_REGION -> src/domains/media/quality/qualityPublisher.ts:36).
+# It does, by construction: modules/autoscaling/user-data.sh sets
+# AWS_REGION=${region} from the same Terraform variable interpolated here.
+# honor_labels: true then keeps MSAB's own value on the series that publish one
+# and applies this target label to everything else — so both agree either way.
 cat > /etc/prometheus/prometheus.yml << PROMCFGEOF
 global:
   scrape_interval: 15s
@@ -166,15 +214,19 @@ scrape_configs:
       X-Internal-Key:
         files: [/etc/prometheus/internal-key]
     static_configs:
-      - targets: ["__MSAB_HOST__:${msab_app_port}"]
+      - targets: ["__MSAB_SCRAPE__:${msab_app_port}"]
+        labels:
+          region: "${region}"
 
   - job_name: node
     honor_labels: true
     static_configs:
-      - targets: ["__MSAB_HOST__:9100"]
+      - targets: ["__MSAB_SCRAPE__:9100"]
+        labels:
+          region: "${region}"
 PROMCFGEOF
 
-sed -i "s#__MSAB_HOST__#$MSAB_HOST#g" /etc/prometheus/prometheus.yml
+sed -i "s#__MSAB_SCRAPE__#$MSAB_PRIVATE#g" /etc/prometheus/prometheus.yml
 chown prometheus:prometheus /etc/prometheus/prometheus.yml
 
 echo "--- Starting Prometheus ---"
@@ -187,7 +239,7 @@ if ! systemctl is-active --quiet prometheus; then
   systemctl status prometheus --no-pager || true
   exit 1
 fi
-echo "Prometheus active — scraping msab:${msab_app_port} and node:9100 on $MSAB_HOST (local UI: 127.0.0.1:9090)"
+echo "Prometheus active — scraping msab:${msab_app_port} and node:9100 on $MSAB_PRIVATE (private path; local UI: 127.0.0.1:9090)"
 
 # --- h. netem helper — NOT applied automatically (task instruction) ---
 # Real loss/delay is a hard prerequisite for a gated harness run: a clean
@@ -239,6 +291,7 @@ fi
 # --- j. Readiness marker — the operator's single file to check ---
 cat > /opt/loadgen-READY << READYEOF
 MSAB_HOST=$MSAB_HOST
+MSAB_SCRAPE_PRIVATE=$MSAB_PRIVATE
 READY_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 READYEOF
 

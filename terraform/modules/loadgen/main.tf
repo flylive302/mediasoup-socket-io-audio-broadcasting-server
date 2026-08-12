@@ -79,8 +79,18 @@ data "aws_ami" "ubuntu" {
 resource "aws_security_group" "loadgen" {
   count = local.loadgen_enabled ? 1 : 0
 
-  name        = "${local.env_prefix}-loadgen"
-  description = "Load-generator box (aws-production/08) — no ingress by design; SSM Session Manager for shell, egress-only otherwise"
+  name = "${local.env_prefix}-loadgen"
+
+  # 🔴 ASCII ONLY. EC2 rejects CreateSecurityGroup with
+  # "InvalidParameterValue: ... Character sets beyond ASCII are not supported"
+  # if GroupDescription contains so much as an em-dash. Proven the hard way on
+  # the 2026-08-12 apply: this string used "—" and the apply failed AFTER the
+  # IAM resources had already been created. `terraform test` cannot catch it —
+  # mock_provider does not enforce AWS's charset validation — so the only guard
+  # is this comment and a real plan/apply.
+  # Terraform variable/output `description` fields are exempt: they never leave
+  # Terraform. This restriction applies to AWS resource arguments only.
+  description = "Load-generator box (aws-production/08) - no ingress by design; SSM Session Manager for shell, egress-only otherwise"
   vpc_id      = var.vpc_id
 
   # ⛔ Deliberately ZERO ingress blocks. Do not add one "for debugging" — see
@@ -136,29 +146,53 @@ resource "aws_iam_role_policy" "loadgen" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        # Read-only, account-wide: EC2 does not support resource-level scoping
-        # for DescribeInstances. Needed to discover the MSAB target instance by
-        # tag when var.msab_target_host is left empty (user-data.sh step d).
-        Effect = "Allow"
-        Action = [
-          "ec2:DescribeInstances",
-        ]
-        Resource = "*"
-      },
-      {
-        # Same env-qualified prefix modules/iam scopes the MSAB instance role
-        # to — reads the LARAVEL_INTERNAL_KEY (var.internal_key_ssm_path) that
-        # authenticates the Prometheus scrape of /metrics/prometheus.
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameter",
-          "ssm:GetParameters",
-        ]
-        Resource = "arn:aws:ssm:*:*:parameter/${local.env_prefix}/*"
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          # Read-only, account-wide: EC2 does not support resource-level scoping
+          # for DescribeInstances. Needed to discover the MSAB target instance by
+          # tag when var.msab_target_host is left empty (user-data.sh step d).
+          Effect = "Allow"
+          Action = [
+            "ec2:DescribeInstances",
+          ]
+          Resource = "*"
+        },
+        {
+          # Same env-qualified prefix modules/iam scopes the MSAB instance role
+          # to — reads the LARAVEL_INTERNAL_KEY (var.internal_key_ssm_path) that
+          # authenticates the Prometheus scrape of /metrics/prometheus.
+          Effect = "Allow"
+          Action = [
+            "ssm:GetParameter",
+            "ssm:GetParameters",
+          ]
+          Resource = "arn:aws:ssm:*:*:parameter/${local.env_prefix}/*"
+        },
+      ],
+      # 🔴 The parameter above is a SecureString under a customer-managed CMK, so
+      # ssm:GetParameter --with-decryption ALSO needs kms:Decrypt on that key.
+      # Without it the boot script dies with
+      #   "not authorized to perform: kms:Decrypt on resource: arn:aws:kms:..."
+      # — and because that happens in user-data, the APPLY SUCCEEDS and the box
+      # comes up broken. Proven on the 2026-08-12 first boot; the only symptom
+      # was a missing /opt/loadgen-READY and a line in cloud-init-output.log.
+      # modules/ssm grants the identical thing to the shared EC2 instance role
+      # (aws_iam_role_policy.ssm_kms_decrypt); this is that grant for the
+      # loadgen role, which lives outside that module. Scoped to the one key.
+      #
+      # Appended via concat rather than a separate aws_iam_role_policy so the
+      # gate stays on local.loadgen_enabled: var.kms_key_arn comes from a module
+      # output and would be UNKNOWN at plan time on a from-scratch apply, and an
+      # unknown value can never gate count/for_each.
+      var.kms_key_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt"]
+          Resource = var.kms_key_arn
+        },
+      ] : [],
+    )
   })
 }
 
@@ -281,6 +315,18 @@ resource "aws_instance" "loadgen" {
   # rendered script comfortably exceeds a few KB once the Prometheus config and
   # netem/discovery logic are inlined, and cloud-init decompresses transparently.
   user_data = base64gzip(local.user_data_rendered)
+
+  # 🔴 Without this, the AWS provider treats a user_data change as an in-place
+  # attribute update: `terraform plan` reports "will be updated in-place",
+  # the apply succeeds, and the running box KEEPS ITS OLD BOOTSTRAP because
+  # user-data only executes at launch. Every edit to user-data.sh would look
+  # applied and do nothing. Caught 2026-08-12 while fixing the scrape config —
+  # the plan said "0 to add, 1 to change, 0 to destroy" for a change that
+  # rewrites the entire Prometheus configuration.
+  # Safe here precisely because this box is disposable and hand-triggered:
+  # replacing it is the intended way to pick up a change. ⛔ Do NOT copy this
+  # onto anything serving traffic.
+  user_data_replace_on_change = true
 
   tags = {
     Name        = "${local.env_prefix}-loadgen"
