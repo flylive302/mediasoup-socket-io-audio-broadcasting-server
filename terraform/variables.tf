@@ -139,6 +139,73 @@ variable "redis_durable_snapshot_window" {
   default     = "21:00-22:00"
 }
 
+# --- Sizing/HA profile per store (aws-production/01) ---
+# ⛔ Production must never set these: the defaults ARE the pre-ticket literals,
+# which is what keeps `plan -var-file=prod.tfvars` diff-free. Staging turns them
+# down in staging.tfvars (~$650/mo → ~$40/mo). Bad combinations (failover on a
+# single node, multi-AZ without failover) fail at PLAN via preconditions in
+# modules/redis/main.tf.
+
+variable "redis_num_cache_clusters" {
+  description = "Nodes in the CACHE replication group. 2 = primary + replica in another AZ (production); 1 = single node, no HA (staging)."
+  type        = number
+  default     = 2
+}
+
+variable "redis_automatic_failover" {
+  description = "Automatic failover on the CACHE store. Requires redis_num_cache_clusters >= 2."
+  type        = bool
+  default     = true
+
+  validation {
+    condition     = !var.redis_automatic_failover || var.redis_num_cache_clusters >= 2
+    error_message = "redis_automatic_failover requires redis_num_cache_clusters >= 2 — a single-node replication group has nothing to fail over to."
+  }
+}
+
+variable "redis_multi_az" {
+  description = "Multi-AZ on the CACHE store. Requires redis_automatic_failover."
+  type        = bool
+  default     = true
+
+  validation {
+    condition     = !var.redis_multi_az || var.redis_automatic_failover
+    error_message = "redis_multi_az requires redis_automatic_failover — AWS rejects multi-AZ without failover."
+  }
+}
+
+variable "redis_durable_num_cache_clusters" {
+  description = "Nodes in the DURABLE replication group. null = same as the cache store."
+  type        = number
+  default     = null
+}
+
+variable "redis_durable_automatic_failover" {
+  description = "Automatic failover on the DURABLE store. null = same as the cache store."
+  type        = bool
+  default     = null
+
+  validation {
+    condition = !coalesce(var.redis_durable_automatic_failover, var.redis_automatic_failover, false) || (
+      var.redis_durable_num_cache_clusters != null ? var.redis_durable_num_cache_clusters : var.redis_num_cache_clusters
+    ) >= 2
+    error_message = "The durable store's automatic failover requires >= 2 nodes (redis_durable_num_cache_clusters, or redis_num_cache_clusters when it is null)."
+  }
+}
+
+variable "redis_durable_multi_az" {
+  description = "Multi-AZ on the DURABLE store. null = same as the cache store."
+  type        = bool
+  default     = null
+
+  validation {
+    condition = !coalesce(var.redis_durable_multi_az, var.redis_multi_az, false) || coalesce(
+      var.redis_durable_automatic_failover, var.redis_automatic_failover, false
+    )
+    error_message = "The durable store's multi-AZ requires its automatic failover — AWS rejects multi-AZ without failover."
+  }
+}
+
 variable "redis_auth_token" {
   description = "AUTH token for ElastiCache Redis (16-128 chars, no @, /, or quotes)"
   type        = string

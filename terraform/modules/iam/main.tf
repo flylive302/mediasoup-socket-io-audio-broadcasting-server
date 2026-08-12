@@ -166,7 +166,59 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
   })
 }
 
+# --- SSM SendCommand grant, shared by the permissions boundary and the ASG
+# refresh policy (aws-production/04) ---
+# ONE definition, referenced twice: the boundary and the role policy must not be
+# allowed to drift apart, and a fully literal local is also plan-known, so the
+# offline test suite can assert it (the rendered policies embed unknown ARNs).
+# Same idiom as the trust-policy sub-claim copy further down this file.
+#
+# TWO statements, not one, and that split is load-bearing:
+#   [0] document invocation — the stock AWS-RunShellScript document, with NO tag
+#       condition. SSM documents carry no instance tags, so a tag condition on a
+#       Resource list mixing document/* and instance/* ARNs evaluates against the
+#       document ARN too and denies it, breaking Session Manager.
+#   [1] instance targeting — StringEquals, NOT StringEqualsIfExists. IfExists
+#       evaluates TRUE when the tag key is absent, so the old single statement
+#       also covered every UNTAGGED instance in the account. StringEquals denies
+#       by default when the tag is missing. This is the ticket-04 fix.
+locals {
+  ssm_send_command_statements = [
+    {
+      Effect   = "Allow"
+      Action   = ["ssm:SendCommand"]
+      Resource = ["arn:aws:ssm:*::document/AWS-RunShellScript"]
+    },
+    {
+      Effect   = "Allow"
+      Action   = ["ssm:SendCommand"]
+      Resource = ["arn:aws:ec2:*:*:instance/*"]
+      Condition = {
+        StringEquals = {
+          "ssm:resourceTag/Project" = var.project_name
+        }
+      }
+    },
+  ]
+}
+
 # --- ECR Pull Policy ---
+# Ticket 04 (2026-08-12 pre-apply review, finding F5): pull actions were
+# account-wide (Resource "*"), letting the instance role pull from ANY ECR
+# repo in the account instead of just this project's. Scoped to the MSAB
+# repo, same as the CI push policy below (:421-434) — GetAuthorizationToken
+# stays "*" because that action does not support resource-level scoping.
+#
+# Region note: var.ecr_repository_arn (module.ecr.repository_arn) is the repo's
+# ARN in its HOME region only. Cross-region replication
+# (modules/ecr/main.tf aws_ecr_replication_configuration) copies images into
+# each enabled region's OWN same-named repo, and instances pull from that LOCAL
+# replica — modules/autoscaling/user-data.sh:174 rewrites the registry hostname
+# to the instance's own region before `docker pull`. Scoping this grant to the
+# home-region ARN would therefore deny pulls the moment Frankfurt or Singapore
+# is enabled. var.ecr_pull_resource_arn (module.ecr.pull_resource_arn) wildcards
+# ONLY the region segment, keeping account id and repository name pinned; see
+# that output's description for the full reasoning.
 resource "aws_iam_role_policy" "ecr_pull" {
   name = "${var.project_name}-ecr-pull"
   role = aws_iam_role.msab.id
@@ -188,7 +240,7 @@ resource "aws_iam_role_policy" "ecr_pull" {
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchCheckLayerAvailability",
         ]
-        Resource = "*"
+        Resource = var.ecr_pull_resource_arn
       }
     ]
   })
@@ -334,23 +386,9 @@ resource "aws_iam_policy" "github_actions_boundary" {
         ]
         Resource = "*"
       },
-      {
-        # Ticket 29: deploy.yml's failure-rescue step un-drains a stranded instance
-        # via SSM Run Command — the curl runs ON the instance against localhost, so
-        # the internal key never crosses the network. SendCommand is scoped to the
-        # stock shell document + this project's tagged instances only.
-        Effect = "Allow"
-        Action = ["ssm:SendCommand"]
-        Resource = [
-          "arn:aws:ssm:*::document/AWS-RunShellScript",
-          "arn:aws:ec2:*:*:instance/*",
-        ]
-        Condition = {
-          StringEqualsIfExists = {
-            "ssm:resourceTag/Project" = var.project_name
-          }
-        }
-      },
+      # SendCommand: two statements, deliberately (see local.ssm_send_command_statements).
+      local.ssm_send_command_statements[0],
+      local.ssm_send_command_statements[1],
       {
         # Result readback for the rescue step. Read-only; not resource-scopable.
         Effect   = "Allow"
@@ -459,20 +497,9 @@ resource "aws_iam_role_policy" "github_actions_asg_refresh" {
         ]
         Resource = "*"
       },
-      {
-        # Ticket 29: un-drain rescue via SSM Run Command — see the boundary copy above.
-        Effect = "Allow"
-        Action = ["ssm:SendCommand"]
-        Resource = [
-          "arn:aws:ssm:*::document/AWS-RunShellScript",
-          "arn:aws:ec2:*:*:instance/*",
-        ]
-        Condition = {
-          StringEqualsIfExists = {
-            "ssm:resourceTag/Project" = var.project_name
-          }
-        }
-      },
+      # SendCommand: two statements, deliberately (see local.ssm_send_command_statements).
+      local.ssm_send_command_statements[0],
+      local.ssm_send_command_statements[1],
       {
         Effect   = "Allow"
         Action   = ["ssm:GetCommandInvocation"]

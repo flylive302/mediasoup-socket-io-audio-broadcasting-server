@@ -10,6 +10,11 @@ variable "ecr_repository_arn" {
   type        = string
 }
 
+variable "ecr_pull_resource_arn" {
+  description = "Region-wildcarded MSAB repository ARN — scopes the INSTANCE ecr-pull policy (aws-production/04). Differs from ecr_repository_arn because instances pull from their own region's replica; see modules/ecr/outputs.tf `pull_resource_arn`."
+  type        = string
+}
+
 variable "github_repository" {
   description = "GitHub org/repo whose Actions runs may assume the deploy role via OIDC (trust-policy sub claim)"
   type        = string

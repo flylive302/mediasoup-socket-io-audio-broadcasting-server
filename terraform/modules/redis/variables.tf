@@ -50,3 +50,30 @@ variable "snapshot_window" {
   type        = string
   default     = null
 }
+
+# --- Sizing / HA profile (aws-production/01) ---
+# Defaults are the pre-ticket module literals, so production (which sets none of
+# these) plans bit-identical. Staging turns them down in staging.tfvars.
+
+variable "num_cache_clusters" {
+  description = "Nodes in the replication group. 2 = primary + replica in another AZ (production). 1 = single node, no HA (staging)."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.num_cache_clusters >= 1
+    error_message = "num_cache_clusters must be at least 1."
+  }
+}
+
+variable "automatic_failover_enabled" {
+  description = "Promote a replica automatically when the primary fails. Requires num_cache_clusters >= 2."
+  type        = bool
+  default     = true
+}
+
+variable "multi_az_enabled" {
+  description = "Spread nodes across AZs. Requires automatic_failover_enabled."
+  type        = bool
+  default     = true
+}

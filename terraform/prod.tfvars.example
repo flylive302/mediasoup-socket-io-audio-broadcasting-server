@@ -43,3 +43,11 @@ cloudflare_zone_id   = "CHANGE_ME"
 # on-call inbox to start receiving alarm notifications; requires clicking the
 # SNS confirmation email that arrives after apply.
 alert_email = ""
+
+# --- Redis sizing/HA (aws-production/01) ---
+# ⛔ Deliberately absent. The root-variable DEFAULTS are production's topology —
+# cache.r7g.large × 2 nodes, multi-AZ, automatic failover, per store — and that
+# is exactly what keeps `plan -var-file=prod.tfvars` diff-free against the
+# pre-ticket code. Setting redis_num_cache_clusters / redis_multi_az /
+# redis_automatic_failover here can only make production WORSE. Resizing a live
+# replication group is a separate, reviewed change — never a tfvars edit.

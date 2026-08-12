@@ -50,6 +50,46 @@ variable "redis_durable_snapshot_window" {
   type        = string
   default     = "21:00-22:00"
 }
+
+# --- Sizing/HA profile per store (aws-production/01) ---
+# Defaults reproduce the pre-ticket module literals: production sets none of
+# these and plans unchanged. The durable vars are null = "same as cache store".
+
+variable "redis_num_cache_clusters" {
+  description = "Nodes in the CACHE replication group. 2 = HA pair (production); 1 = single node (staging)."
+  type        = number
+  default     = 2
+}
+
+variable "redis_automatic_failover" {
+  description = "Automatic failover on the CACHE store. Requires redis_num_cache_clusters >= 2."
+  type        = bool
+  default     = true
+}
+
+variable "redis_multi_az" {
+  description = "Multi-AZ on the CACHE store. Requires redis_automatic_failover."
+  type        = bool
+  default     = true
+}
+
+variable "redis_durable_num_cache_clusters" {
+  description = "Nodes in the DURABLE replication group. null = same as the cache store."
+  type        = number
+  default     = null
+}
+
+variable "redis_durable_automatic_failover" {
+  description = "Automatic failover on the DURABLE store. null = same as the cache store."
+  type        = bool
+  default     = null
+}
+
+variable "redis_durable_multi_az" {
+  description = "Multi-AZ on the DURABLE store. null = same as the cache store."
+  type        = bool
+  default     = null
+}
 variable "redis_auth_token" {
   type      = string
   sensitive = true

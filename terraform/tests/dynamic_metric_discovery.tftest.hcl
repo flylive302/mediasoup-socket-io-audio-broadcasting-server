@@ -89,8 +89,9 @@ run "instance_role_can_self_publish_metrics_without_per_instance_grant" {
   }
 
   variables {
-    project_name       = "flylive-audio"
-    ecr_repository_arn = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio/msab"
+    project_name          = "flylive-audio"
+    ecr_repository_arn    = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio/msab"
+    ecr_pull_resource_arn = "arn:aws:ecr:*:111111111111:repository/flylive-audio/msab"
   }
 
   assert {

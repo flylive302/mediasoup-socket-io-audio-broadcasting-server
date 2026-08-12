@@ -43,15 +43,16 @@ resource "aws_elasticache_replication_group" "main" {
   engine               = "redis"
   engine_version       = "7.1"
   node_type            = var.redis_node_type
-  num_cache_clusters   = 2 # Primary + 1 replica in different AZ
+  num_cache_clusters   = var.num_cache_clusters # 2 = primary + 1 replica in a different AZ
   parameter_group_name = aws_elasticache_parameter_group.main.name
   subnet_group_name    = aws_elasticache_subnet_group.main.name
   security_group_ids   = [var.redis_security_group_id]
   port                 = 6379
 
-  # High Availability
-  automatic_failover_enabled = true
-  multi_az_enabled           = true
+  # High Availability (aws-production/01: per-environment — production keeps the
+  # 2-node multi-AZ topology, staging runs a single node to stop a ~$650/mo burn).
+  automatic_failover_enabled = var.automatic_failover_enabled
+  multi_az_enabled           = var.multi_az_enabled
 
   # Encryption
   transit_encryption_enabled = true
@@ -71,6 +72,19 @@ resource "aws_elasticache_replication_group" "main" {
     precondition {
       condition     = var.snapshot_retention_limit == 0 || var.snapshot_window != null
       error_message = "snapshot_window must be set explicitly when snapshots are enabled (snapshot_retention_limit > 0)."
+    }
+
+    # aws-production/01: fail at PLAN, not at apply. ElastiCache refuses
+    # automatic failover (and multi-AZ, which requires failover) on a
+    # single-node group — a combination only reachable from tfvars.
+    precondition {
+      condition     = !var.automatic_failover_enabled || var.num_cache_clusters >= 2
+      error_message = "automatic_failover_enabled requires num_cache_clusters >= 2 (a single-node replication group has nothing to fail over to)."
+    }
+
+    precondition {
+      condition     = !var.multi_az_enabled || var.automatic_failover_enabled
+      error_message = "multi_az_enabled requires automatic_failover_enabled (AWS rejects multi-AZ without failover)."
     }
   }
 

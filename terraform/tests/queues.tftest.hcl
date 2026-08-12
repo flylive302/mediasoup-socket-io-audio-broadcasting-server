@@ -128,6 +128,7 @@ run "queue_access_is_iam_role_based_consume_only" {
   variables {
     project_name               = "flylive-audio"
     ecr_repository_arn         = "arn:aws:ecr:ap-south-1:000000000000:repository/mock"
+    ecr_pull_resource_arn      = "arn:aws:ecr:*:000000000000:repository/mock"
     enable_event_queue_consume = true
     event_queue_arn            = "arn:aws:sqs:ap-south-1:000000000000:flylive-audio-msab-events.fifo"
   }

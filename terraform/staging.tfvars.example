@@ -54,3 +54,21 @@ alert_email = ""
 
 # Ticket 12: staging runs may only assume the staging deploy role
 github_deploy_environment = "aws-staging"
+
+# --- Redis bare-min profile (aws-production/01) ---
+# Staging does NOT run production's HA topology: 4 × cache.r7g.large is ~$654/mo
+# (78% of the staging bill) to support one idle test box, and Redis failover
+# tests nothing on the path staging exists to measure (ticket 10's saturation
+# curve). Estimated ~$39/mo for both stores in ap-south-1.
+# ⚠️ Single node = an eviction or restart loses staging Redis state. Accepted.
+redis_node_type          = "cache.t4g.micro"
+redis_num_cache_clusters = 1
+redis_automatic_failover = false
+redis_multi_az           = false
+
+# Durable store keeps noeviction + snapshots (aws-platform-build/21), just on one
+# small node. t4g.small (1.37 GiB) not micro — it holds the money queue.
+redis_durable_node_type          = "cache.t4g.small"
+redis_durable_num_cache_clusters = 1
+redis_durable_automatic_failover = false
+redis_durable_multi_az           = false

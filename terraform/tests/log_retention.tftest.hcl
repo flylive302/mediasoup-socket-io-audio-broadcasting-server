@@ -18,8 +18,9 @@
 mock_provider "aws" {}
 
 variables {
-  project_name       = "flylive-audio"
-  ecr_repository_arn = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio"
+  project_name          = "flylive-audio"
+  ecr_repository_arn    = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio"
+  ecr_pull_resource_arn = "arn:aws:ecr:*:111111111111:repository/flylive-audio"
 }
 
 # -----------------------------------------------------------------------------

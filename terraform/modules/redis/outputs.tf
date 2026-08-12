@@ -18,5 +18,14 @@ output "store_config" {
     maxmemory_policy         = var.maxmemory_policy
     snapshot_retention_limit = var.snapshot_retention_limit
     snapshot_window          = var.snapshot_window
+
+    # Sizing/HA profile (aws-production/01). Each field below is wired straight
+    # into the matching aws_elasticache_replication_group attribute in main.tf —
+    # one direct `var.` reference, no transformation, so asserting the variable
+    # here is a one-line visual check away from asserting the resource.
+    node_type                  = var.redis_node_type
+    num_cache_clusters         = var.num_cache_clusters
+    automatic_failover_enabled = var.automatic_failover_enabled
+    multi_az_enabled           = var.multi_az_enabled
   }
 }

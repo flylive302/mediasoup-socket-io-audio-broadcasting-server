@@ -164,6 +164,12 @@ module "region_mumbai" {
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
   redis_durable_snapshot_window         = var.redis_durable_snapshot_window
+  redis_num_cache_clusters              = var.redis_num_cache_clusters
+  redis_automatic_failover              = var.redis_automatic_failover
+  redis_multi_az                        = var.redis_multi_az
+  redis_durable_num_cache_clusters      = var.redis_durable_num_cache_clusters
+  redis_durable_automatic_failover      = var.redis_durable_automatic_failover
+  redis_durable_multi_az                = var.redis_durable_multi_az
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
@@ -217,6 +223,12 @@ module "region_frankfurt" {
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
   redis_durable_snapshot_window         = var.redis_durable_snapshot_window
+  redis_num_cache_clusters              = var.redis_num_cache_clusters
+  redis_automatic_failover              = var.redis_automatic_failover
+  redis_multi_az                        = var.redis_multi_az
+  redis_durable_num_cache_clusters      = var.redis_durable_num_cache_clusters
+  redis_durable_automatic_failover      = var.redis_durable_automatic_failover
+  redis_durable_multi_az                = var.redis_durable_multi_az
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
@@ -270,6 +282,12 @@ module "region_singapore" {
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
   redis_durable_snapshot_window         = var.redis_durable_snapshot_window
+  redis_num_cache_clusters              = var.redis_num_cache_clusters
+  redis_automatic_failover              = var.redis_automatic_failover
+  redis_multi_az                        = var.redis_multi_az
+  redis_durable_num_cache_clusters      = var.redis_durable_num_cache_clusters
+  redis_durable_automatic_failover      = var.redis_durable_automatic_failover
+  redis_durable_multi_az                = var.redis_durable_multi_az
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
@@ -363,8 +381,9 @@ module "queues" {
 module "iam" {
   source = "./modules/iam"
 
-  project_name       = var.project_name
-  ecr_repository_arn = module.ecr.repository_arn
+  project_name          = var.project_name
+  ecr_repository_arn    = module.ecr.repository_arn
+  ecr_pull_resource_arn = module.ecr.pull_resource_arn
 
   # Ticket 25: consume-side SQS access by IAM role, no shared secret.
   enable_event_queue_consume = true

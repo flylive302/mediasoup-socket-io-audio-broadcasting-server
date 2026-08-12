@@ -41,6 +41,11 @@ module "redis" {
   private_subnet_ids      = module.networking.private_subnet_ids
   redis_security_group_id = module.networking.redis_security_group_id
   redis_auth_token        = var.redis_auth_token
+
+  # Sizing/HA profile (aws-production/01) — defaults reproduce the old literals.
+  num_cache_clusters         = var.redis_num_cache_clusters
+  automatic_failover_enabled = var.redis_automatic_failover
+  multi_az_enabled           = var.redis_multi_az
 }
 
 # DURABLE store (aws-platform-build/21): noeviction + automated snapshots —
@@ -59,6 +64,15 @@ module "redis_durable" {
   maxmemory_policy         = "noeviction"
   snapshot_retention_limit = var.redis_durable_snapshot_retention_days
   snapshot_window          = var.redis_durable_snapshot_window
+
+  # Sizing/HA profile (aws-production/01). The durable store sizes independently
+  # of the cache store; null falls back to whatever the cache store runs.
+  # (Explicit null checks, not coalesce: coalesce treats an empty string as
+  # absent, which makes it the wrong tool for a bool that may legitimately be
+  # false.)
+  num_cache_clusters         = var.redis_durable_num_cache_clusters != null ? var.redis_durable_num_cache_clusters : var.redis_num_cache_clusters
+  automatic_failover_enabled = var.redis_durable_automatic_failover != null ? var.redis_durable_automatic_failover : var.redis_automatic_failover
+  multi_az_enabled           = var.redis_durable_multi_az != null ? var.redis_durable_multi_az : var.redis_multi_az
 }
 
 module "ssl" {
