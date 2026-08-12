@@ -3,15 +3,21 @@
 # FlyLive Audio Server — EC2 User Data (ASG Bootstrap Script)
 # =============================================================================
 # Runs on first boot to install Docker, pull the image from ECR, install the
-# monitoring agent + lifecycle drain service, and START THE APP LAST.
+# monitoring agent + lifecycle drain service, start the app, and RELEASE THE
+# INSTANCE LAST — the launch hook completes only after /health returns 200.
 #
-# ⚠️ ORDERING IS THE CONTRACT (ticket 19): everything an instance needs before
-# it may safely take traffic — monitoring agent, drain service, lifecycle-hook
-# completion — happens BEFORE `docker run`. A failure at ANY step therefore
-# happens before traffic, and the EXIT trap below fails closed (tears down any
-# partial container and ABANDONs the launch hook). Do not move a step below
-# `docker run` "because it's slow" — that reintroduces the ARM defect this
-# ordering removed (traffic starts, then the script dies, then no drain path).
+# ⚠️ ORDERING IS THE CONTRACT (ticket 19 + aws-production 02), two halves:
+#   1. Monitoring agent + drain service install BEFORE `docker run` (ticket 19).
+#      The ARM defect was this order reversed: traffic started, the script died,
+#      and no drain path existed. Do not move an install below `docker run`
+#      "because it's slow".
+#   2. The launch lifecycle hook completes (CONTINUE) ONLY after `docker run`
+#      succeeded AND /health returned 200 (aws-production 02). Until then the
+#      hook is open, so a failure at ANY step — container start and health wait
+#      included — ends in ABANDON (the EXIT trap below, or the hook's ABANDON
+#      default) and the ASG replaces the instance. Completing the hook any
+#      earlier makes the trap's ABANDON a no-op (AWS will not take back a
+#      completed hook) — an InService box serving nothing.
 #
 # Variables are injected by Terraform templatefile().
 # =============================================================================
@@ -538,31 +544,10 @@ if ! systemctl is-active --quiet msab-lifecycle; then
 fi
 echo "✅ Drain monitor active (msab-lifecycle)"
 
-# --- Complete the ASG launch lifecycle hook (BEFORE the container — ticket 19) ---
-# Everything an instance needs before taking traffic now exists, so the hook can
-# complete here. Actual traffic still waits for the NLB health check to pass —
-# the ASG's ELB health-check grace (derived warmup budget) covers the container
-# start below. A failure to complete leaves the hook to expire with its ABANDON
-# default: the instance is terminated, never InService — fail closed by default.
-ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
-  --instance-ids "$INSTANCE_ID" --region "${region}" \
-  --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || echo "")
-
-if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
-  echo "Completing launch lifecycle hook for instance $INSTANCE_ID in ASG $ASG_NAME..."
-  aws autoscaling complete-lifecycle-action \
-    --lifecycle-hook-name "msab-launch-hook" \
-    --auto-scaling-group-name "$ASG_NAME" \
-    --lifecycle-action-result "CONTINUE" \
-    --instance-id "$INSTANCE_ID" \
-    --region "${region}" 2>/dev/null && \
-    echo "✅ Launch lifecycle hook completed" || \
-    echo "⚠️ Launch lifecycle hook completion failed — hook will expire to its ABANDON default and this instance will be replaced"
-else
-  echo "⚠️ Could not determine ASG name — hook will expire to its ABANDON default (standalone run?)"
-fi
-
-# --- Run Container — LAST, after every pre-traffic requirement (ticket 19) ---
+# --- Run Container — after every pre-traffic install (ticket 19), with the hook
+# still OPEN (aws-production 02): a failed start or failed health wait below exits
+# while the launch hook is uncompleted, so the EXIT trap's ABANDON (or the hook's
+# ABANDON default) replaces this instance instead of leaving it InService. ---
 # ⚠️ This invocation is deliberately flag-for-flag identical to the proven production
 # runtime (docs/runbooks/msab-by-hand-deploy.md) — ONLY the substrate differs (ECR
 # instead of GHCR, EC2 instead of the Vultr box). Do not "improve" a flag here without
@@ -589,13 +574,16 @@ docker run -d \
   --env-file /opt/msab/.env.secrets \
   $ECR_REPO_URL:${image_tag}
 
-# --- Wait for app health ---
-# Informational for the boot log, and a FAILURE GATE: a container that can't
-# reach /health inside the window is torn down by the EXIT trap (fail closed) —
-# the NLB never sees it healthy and the ASG replaces the instance after the
-# derived grace window.
+# --- Wait for app health — the RELEASE GATE (aws-production 02) ---
+# A container that can't reach /health inside the window exits here, with the
+# launch hook still open: the EXIT trap tears the container down and ABANDONs
+# the hook, so the ASG replaces the instance immediately — it never goes
+# InService. The ceiling is RENDERED from var.container_warmup_seconds (ticket
+# 17's measured docker-run→healthy budget), the same variable that feeds the
+# ELB grace period and the launch-hook heartbeat derivation — never a
+# free-standing literal, so the health ceiling and hook timing cannot drift.
 echo "Waiting for /health endpoint..."
-HEALTH_MAX_WAIT=120
+HEALTH_MAX_WAIT=${health_max_wait_seconds}
 HEALTH_ELAPSED=0
 HEALTH_OK=0
 
@@ -614,6 +602,31 @@ done
 if [ "$HEALTH_OK" -ne 1 ]; then
   echo "❌ FATAL: /health did not pass within $${HEALTH_MAX_WAIT}s — failing closed (container will be removed)."
   exit 1
+fi
+
+# --- Complete the ASG launch lifecycle hook — THE LAST ACT (aws-production 02) ---
+# Strictly after the health gate: CONTINUE is the release of this instance to the
+# fleet, and everything a boot can get wrong has already been proven right above.
+# A failure of this call itself also fails closed — the hook expires to its
+# ABANDON default and the (healthy) instance is replaced; annoying, never an
+# outage. The old ordering (complete before `docker run`) is the F4 defect this
+# block exists to kill: do not move it earlier.
+ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
+  --instance-ids "$INSTANCE_ID" --region "${region}" \
+  --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null || echo "")
+
+if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
+  echo "Completing launch lifecycle hook for instance $INSTANCE_ID in ASG $ASG_NAME..."
+  aws autoscaling complete-lifecycle-action \
+    --lifecycle-hook-name "msab-launch-hook" \
+    --auto-scaling-group-name "$ASG_NAME" \
+    --lifecycle-action-result "CONTINUE" \
+    --instance-id "$INSTANCE_ID" \
+    --region "${region}" 2>/dev/null && \
+    echo "✅ Launch lifecycle hook completed — instance released to the fleet" || \
+    echo "⚠️ Launch lifecycle hook completion failed — hook will expire to its ABANDON default and this instance will be replaced"
+else
+  echo "⚠️ Could not determine ASG name — hook will expire to its ABANDON default (standalone run?)"
 fi
 
 echo "=== MSAB ASG bootstrap complete ==="

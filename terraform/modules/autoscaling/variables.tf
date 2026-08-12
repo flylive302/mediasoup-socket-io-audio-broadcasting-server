@@ -346,9 +346,35 @@ variable "container_warmup_seconds" {
     1.9s observed run→healthy locally, budgeted at 90s to absorb the ECR pull and a cold page
     cache. Container-level ONLY — the bootstrap steps before it are budgeted separately in
     bootstrap_overhead_seconds.
+
+    Also rendered into user-data as HEALTH_MAX_WAIT (aws-production 02 / F6): the bootstrap's
+    /health release gate polls for exactly this long before failing closed, so the health
+    ceiling, the ELB grace period and the launch-hook heartbeat all move together.
   EOT
   type        = number
   default     = 90
+}
+
+variable "launch_hook_margin_seconds" {
+  description = <<-EOT
+    Seconds added on top of the worst-case boot-to-health budget
+    (bootstrap_overhead_seconds + container_warmup_seconds) to size the LAUNCH lifecycle
+    hook's heartbeat (aws-production 02). The hook now completes strictly after the /health
+    gate, so its heartbeat must exceed everything that can legitimately happen first; the
+    margin absorbs estimate error in the PROVISIONAL bootstrap overhead itemisation.
+    Default: 260 + 90 + 250 = 600s — reproducing the proven 600s literal it replaces.
+  EOT
+  type        = number
+  default     = 250
+
+  # The bootstrap overhead is an itemised ESTIMATE, not a measurement (its own description
+  # says so). A thin margin turns any estimate error into an ABANDON-loop: every boot times
+  # out mid-bootstrap, the ASG replaces the instance, forever — a total-outage class at
+  # fleet_size=1. 60s ≈ the largest single line item in the itemisation.
+  validation {
+    condition     = var.launch_hook_margin_seconds >= 60
+    error_message = "launch_hook_margin_seconds must be at least 60 — the bootstrap overhead is a provisional estimate, and a thin margin turns estimate error into a boot→ABANDON→replace loop."
+  }
 }
 
 variable "bootstrap_overhead_seconds" {

@@ -60,6 +60,17 @@ locals {
   # gates "don't health-check me yet" and "don't rotate the next instance yet".
   instance_warmup_seconds = var.container_warmup_seconds + var.bootstrap_overhead_seconds
 
+  # --- Launch-hook heartbeat, DERIVED (aws-production 02 / F6) --------------
+  # The hook now completes strictly AFTER the /health gate, so AWS must hold the
+  # instance for the WORST-CASE boot-to-health, or a slow-but-healthy boot gets
+  # ABANDONed mid-bootstrap. Worst case = every pre-container bootstrap step
+  # (var.bootstrap_overhead_seconds, itemised & provisional) + the full health
+  # wait ceiling (var.container_warmup_seconds — the SAME variable rendered into
+  # user-data as HEALTH_MAX_WAIT, so the ceiling and the hook cannot drift
+  # apart). The margin absorbs estimate error in the provisional overhead.
+  # Today: 260 + 90 + 250 = 600s — exactly the proven literal it replaces.
+  launch_hook_heartbeat = local.instance_warmup_seconds + var.launch_hook_margin_seconds
+
   # --- Canary checkpoints, DERIVED from fleet_size (ticket 29) --------------
   # First checkpoint = exactly ONE instance (ceil(100/N)%), then 100%. The one
   # replaced instance serves real NLB traffic for canary_soak_seconds before
@@ -159,6 +170,11 @@ resource "aws_launch_template" "msab" {
     drain_poll_interval_seconds = var.drain_poll_interval_seconds
     # Detection lag before the drain even starts — same budget as the drain (AC #3).
     lifecycle_poll_interval_seconds = var.lifecycle_poll_interval_seconds
+
+    # Health-gate ceiling (aws-production 02 / F6): the docker-run→healthy budget,
+    # from the SAME variable that feeds the ELB grace period and the launch-hook
+    # heartbeat derivation — never a free-standing literal in the script.
+    health_max_wait_seconds = var.container_warmup_seconds
 
     room_broadcast_threshold_up   = var.room_broadcast_threshold_up
     room_broadcast_threshold_down = var.room_broadcast_threshold_down
@@ -318,13 +334,15 @@ resource "aws_autoscaling_group" "msab" {
 # default_result = ABANDON (ticket 19, fail closed): a bootstrap that dies before
 # completing the hook — or before the aws CLI even exists — must terminate the
 # instance, never let it drift InService. user-data completes the hook explicitly
-# (CONTINUE) only after the CW agent, the drain service and the pre-traffic
-# checks all succeeded, and its EXIT trap sends ABANDON immediately on failure.
+# (CONTINUE) only as its LAST act, strictly after `docker run` succeeded AND
+# /health returned 200 (aws-production 02) — its EXIT trap sends ABANDON
+# immediately on any earlier failure. The heartbeat is DERIVED (locals) from the
+# same boot budgets that set the health ceiling and ELB grace, never a literal.
 resource "aws_autoscaling_lifecycle_hook" "launching" {
   name                   = "msab-launch-hook"
   autoscaling_group_name = aws_autoscaling_group.msab.name
   lifecycle_transition   = "autoscaling:EC2_INSTANCE_LAUNCHING"
-  heartbeat_timeout      = 600 # 10 minutes — covers cold start (Docker install + image pull + health)
+  heartbeat_timeout      = local.launch_hook_heartbeat
   default_result         = "ABANDON"
 }
 

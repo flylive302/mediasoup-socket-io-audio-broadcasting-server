@@ -399,9 +399,15 @@ run "bootstrap_fails_closed_before_traffic" {
     error_message = "The CloudWatch agent must be installed and started BEFORE the container starts"
   }
 
+  # aws-production 02 REVERSED the third ticket-19 ordering: hook completion is no
+  # longer before the container — it is the LAST act, after the /health gate. The
+  # positive assertion lives in launch_hook_completes_only_after_health_gate below;
+  # here we pin that the CONTINUE block never creeps back above `docker run`.
+  # ("Completing launch lifecycle hook" is the block's marker — the hook NAME also
+  # appears earlier, in the EXIT trap's ABANDON, which legitimately stays on top.)
   assert {
-    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "--lifecycle-hook-name \"msab-launch-hook\"")
-    error_message = "The launch lifecycle hook must be completed BEFORE the container starts serving traffic"
+    condition     = !strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[0], "Completing launch lifecycle hook")
+    error_message = "The launch-hook CONTINUE block must NOT run before `docker run` — a hook completed early makes the trap's ABANDON a no-op and leaves an InService instance serving nothing (aws-production 02, F4)"
   }
 
   # AC #1 — no hardcoded-architecture monitoring agent package.
@@ -460,4 +466,123 @@ run "target_registration_is_asg_managed" {
     condition     = aws_autoscaling_group.msab.health_check_type == "ELB"
     error_message = "ASG health checks must come from the target group (ELB), matching the explicit health_check block in modules/loadbalancer"
   }
+}
+
+# =============================================================================
+# aws-production 02 — release the instance only after the health gate (F4 + F6)
+# =============================================================================
+# The defect: the launch hook completed BEFORE `docker run` and the /health wait,
+# so the EXIT trap's ABANDON after either failure was a no-op (AWS will not take
+# back a completed hook) — an InService instance serving nothing. These runs pin
+# BOTH orderings: ticket 19's installs stay above `docker run` (asserted in
+# bootstrap_fails_closed_before_traffic), and the hook CONTINUE lands strictly
+# after the health gate. F6: HEALTH_MAX_WAIT and the hook heartbeat derive from
+# the same budgets, so health ceiling and hook timing cannot drift apart.
+# -----------------------------------------------------------------------------
+run "launch_hook_completes_only_after_health_gate" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  # The CONTINUE block sits AFTER the health gate's fail-closed exit ("did not
+  # pass within" is the gate's FATAL message — everything past it only runs when
+  # HEALTH_OK=1). The drain script's terminate-hook CONTINUE renders far earlier,
+  # so both the hook name and the result are asserted on this suffix.
+  assert {
+    condition     = strcontains(split("did not pass within", base64decode(aws_launch_template.msab.user_data))[1], "--lifecycle-hook-name \"msab-launch-hook\"")
+    error_message = "The launch hook's CONTINUE must be the LAST act of a successful boot — strictly after the /health 200 gate"
+  }
+
+  assert {
+    condition     = strcontains(split("did not pass within", base64decode(aws_launch_template.msab.user_data))[1], "--lifecycle-action-result \"CONTINUE\"")
+    error_message = "The block after the health gate must complete the hook with CONTINUE — release-to-fleet is the reward for passing /health, nothing else"
+  }
+
+  # …and the health gate itself sits after `docker run` (the container must exist
+  # before its health can gate anything).
+  assert {
+    condition     = strcontains(split("docker run -d", base64decode(aws_launch_template.msab.user_data))[1], "\nHEALTH_MAX_WAIT=")
+    error_message = "The /health wait must run after `docker run` — it is the release gate for the container just started"
+  }
+
+  # F6 — the ceiling is rendered from container_warmup_seconds, never a literal.
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nHEALTH_MAX_WAIT=${var.container_warmup_seconds}\n")
+    error_message = "HEALTH_MAX_WAIT must render from var.container_warmup_seconds — the free-standing 120 literal was the only underived number in the script (F6)"
+  }
+
+  # The launch-hook heartbeat is derived from the SAME budgets…
+  assert {
+    condition     = aws_autoscaling_lifecycle_hook.launching.heartbeat_timeout == var.container_warmup_seconds + var.bootstrap_overhead_seconds + var.launch_hook_margin_seconds
+    error_message = "Launch-hook heartbeat must be derived as bootstrap overhead + health ceiling + margin, not a free literal"
+  }
+
+  # …and provably exceeds the worst-case boot-to-health (bootstrap overhead +
+  # the full health wait), so a slow-but-healthy boot is never ABANDONed.
+  assert {
+    condition     = aws_autoscaling_lifecycle_hook.launching.heartbeat_timeout > var.bootstrap_overhead_seconds + var.container_warmup_seconds
+    error_message = "Launch-hook heartbeat must STRICTLY exceed worst-case boot-to-health (260s bootstrap + 90s health ceiling = 350s) — at the boundary, hook expiry races the CONTINUE call"
+  }
+
+  # Today's numbers: 260 + 90 + 250 = 600 — the proven cold-start window preserved.
+  assert {
+    condition     = aws_autoscaling_lifecycle_hook.launching.heartbeat_timeout == 600
+    error_message = "Default launch-hook heartbeat must reproduce the proven 600s window (260 + 90 + 250)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# The derivation must be real, not today's numbers restated: change the health
+# budget and BOTH the rendered ceiling and the hook heartbeat must track it.
+# -----------------------------------------------------------------------------
+run "health_ceiling_and_hook_heartbeat_move_together" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  variables {
+    container_warmup_seconds   = 77
+    bootstrap_overhead_seconds = 300
+    launch_hook_margin_seconds = 100
+  }
+
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.msab.user_data), "\nHEALTH_MAX_WAIT=77\n")
+    error_message = "HEALTH_MAX_WAIT must track a changed container_warmup_seconds (77)"
+  }
+
+  assert {
+    condition     = aws_autoscaling_lifecycle_hook.launching.heartbeat_timeout == 477
+    error_message = "Launch-hook heartbeat must track changed budgets (300 + 77 + 100 = 477)"
+  }
+
+  assert {
+    condition     = aws_autoscaling_group.msab.health_check_grace_period == 377
+    error_message = "The ELB grace period must move with the same budgets (300 + 77 = 377) — one physical event, one derivation"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# A margin thin enough to be eaten by estimate error in the provisional
+# bootstrap itemisation must fail at plan — every boot would time out
+# mid-bootstrap and the ASG would replace instances forever.
+# -----------------------------------------------------------------------------
+run "launch_hook_margin_rejects_too_thin_a_value" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  variables {
+    launch_hook_margin_seconds = 30
+  }
+
+  expect_failures = [
+    var.launch_hook_margin_seconds,
+  ]
 }
