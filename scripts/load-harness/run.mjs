@@ -34,6 +34,20 @@ if (!jwtSecret || jwtSecret.length < 32) {
   throw new Error('LOAD_JWT_SECRET (the load-test environment JWT secret, ≥32 chars) is required.');
 }
 
+// Fail at second 0, not after the first hold. A wrong (or missing) region makes
+// every audio query match zero series, which reads as VOID — and the ramp only
+// discovers that AFTER holding the step, so a bad value costs a full holdSeconds
+// and writes no SUMMARY.md. Cheap to check now.
+const region = config.target.region;
+if (!region) {
+  throw new Error(
+    'config.target.region is required — the value MSAB puts on the `region` label of the six ' +
+      'audio series (its AWS_REGION, e.g. "ap-south-1"). Confirm it against the live scrape:\n' +
+      "  curl -s -H \"X-Internal-Key: $KEY\" http://<host>:3030/metrics/prometheus \\\n" +
+      "    | grep -o 'region=\"[^\"]*\"' | sort -u"
+  );
+}
+
 const prom = new PromClient(config.prometheus.url);
 const holdSeconds = config.ramp.holdSeconds ?? 600;
 if (holdSeconds < 600) {
@@ -151,7 +165,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, holdSeconds * 1000));
 
     const fleet = await collectFleetStats();
-    const slo = await evaluateStep(prom, { expectedWorkers: config.target.expectedWorkers });
+    const slo = await evaluateStep(prom, { expectedWorkers: config.target.expectedWorkers, region });
     const record = { stepIndex: i, rooms, listenersPerRoom, speakersPerRoom, startedAt, endedAt: new Date().toISOString(), fleet, slo };
     recorder.recordStep(record);
     steps.push(record);

@@ -197,6 +197,26 @@ module "region_mumbai" {
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
   alerts_topic_arn                      = module.alerting.alerts_topic_arn
+
+  # aws-production/08 — the msab SG's port-9100 ingress-from-loadgen rule.
+  # loadgen_ingress_enabled is computed here (root scope) from root variables
+  # ONLY, never from module.loadgen's own output — that output is unknown at
+  # plan time whenever this would be true, and it can't gate a for_each (see
+  # modules/networking/variables.tf).
+  #
+  # The null -> "" conversion below is a plain conditional, NOT coalesce() —
+  # confirmed empirically (tests/redis_store_split.tftest.hcl and others broke
+  # with "Call to function coalesce failed: no non-null, non-empty-string
+  # arguments"): coalesce(x, "") ERRORS when x is null, because "" doesn't
+  # count as a valid fallback value either — coalesce needs at least one
+  # argument that is non-null AND non-empty, and here neither is. try() would
+  # ALSO be wrong (try() catches errors, not null: try(null, "") still
+  # evaluates to null, not "" — see modules/loadgen/outputs.tf's genuinely
+  # error-raising try() cases for the contrast, e.g. indexing a possibly-empty
+  # list). An explicit equality check is the correct tool for "null becomes a
+  # specific default, including an empty-string default."
+  loadgen_ingress_enabled   = var.loadgen_enabled && var.environment == "staging"
+  loadgen_security_group_id = module.loadgen.security_group_id == null ? "" : module.loadgen.security_group_id
 }
 
 module "region_frankfurt" {
@@ -381,6 +401,52 @@ module "queues" {
   project_name     = var.project_name
   environment      = var.environment
   alerts_topic_arn = module.alerting.alerts_topic_arn
+}
+
+# =============================================================================
+# Load generator (aws-production/08) — test tooling, ROOT scope like alerting/
+# queues above, deliberately NOT inside modules/region: it is not a per-region
+# production resource, it targets exactly one region (mumbai, where staging's
+# box under test lives) regardless of how many regions are enabled, and giving
+# it its own module call keeps a future frankfurt/singapore loadgen instance
+# an explicit, separate decision rather than something that rides along with
+# enabled_regions.
+#
+# Uses the DEFAULT (unaliased) aws provider — no `providers = {...}` block —
+# which main.tf's own provider block above pins to ap-south-1, i.e. the same
+# region as mumbai. vpc_id/public_subnet_id below come from
+# module.region_mumbai, so this only ever makes sense while "mumbai" is
+# enabled; try() below turns a disabled-mumbai edge case into an empty string
+# rather than a plan-time index error (harmless in practice — every real
+# resource in modules/loadgen is ALSO count-gated to loadgen_enabled &&
+# environment=="staging", so an empty vpc_id is never actually handed to AWS
+# unless someone flips loadgen on for a region that isn't mumbai, which is
+# out of scope for this ticket).
+# =============================================================================
+
+module "loadgen" {
+  source = "./modules/loadgen"
+
+  enabled      = var.loadgen_enabled
+  environment  = var.environment
+  project_name = var.project_name
+  region       = local.regions.mumbai.aws_region
+
+  vpc_id           = try(module.region_mumbai[0].vpc_id, "")
+  public_subnet_id = try(module.region_mumbai[0].public_subnet_ids[0], "")
+
+  instance_type  = var.loadgen_instance_type
+  harness_s3_uri = var.loadgen_harness_s3_uri
+  msab_app_port  = var.app_port
+
+  # Same env-qualified path modules/ssm writes LARAVEL_INTERNAL_KEY to
+  # ("/${local.env_prefix}/laravel-internal-key" — see that module's main.tf).
+  # Not a module output: modules/ssm is instantiated per-region INSIDE
+  # modules/region, and its own local.env_prefix is built from the identical
+  # project_name+environment pair, so re-deriving the path here from the same
+  # two root variables reaches the exact same parameter without adding a
+  # region -> root output just for this one string.
+  internal_key_ssm_path = "/${var.project_name}-${var.environment}/laravel-internal-key"
 }
 
 # =============================================================================

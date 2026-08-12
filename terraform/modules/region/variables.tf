@@ -172,3 +172,20 @@ variable "image_tag" {
 
 # Fixed-size fleet — one number, wired to the ASG's min = max = desired (ticket 18).
 variable "fleet_size" { type = number }
+
+# --- Loadgen scrape access (aws-production/08) ---
+# Forwarded straight through to modules/networking — see that module's
+# variables.tf for why this is TWO variables (a static bool for for_each, the
+# id used only as an attribute value). Defaults match networking's so the
+# frankfurt/singapore call sites (which never pass these) are unaffected.
+variable "loadgen_ingress_enabled" {
+  description = "Static (plan-known) flag gating the msab SG's port-9100 ingress-from-loadgen rule. See modules/networking/variables.tf."
+  type        = bool
+  default     = false
+}
+
+variable "loadgen_security_group_id" {
+  description = "The loadgen module's security group id, used only as the port-9100 ingress rule's source. See modules/networking/variables.tf."
+  type        = string
+  default     = ""
+}

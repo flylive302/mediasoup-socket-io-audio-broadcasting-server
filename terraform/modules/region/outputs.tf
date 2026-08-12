@@ -37,6 +37,15 @@ output "vpc_id" {
   value = module.networking.vpc_id
 }
 
+# aws-production/08: modules/loadgen (instantiated at ROOT scope, sibling to
+# this module — it is test tooling, not a per-region resource) needs a public
+# subnet to place the loadgen box in. Additive output, forwarded straight
+# through — this module doesn't otherwise expose subnets at all.
+output "public_subnet_ids" {
+  description = "Public subnet ids in this region (2 AZs) — forwarded from modules/networking for root-level consumers (currently just modules/loadgen)."
+  value       = module.networking.public_subnet_ids
+}
+
 output "alarm_names" {
   description = "Every alarm name this region declares (cloudwatch + autoscaling modules) — flattened into the root alarm_names output"
   value       = concat(module.cloudwatch.alarm_names, module.autoscaling.alarm_names)

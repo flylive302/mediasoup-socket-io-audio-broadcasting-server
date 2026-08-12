@@ -28,6 +28,25 @@ function allValuesSatisfy(results, predicate) {
   return results.every((r) => predicate(numOf(r)));
 }
 
+// The query catalog below is transcribed from the doc verbatim, including its
+// literal region="bom" — the doc's §10 says outright: "Substitute region="bom"
+// for whatever the load-test environment uses." That substitution happens HERE,
+// at execution time, so the catalog stays a faithful copy of the doc rather
+// than drifting into an independent judgment call.
+//
+// 🔴 Why this matters on AWS: MSAB labels the six audio series with
+// config.AWS_REGION (src/domains/media/quality/qualityPublisher.ts:36), which
+// defaults to "ap-south-1" — NOT "bom", which is Vultr-era naming. With
+// honor_labels: true the scraper keeps MSAB's own value, so an unsubstituted
+// region="bom" matches zero series, V2/V3 come back empty, and the step is
+// VOID before a single threshold is read.
+const REGION_TOKEN = 'region="bom"';
+
+export function withRegion(query, region) {
+  if (!region) throw new Error("withRegion: a region label value is required");
+  return query.split(REGION_TOKEN).join(`region="${region}"`);
+}
+
 // ---------------------------------------------------------------------------
 // §7.1 pre-flight validity gates (V1-V4)
 // ---------------------------------------------------------------------------
@@ -356,15 +375,15 @@ function compareThreshold(value, threshold, direction) {
   throw new Error(`unknown direction "${direction}"`);
 }
 
-async function runGuard(promClient, guardDef) {
-  const results = await promClient.instant(guardDef.query);
+async function runGuard(promClient, guardDef, region) {
+  const results = await promClient.instant(withRegion(guardDef.query, region));
   return { id: guardDef.id, pass: guardDef.pass(results), values: seriesValues(results) };
 }
 
-async function runGate(promClient, gateDef, { guardStatus, expectedWorkers }) {
+async function runGate(promClient, gateDef, { guardStatus, expectedWorkers, region }) {
   const guardFailed = (gateDef.guard ?? []).some((gid) => guardStatus[gid] === false);
 
-  const results = await promClient.instant(gateDef.query);
+  const results = await promClient.instant(withRegion(gateDef.query, region));
   const values = seriesValues(results);
 
   if (guardFailed) {
@@ -413,19 +432,26 @@ async function runGate(promClient, gateDef, { guardStatus, expectedWorkers }) {
  * docs/reference/audio-slo-and-load-test-queries.md §7.0/§7.7 — do not
  * change them here without changing the doc first.
  */
-export async function evaluateStep(promClient, { expectedWorkers } = {}) {
+export async function evaluateStep(promClient, { expectedWorkers, region } = {}) {
+  if (!region) {
+    throw new Error(
+      "evaluateStep: options.region is required — it is the value of the `region` label MSAB " +
+        'publishes on the six audio series (config.AWS_REGION, e.g. "ap-south-1"). Set ' +
+        "config.target.region. Guessing it wrong makes every gate VOID, not fail."
+    );
+  }
   const at = new Date().toISOString();
 
   const preFlight = [];
   for (const pf of PRE_FLIGHT) {
-    const results = await promClient.instant(pf.query);
+    const results = await promClient.instant(withRegion(pf.query, region));
     preFlight.push({ id: pf.id, pass: pf.pass(results), values: seriesValues(results) });
   }
   const preFlightPass = Object.fromEntries(preFlight.map((p) => [p.id, p.pass]));
 
   const guards = [];
   for (const g of GUARDS) {
-    guards.push(await runGuard(promClient, g));
+    guards.push(await runGuard(promClient, g, region));
   }
   const guardStatus = Object.fromEntries(guards.map((g) => [g.id, g.pass]));
 
@@ -439,12 +465,14 @@ export async function evaluateStep(promClient, { expectedWorkers } = {}) {
 
   const gates = [];
   for (const gateDef of GATES) {
-    gates.push(await runGate(promClient, gateDef, { guardStatus: combinedGuardStatus, expectedWorkers }));
+    gates.push(
+      await runGate(promClient, gateDef, { guardStatus: combinedGuardStatus, expectedWorkers, region })
+    );
   }
 
   const readouts = [];
   for (const r of READOUTS) {
-    const results = await promClient.instant(r.query);
+    const results = await promClient.instant(withRegion(r.query, region));
     readouts.push({ id: r.id, values: seriesValues(results) });
   }
 

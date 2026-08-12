@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "Ticket 08 AC#3: the 2 rooms x 10 listeners smoke ramp against AWS staging.",
+    "24 bots total = 2 rooms x (2 speakers + 10 listeners).",
+    "",
+    "target.url MUST be the raw instance IP, never audio.staging.flyliveapp.com --",
+    "src/guard.mjs deny-lists the whole *.flyliveapp.com suffix, so the staging",
+    "DNS name is REFUSED by design. Re-derive the IP before each campaign:",
+    "  aws ec2 describe-instances --region ap-south-1 \\",
+    "    --filters Name=tag:Environment,Values=staging Name=instance-state-name,Values=running \\",
+    "    --query 'Reservations[].Instances[].PublicIpAddress' --output text",
+    "",
+    "fleet.userIdBase is DELIBERATELY ABSENT. run.mjs:97 reads",
+    "  config.fleet?.userIdBase ?? 9_000_000 + id",
+    "and `+` binds tighter than `??`, so SETTING the field pins every bot in the",
+    "fleet to one identical JWT id. Omitting it is what gives each bot a unique",
+    "id (9000001, 9000002, ...). Do not add it back.",
+    "",
+    "holdSeconds is 120: this is a smoke, not a capacity measurement. run.mjs will",
+    "warn that <600s cannot certify a level -- that warning is correct and expected.",
+    "Ticket 10's saturation ramps are the runs that need >=600s holds."
+  ],
+  "target": {
+    "url": "http://13.232.85.202:3030",
+    "origin": "https://staging.flyliveapp.com",
+    "environmentName": "load-test",
+    "expectedWorkers": 3,
+    "region": "ap-south-1"
+  },
+  "prometheus": { "url": "http://127.0.0.1:9090" },
+  "fleet": { "processes": 4, "staggerMs": 150 },
+  "ramp": {
+    "roomPrefix": "loadgen-smoke",
+    "speakersPerRoom": 2,
+    "holdSeconds": 120,
+    "stopOnFail": true,
+    "steps": [{ "rooms": 2, "listenersPerRoom": 10 }]
+  }
+}

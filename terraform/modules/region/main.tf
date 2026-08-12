@@ -29,6 +29,11 @@ module "networking" {
   rtc_min_port       = var.rtc_min_port
   rtc_max_port       = var.rtc_max_port
   cascade_ports_open = var.cascade_ports_open
+
+  # aws-production/08 — see modules/networking/variables.tf for why this is
+  # two variables instead of one.
+  loadgen_ingress_enabled   = var.loadgen_ingress_enabled
+  loadgen_security_group_id = var.loadgen_security_group_id
 }
 
 # CACHE store (aws-platform-build/21): evict-freely, no backups — rate limits,

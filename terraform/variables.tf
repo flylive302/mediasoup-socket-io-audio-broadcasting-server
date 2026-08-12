@@ -429,3 +429,31 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
+
+# --- Load generator (aws-production/08) ---
+# A short-lived, hand-triggered box that runs scripts/load-harness against
+# staging — see modules/loadgen and docs/runbooks/msab-loadgen-campaign.md.
+variable "loadgen_enabled" {
+  description = <<-EOT
+    Ships INERT (default false): the loadgen module renders zero resources
+    until this is deliberately flipped true. Even then, modules/loadgen gates
+    every resource on environment == "staging" too (local.loadgen_enabled), so
+    a production apply can never stand this box up no matter how this flag is
+    set. Flip true for a campaign (docs/runbooks/msab-loadgen-campaign.md step
+    1), flip back to false to tear it down (step 10).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "loadgen_instance_type" {
+  description = "EC2 instance type for the load-generator box — see modules/loadgen/variables.tf's instance_type for why c7i.2xlarge is the default (the harness's real Opus encode/decode fleet needs real CPU)."
+  type        = string
+  default     = "c7i.2xlarge"
+}
+
+variable "loadgen_harness_s3_uri" {
+  description = "s3://bucket/key.tgz pointing at a pre-built load-harness tarball. Empty (default) skips delivery — the harness is copied onto the box by hand instead (docs/runbooks/msab-loadgen-campaign.md step 4)."
+  type        = string
+  default     = ""
+}

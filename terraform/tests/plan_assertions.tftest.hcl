@@ -455,3 +455,38 @@ run "ecr_repository_is_immutable" {
     error_message = "ECR repository must be IMMUTABLE (ticket 14) — tags must never be silently overwritten"
   }
 }
+
+# -----------------------------------------------------------------------------
+# aws-production/08 — the ROOT-SCOPE plan graph. tests/loadgen.tftest.hcl only
+# ever plans modules/loadgen and modules/networking in ISOLATION (module {}
+# runs, dummy string inputs), which never builds the actual cross-module
+# reference this ticket's wiring warned about: at root, module.region_mumbai
+# reads module.loadgen.security_group_id (for the msab SG's port-9100 rule)
+# WHILE module.loadgen reads module.region_mumbai's vpc_id/public_subnet_ids
+# (for its own placement). With loadgen_enabled = true, the id
+# module.region_mumbai consumes is a genuinely UNKNOWN, computed value
+# (aws_security_group.loadgen[0].id doesn't exist yet at plan time) — this is
+# the ONE plan in the whole suite that actually exercises the shape the task
+# flagged as a possible dependency cycle. It is a plain `run`, no `module {}`
+# block, so it plans the REAL root configuration with this file's existing
+# 4-alias aws mocks + cloudflare mock + full variable fixture (see file top).
+#
+# Passing proves two things at once: (1) no module dependency cycle — a cycle
+# fails at graph-build, before any assert runs, with "Error: Cycle:"; (2) the
+# unknown loadgen security-group id propagates cleanly into the msab SG's
+# dynamic ingress block's `security_groups` attribute (fine — only a
+# for_each/count expression may never be unknown; an ordinary attribute may).
+# -----------------------------------------------------------------------------
+run "loadgen_enabled_plans_cleanly_at_root_scope" {
+  command = plan
+
+  variables {
+    environment     = "staging"
+    loadgen_enabled = true
+  }
+
+  assert {
+    condition     = strcontains(module.loadgen.user_data_rendered, "Values=staging")
+    error_message = "module.loadgen's rendered user-data must carry environment=staging into the MSAB discovery filter"
+  }
+}

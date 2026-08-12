@@ -35,6 +35,42 @@ production secret never enters this tool.
 | `LARAVEL_API_URL` on the target MSAB pointed at a **load-test backend or stub** (never prod) | Seat persistence and event push are HTTP side effects; a prod-pointed URL would create real side effects |
 | `JWT_SECRET` on the target MSAB = `LOAD_JWT_SECRET` given to the harness | Bots mint their own tokens |
 | Bot host sized for the fleet | libwebrtc runs native threads per peer; spread bots via `fleet.processes` and multiple bot hosts if needed |
+| **`config.target.region` = the value MSAB actually puts on the `region` label** | See below — wrong value ⇒ every audio query matches nothing ⇒ VOID, not FAIL |
+
+### 🔴 `config.target.region` — the one value that silently voids a run
+
+The gate catalog in `src/queries.mjs` is transcribed from the SLO doc verbatim, `region="bom"`
+literal included, because the doc is the source of truth. The doc's §10 then says to **substitute**
+that token for whatever the environment emits — `src/queries.mjs` does the substitution at query
+time from `config.target.region`.
+
+`bom` is Vultr-era naming. On AWS, MSAB labels the six audio series with `config.AWS_REGION`
+(`src/domains/media/quality/qualityPublisher.ts:36`), which defaults to **`ap-south-1`**. With
+`honor_labels: true` the scraper keeps MSAB's own value, so a stale `bom` matches **zero series** —
+V2/V3 come back empty, the step is **VOID**, and the ramp stops having measured nothing.
+
+Derive it, never assume it — the six audio series only appear once audio has actually flowed, so
+run this while a room is live:
+
+```bash
+curl -s -H "X-Internal-Key: $LARAVEL_INTERNAL_KEY" http://<host>:3030/metrics/prometheus \
+  | grep -o 'region="[^"]*"' | sort -u
+```
+
+`run.mjs` refuses to start without `config.target.region`, so this fails at second 0 rather than
+after a full `holdSeconds`.
+
+### ⛔ Target the instance IP, never the staging DNS name
+
+`audio.staging.flyliveapp.com` ends in a deny-listed suffix, so `src/guard.mjs` **refuses it** —
+correctly, and by design. Every config here targets the raw public IP. Re-derive it per campaign;
+it changes whenever the instance is replaced:
+
+```bash
+aws ec2 describe-instances --region ap-south-1 \
+  --filters Name=tag:Environment,Values=staging Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].PublicIpAddress' --output text
+```
 
 ## Usage
 
@@ -50,6 +86,33 @@ node run.mjs --config config.json          # or --dry-run to validate config + g
 Each ramp step: scale the fleet up → hold `holdSeconds` (≥600 — §7.0 rule 4: a level only counts
 after 10 sustained minutes) → query all gates + readouts → record. The ramp stops at the first
 FAIL (the knee: highest fully-passing step) or VOID (broken telemetry — fix the environment).
+
+### Two entry points, and which to use
+
+| Script | Gates | Needs Prometheus | Use it for |
+|---|---|---|---|
+| `run.mjs` | evaluated | **yes** — unreachable ⇒ hard crash *after* the hold, and **no `SUMMARY.md` is written** | the real thing: any run whose verdict you intend to cite |
+| `smoke-run.mjs` | **skipped** — verdict is the literal string `SMOKE (…)` | no | proving fleet connectivity when telemetry isn't wired yet |
+
+`smoke-run.mjs` is a copy of `run.mjs` with the `evaluateStep` call replaced by a hardcoded SMOKE
+verdict. It never stops early, because the SMOKE string matches neither `FAIL` nor `VOID`.
+
+⚠️ Nothing in `run-meta.json` records **which** script produced a run — only `config` and `argv`.
+The sole marker is the verdict string inside `steps.jsonl` / `SUMMARY.md`. When comparing runs for
+ticket 10, check the verdict before trusting a row.
+
+### Shipped configs
+
+| File | Load | Notes |
+|---|---|---|
+| `config.example.json` | full ramp | the template; edit a copy |
+| `config.smoke.json` | 1 room × 2 listeners | the 2026-08-11 connectivity smoke; Prometheus URL is a dead port on purpose |
+| `config.loadgen-2x10.json` | 2 rooms × 10 listeners (24 bots) | ticket 08 AC#3, against AWS staging from the loadgen box |
+
+🔴 **Never set `fleet.userIdBase`.** `run.mjs:97` reads
+`config.fleet?.userIdBase ?? 9_000_000 + id`, and `+` binds tighter than `??` — so *setting* the
+field pins the whole fleet to one identical JWT id, while *omitting* it is what gives each bot a
+unique one. `config.smoke.json` sets it (4 bots, survived); `config.loadgen-2x10.json` omits it.
 
 ## Output — the run directory is the deliverable
 

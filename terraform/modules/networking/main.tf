@@ -151,6 +151,27 @@ resource "aws_security_group" "msab" {
     }
   }
 
+  # node_exporter scrape, from the loadgen box ONLY (aws-production/08). Source
+  # is a SECURITY GROUP, never a CIDR — the whole point is that nothing except
+  # the loadgen box's own SG can reach this port. INLINE dynamic block, same
+  # as the cascade rule above: this SG already mixes plain + dynamic inline
+  # ingress blocks, and adding a separate aws_security_group_rule /
+  # aws_vpc_security_group_ingress_rule resource on the SAME security group
+  # would fight Terraform's inline-block reconciliation and delete rules out
+  # from under itself. for_each is gated on the STATIC loadgen_ingress_enabled
+  # bool, not on loadgen_security_group_id being non-empty — see that
+  # variable's comment for why (unknown-value for_each).
+  dynamic "ingress" {
+    for_each = var.loadgen_ingress_enabled ? [1] : []
+    content {
+      description     = "node_exporter scrape from the loadgen box (aws-production/08)"
+      from_port       = 9100
+      to_port         = 9100
+      protocol        = "tcp"
+      security_groups = [var.loadgen_security_group_id]
+    }
+  }
+
   # All outbound
   egress {
     from_port   = 0

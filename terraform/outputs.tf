@@ -113,3 +113,18 @@ output "github_actions_role_arn" {
   description = "AWS_DEPLOY_ROLE_ARN for the aws-production GitHub environment"
   value       = module.iam.github_actions_role_arn
 }
+
+# --- Load generator (aws-production/08) ---
+# null when loadgen_enabled=false (or environment != staging) — modules/loadgen's
+# own outputs are already try()-wrapped, so these just forward that null
+# straight through. docs/runbooks/msab-loadgen-campaign.md step 1 reads these
+# via `terraform output -raw loadgen_instance_id` / `loadgen_public_ip`.
+output "loadgen_instance_id" {
+  description = "EC2 instance id of the loadgen box. null when disabled."
+  value       = module.loadgen.instance_id
+}
+
+output "loadgen_public_ip" {
+  description = "Public IP of the loadgen box. null when disabled."
+  value       = module.loadgen.public_ip
+}

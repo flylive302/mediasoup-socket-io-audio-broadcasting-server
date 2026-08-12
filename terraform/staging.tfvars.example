@@ -72,3 +72,12 @@ redis_durable_node_type          = "cache.t4g.small"
 redis_durable_num_cache_clusters = 1
 redis_durable_automatic_failover = false
 redis_durable_multi_az           = false
+
+# --- Load generator (aws-production/08) ---
+# Ships INERT. Flipping loadgen_enabled to true is what stands up the box
+# (docs/runbooks/msab-loadgen-campaign.md step 1) — everything else here is a
+# safe-to-commit default. loadgen_harness_s3_uri can stay empty; the runbook's
+# step 4 delivers the harness by hand when it is.
+loadgen_enabled        = false
+loadgen_instance_type  = "c7i.2xlarge"
+loadgen_harness_s3_uri = ""

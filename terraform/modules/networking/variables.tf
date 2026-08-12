@@ -51,3 +51,26 @@ variable "cascade_relay_max_port" {
   type        = number
   default     = 49999
 }
+
+# --- Loadgen scrape access (aws-production/08) ---
+# TWO variables, deliberately not one. Gating the dynamic ingress block below
+# on `loadgen_security_group_id != ""` looks natural but is WRONG: when
+# loadgen is enabled that id is aws_security_group.loadgen[0].id — a computed
+# attribute, unknown at plan time — and a for_each expression can never depend
+# on an unknown value (Terraform error: "Invalid for_each argument"). This
+# repo already hit exactly this class of bug; see modules/iam/main.tf's
+# aws_iam_role_policy.sqs_consume comment ("Gated on a static flag, not on the
+# ARN being non-empty — the ARN is computed"). So: a STATIC bool gates
+# for_each, and the (possibly-unknown-at-plan) id is used only as the rule's
+# `security_groups` value, where an unknown attribute is completely normal.
+variable "loadgen_ingress_enabled" {
+  description = "Static (plan-known) flag that gates the msab security group's port-9100 ingress-from-loadgen rule. Must be computed from root variables only (e.g. var.loadgen_enabled && var.environment == \"staging\") — never from the loadgen module's own output, which is unknown at plan time whenever this would be true. Default false keeps every existing caller (frankfurt/singapore, any test that doesn't pass it) unaffected."
+  type        = bool
+  default     = false
+}
+
+variable "loadgen_security_group_id" {
+  description = "The loadgen module's security group id — used only as the ingress rule's source (security_groups), never in a for_each/count expression (see loadgen_ingress_enabled). Default \"\" — harmless when loadgen_ingress_enabled is false, since the dynamic block's for_each is empty and this value is never read."
+  type        = string
+  default     = ""
+}
