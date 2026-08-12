@@ -1,0 +1,17 @@
+{
+  "target": {
+    "url": "http://13.232.85.202:3030",
+    "origin": "https://staging.flyliveapp.com",
+    "environmentName": "load-test",
+    "expectedWorkers": 3
+  },
+  "prometheus": { "url": "http://127.0.0.1:59999" },
+  "fleet": { "processes": 1, "staggerMs": 150, "userIdBase": 9000000 },
+  "ramp": {
+    "roomPrefix": "smoke-room",
+    "speakersPerRoom": 2,
+    "holdSeconds": 60,
+    "stopOnFail": true,
+    "steps": [ { "rooms": 1, "listenersPerRoom": 2 } ]
+  }
+}
