@@ -5,6 +5,11 @@ variable "project_name" {
   type        = string
 }
 
+variable "environment" {
+  description = "Deployment environment (staging|production). Qualifies every resource NAME in this module so both environments can coexist in one AWS account (ADR 0028, ticket 31 / decision D3)."
+  type        = string
+}
+
 variable "ecr_repository_arn" {
   description = "ARN of the MSAB ECR repository — scopes the GitHub Actions push policy"
   type        = string
@@ -41,7 +46,8 @@ variable "event_queue_arn" {
 
 variable "log_retention_days" {
   description = <<-EOT
-    CloudWatch Logs retention (days) for the MSAB log group (project_name/msab).
+    CloudWatch Logs retention (days) for the MSAB log group
+    (<project_name>-<environment>/msab).
     Default 30 days: enough to debug a realtime-audio incident (rooms/seats,
     connection drops) after the fact, while bounding storage cost. Incidents
     older than a month are investigated from docs/metrics (dashboards,

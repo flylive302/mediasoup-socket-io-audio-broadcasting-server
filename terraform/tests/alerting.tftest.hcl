@@ -19,6 +19,7 @@ run "no_email_means_zero_subscriptions" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
     # alert_email left at its default ("") — ships inert.
   }
 
@@ -37,6 +38,7 @@ run "email_set_creates_exactly_one_email_subscription" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
     alert_email  = "oncall@flyliveapp.com"
   }
 
@@ -65,10 +67,11 @@ run "topic_name_follows_project_name_convention" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
   }
 
   assert {
-    condition     = aws_sns_topic.alerts.name == "flylive-audio-alerts"
-    error_message = "Topic name must be \"${var.project_name}-alerts\" — this is the single global alerting topic every region + module.queues shares"
+    condition     = aws_sns_topic.alerts.name == "flylive-audio-production-alerts"
+    error_message = "Topic name must be \"${var.project_name}-${var.environment}-alerts\" — this is the single global alerting topic every region + module.queues shares"
   }
 }

@@ -44,10 +44,11 @@ run "dashboard_discovers_instances_via_search_not_static_list" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
     aws_region   = "ap-south-1"
     # ticket 32: the SNS topic is now created by the global modules/alerting
     # module, not here — this module only receives its ARN.
-    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
+    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-production-alerts"
   }
 
   assert {
@@ -90,6 +91,7 @@ run "instance_role_can_self_publish_metrics_without_per_instance_grant" {
 
   variables {
     project_name          = "flylive-audio"
+    environment           = "production"
     ecr_repository_arn    = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio/msab"
     ecr_pull_resource_arn = "arn:aws:ecr:*:111111111111:repository/flylive-audio/msab"
   }

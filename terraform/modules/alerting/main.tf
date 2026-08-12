@@ -13,10 +13,14 @@
 #    topic to its own global module breaks the cycle: queues and region both
 #    depend on modules/alerting, and modules/alerting depends on neither.
 #
-# 2. Name collision. The topic name is "${var.project_name}-alerts" — fixed,
-#    not region-qualified. If it were created once per region, enabling a
-#    second region (Frankfurt/Singapore — see root main.tf enabled_regions)
-#    would make every region try to create the SAME topic name and collide.
+# 2. Name collision (region axis). The topic name is
+#    "${local.env_prefix}-alerts" — fixed per environment, not
+#    region-qualified. If it were created once per region, enabling a second
+#    region (Frankfurt/Singapore — see root main.tf enabled_regions) would
+#    make every region try to create the SAME topic name and collide. (The
+#    separate staging/production collision on this same name — ticket 31 /
+#    decision D3 — is already fixed: the name is env-qualified via
+#    local.env_prefix, so the two environments no longer collide.)
 #
 # 3. One operator, one inbox. There is exactly one on-call surface for this
 #    project. A single global topic is the correct shape on the merits, not
@@ -36,8 +40,17 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 resource "aws_sns_topic" "alerts" {
-  name = "${var.project_name}-alerts"
+  name = "${local.env_prefix}-alerts"
 
   tags = {
     Project = var.project_name

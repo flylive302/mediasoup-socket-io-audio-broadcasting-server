@@ -89,7 +89,7 @@ Laravel backend
         │
         │  SNS Publish (IAM authenticated)
         ▼
-SNS Topic: flylive-audio-msab-events   (Mumbai, global)
+SNS Topic: flylive-audio-<environment>-msab-events   (Mumbai, global)
         │
         ├── HTTPS POST → NLB Mumbai /api/events?key=<internal_key>
         │
@@ -119,6 +119,20 @@ terraform/
     ├── sns/                   ← Event bus (global, Mumbai)
     └── compute/               ← ⚠️ ORPHANED — not referenced in main.tf
 ```
+
+### 1.6 Resource Naming
+
+Every module derives `local.env_prefix = "${var.project_name}-${var.environment}"`. Resource names
+follow `<project_name>-<environment>-<resource>` (e.g. `flylive-audio-production-ec2-role`).
+Path-style names (SSM parameters, log groups) follow `/<project_name>-<environment>/<leaf>` (e.g.
+`/flylive-audio-production/jwt-secret`). This lets staging and production coexist in the single
+AWS account of ADR 0028 — ticket 31 / decision D3.
+
+Two runtime exceptions stay env-neutral because they're account-global-shared (decision D2): the
+ECR repository `flylive-audio/msab` + its lifecycle policy, and the GitHub OIDC identity provider
+(`token.actions.githubusercontent.com`). Separately out of scope for this change: the Terraform
+state bucket `flylive-audio-tfstate-<ACCOUNT_ID>` (one bucket, key-per-environment) and the bare
+`Project = flylive-audio` tag value — both are identical in staging and production by design.
 
 ---
 
@@ -269,37 +283,38 @@ Frankfurt instances pull cross-region from Mumbai ECR. This adds 10–30 seconds
 
 ### 2.9 IAM
 
-The EC2 instance role (`flylive-audio-ec2-role`) has these inline policies:
+The EC2 instance role (`flylive-audio-<environment>-ec2-role`; production example: `flylive-audio-production-ec2-role`) has these inline policies:
 
 | Policy | Permissions |
 |--------|-------------|
 | cloudwatch-metrics | `cloudwatch:PutMetricData` (restricted to `FlyLive/MSAB` namespace) |
 | asg-lifecycle | `CompleteLifecycleAction`, `DescribeAutoScalingInstances`, `RecordLifecycleActionHeartbeat` |
 | ec2-describe | `DescribeInstances`, `DescribeTags` |
-| cloudwatch-logs | Logs write to `/flylive-audio/*` log groups |
+| cloudwatch-logs | Logs write to `/flylive-audio-<environment>/*` log groups |
 | ecr-pull | `GetAuthorizationToken`, `BatchGetImage`, `GetDownloadUrlForLayer`, `BatchCheckLayerAvailability` |
-| ssm-parameters | `GetParameter`, `GetParameters` on `arn:aws:ssm:*:*:parameter/flylive-audio/*` |
+| ssm-parameters | `GetParameter`, `GetParameters` on `arn:aws:ssm:*:*:parameter/flylive-audio-<environment>/*` |
 
 Managed policy attachment: `AmazonSSMManagedInstanceCore` (enables SSM Session Manager shell access).
 
 ### 2.10 SSM Parameter Store (Secrets)
 
-All secrets stored as `SecureString` (KMS encrypted) in both regions:
+All secrets stored as `SecureString` (KMS encrypted) in both regions, under
+`/flylive-audio-<environment>/*` (production: `/flylive-audio-production/*`):
 
 | Parameter path | Content |
 |---------------|---------|
-| `/flylive-audio/jwt-secret` | JWT signing secret (shared with Laravel) |
-| `/flylive-audio/laravel-internal-key` | Service-to-service auth key |
-| `/flylive-audio/session-secret` | Express session signing key |
-| `/flylive-audio/cloudflare-turn-api-key` | TURN credential generation API key |
-| `/flylive-audio/redis-auth-token` | Redis AUTH password |
+| `/flylive-audio-<environment>/jwt-secret` | JWT signing secret (shared with Laravel) |
+| `/flylive-audio-<environment>/laravel-internal-key` | Service-to-service auth key |
+| `/flylive-audio-<environment>/session-secret` | Express session signing key |
+| `/flylive-audio-<environment>/cloudflare-turn-api-key` | TURN credential generation API key |
+| `/flylive-audio-<environment>/redis-auth-token` | Redis AUTH password |
 
 Secrets are fetched at boot, passed to Docker via `-e` flags, and never written to the `.env` file on disk. The `redis_password` variable in the Terraform autoscaling module exists for historical reasons but is not rendered into the user-data script — secrets come from SSM only.
 
 ### 2.11 SNS (Event Bus)
 
 ```
-Topic: arn:aws:sns:ap-south-1:<account>:flylive-audio-msab-events
+Topic: arn:aws:sns:ap-south-1:<account>:flylive-audio-<environment>-msab-events
 
 Subscriptions (HTTPS):
   → https://<nlb-mumbai-dns>/api/events?key=<internal_key>
@@ -345,7 +360,7 @@ GA performs latency-based routing: a user in Asia hits Mumbai, a user in Europe 
 
 Scaling is handled by CPU target tracking (60%) — the connection alarms are for dashboards only.
 
-**Dashboard** (`flylive-audio-operations`): Active connections, active rooms, worker count, CPU %, per-instance breakdowns, NLB flow metrics, ASG instance count, alarm status panel.
+**Dashboard** (`flylive-audio-<environment>-operations-<region>`; production example: `flylive-audio-production-operations-ap-south-1`): Active connections, active rooms, worker count, CPU %, per-instance breakdowns, NLB flow metrics, ASG instance count, alarm status panel.
 
 ---
 
@@ -730,12 +745,12 @@ curl https://audio.flyliveapp.com/health
 Laravel needs the SNS topic ARN to publish events:
 ```bash
 terraform output sns_topic_arn
-# arn:aws:sns:ap-south-1:<account>:flylive-audio-msab-events
+# arn:aws:sns:ap-south-1:<account>:flylive-audio-production-msab-events
 ```
 
 Set this in Laravel's `.env`:
 ```
-AWS_SNS_MSAB_TOPIC_ARN=arn:aws:sns:ap-south-1:<account>:flylive-audio-msab-events
+AWS_SNS_MSAB_TOPIC_ARN=arn:aws:sns:ap-south-1:<account>:flylive-audio-production-msab-events
 ```
 
 Laravel's IAM user (separate, for the Laravel backend) needs `sns:Publish` permission on this topic ARN.
@@ -869,9 +884,9 @@ the source of truth; only add a region there once its CNAME resolves).
 After `terraform apply`, read each region's NLB DNS name and create a matching CNAME:
 
 ```bash
-terraform output nlb_dns_mumbai      # e.g. flylive-audio-nlb-xxxx.elb.ap-south-1.amazonaws.com
-terraform output nlb_dns_frankfurt   # e.g. flylive-audio-nlb-yyyy.elb.eu-central-1.amazonaws.com
-terraform output nlb_dns_singapore   # e.g. flylive-audio-nlb-zzzz.elb.ap-southeast-1.amazonaws.com
+terraform output nlb_dns_mumbai      # e.g. flylive-audio-production-nlb-xxxx.elb.ap-south-1.amazonaws.com
+terraform output nlb_dns_frankfurt   # e.g. flylive-audio-production-nlb-yyyy.elb.eu-central-1.amazonaws.com
+terraform output nlb_dns_singapore   # e.g. flylive-audio-production-nlb-zzzz.elb.ap-southeast-1.amazonaws.com
 ```
 
 In Cloudflare DNS:
@@ -1021,14 +1036,14 @@ jobs:
       - name: Trigger ASG instance refresh — Mumbai
         run: |
           aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name flylive-audio-asg-mumbai \
+            --auto-scaling-group-name flylive-audio-production-asg-mumbai \
             --region ap-south-1 \
             --preferences '{"MinHealthyPercentage":50,"InstanceWarmup":300}'
 
       - name: Trigger ASG instance refresh — Frankfurt
         run: |
           aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name flylive-audio-asg-frankfurt \
+            --auto-scaling-group-name flylive-audio-production-asg-frankfurt \
             --region eu-central-1 \
             --preferences '{"MinHealthyPercentage":50,"InstanceWarmup":300}'
 ```

@@ -10,6 +10,11 @@ variable "project_name" {
   type        = string
 }
 
+variable "environment" {
+  description = "Deployment environment (staging|production). Qualifies every resource NAME in this module so both environments can coexist in one AWS account (ADR 0028, ticket 31 / decision D3)."
+  type        = string
+}
+
 variable "instance_type" {
   description = "EC2 instance type (CPU-optimized recommended for MediaSoup)"
   type        = string

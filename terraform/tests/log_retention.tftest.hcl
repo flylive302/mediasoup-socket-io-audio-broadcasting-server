@@ -19,6 +19,7 @@ mock_provider "aws" {}
 
 variables {
   project_name          = "flylive-audio"
+  environment           = "production"
   ecr_repository_arn    = "arn:aws:ecr:ap-south-1:111111111111:repository/flylive-audio"
   ecr_pull_resource_arn = "arn:aws:ecr:*:111111111111:repository/flylive-audio"
 }
@@ -26,9 +27,10 @@ variables {
 # -----------------------------------------------------------------------------
 # modules/iam/main.tf `aws_cloudwatch_log_group.msab`: retention must be set
 # explicitly to the intended value (not left at the provider default of
-# "never expire") and the name must match the literal the CloudWatch Agent
-# writes to in modules/autoscaling/user-data.sh:264-292
-# ("/flylive-audio/msab" when project_name = "flylive-audio").
+# "never expire") and the name must match the env-qualified path the
+# CloudWatch Agent writes to in modules/autoscaling/user-data.sh:264-292
+# ("/flylive-audio-production/msab" when project_name = "flylive-audio" and
+# environment = "production").
 # -----------------------------------------------------------------------------
 run "log_group_has_intended_retention_and_name" {
   command = plan
@@ -43,8 +45,8 @@ run "log_group_has_intended_retention_and_name" {
   }
 
   assert {
-    condition     = aws_cloudwatch_log_group.msab.name == "/flylive-audio/msab"
-    error_message = "Log group name must match the literal log_group_name the CloudWatch Agent writes to in user-data.sh (\"/flylive-audio/msab\")"
+    condition     = aws_cloudwatch_log_group.msab.name == "/flylive-audio-production/msab"
+    error_message = "Log group name must be /flylive-audio-production/msab — the CloudWatch Agent config in user-data.sh no longer hard-codes this path, it is templated from the `name_prefix` templatefile variable that modules/autoscaling/main.tf sets to local.env_prefix, so bash and Terraform derive the same name from the same source"
   }
 }
 
@@ -62,7 +64,7 @@ run "cloudwatch_logs_policy_matches_group_and_drops_create_log_group" {
   }
 
   assert {
-    condition     = strcontains(aws_iam_role_policy.cloudwatch_logs.policy, "arn:aws:logs:*:*:log-group:/flylive-audio/*")
+    condition     = strcontains(aws_iam_role_policy.cloudwatch_logs.policy, "arn:aws:logs:*:*:log-group:/flylive-audio-production/*")
     error_message = "cloudwatch_logs policy resource ARN must be scoped to the same project_name-derived path as the log group"
   }
 
@@ -94,7 +96,7 @@ run "deploy_identity_is_oidc_pinned_to_repo_environment" {
   }
 
   assert {
-    condition     = aws_iam_role.github_actions.name == "flylive-audio-github-actions"
+    condition     = aws_iam_role.github_actions.name == "flylive-audio-production-github-actions"
     error_message = "OIDC deploy role must replace the old IAM user under the same name"
   }
 }

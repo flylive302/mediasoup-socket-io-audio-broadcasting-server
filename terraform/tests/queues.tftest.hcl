@@ -12,7 +12,7 @@ mock_provider "aws" {
   mock_resource "aws_sqs_queue" {
     override_during = plan
     defaults = {
-      arn = "arn:aws:sqs:ap-south-1:111111111111:flylive-audio-msab-events-dlq.fifo"
+      arn = "arn:aws:sqs:ap-south-1:111111111111:flylive-audio-production-msab-events-dlq.fifo"
     }
   }
 }
@@ -26,6 +26,7 @@ run "queue_is_fifo_with_explicit_dedup_and_redrive" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
   }
 
   assert {
@@ -63,7 +64,8 @@ run "queue_alarms_have_stated_thresholds_and_are_wired_to_alerts_topic" {
 
   variables {
     project_name     = "flylive-audio"
-    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
+    environment      = "production"
+    alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-production-alerts"
   }
 
   assert {
@@ -110,6 +112,7 @@ run "queue_alarms_stay_visibility_only_when_alerts_topic_arn_omitted" {
 
   variables {
     project_name = "flylive-audio"
+    environment  = "production"
   }
 
   assert {
@@ -127,10 +130,11 @@ run "queue_access_is_iam_role_based_consume_only" {
 
   variables {
     project_name               = "flylive-audio"
+    environment                = "production"
     ecr_repository_arn         = "arn:aws:ecr:ap-south-1:000000000000:repository/mock"
     ecr_pull_resource_arn      = "arn:aws:ecr:*:000000000000:repository/mock"
     enable_event_queue_consume = true
-    event_queue_arn            = "arn:aws:sqs:ap-south-1:000000000000:flylive-audio-msab-events.fifo"
+    event_queue_arn            = "arn:aws:sqs:ap-south-1:000000000000:flylive-audio-production-msab-events.fifo"
   }
 
   assert {
@@ -139,7 +143,7 @@ run "queue_access_is_iam_role_based_consume_only" {
   }
 
   assert {
-    condition     = strcontains(aws_iam_role_policy.sqs_consume[0].policy, "sqs:ReceiveMessage") && strcontains(aws_iam_role_policy.sqs_consume[0].policy, "flylive-audio-msab-events.fifo")
+    condition     = strcontains(aws_iam_role_policy.sqs_consume[0].policy, "sqs:ReceiveMessage") && strcontains(aws_iam_role_policy.sqs_consume[0].policy, "flylive-audio-production-msab-events.fifo")
     error_message = "The SQS policy must be consume-side and scoped to the one msab-events queue ARN"
   }
 

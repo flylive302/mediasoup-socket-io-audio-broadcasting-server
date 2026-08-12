@@ -32,6 +32,15 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # --- Customer-managed KMS key for SSM SecureString encryption ---
 resource "aws_kms_key" "ssm" {
   description             = "Customer-managed key for ${var.project_name} SSM SecureString parameters (ticket 16)"
@@ -44,7 +53,7 @@ resource "aws_kms_key" "ssm" {
 }
 
 resource "aws_kms_alias" "ssm" {
-  name          = "alias/${var.project_name}-ssm"
+  name          = "alias/${local.env_prefix}-ssm"
   target_key_id = aws_kms_key.ssm.key_id
 }
 
@@ -63,7 +72,7 @@ resource "aws_kms_alias" "ssm" {
 # their own CMK's parameters. Same class of latent multi-region trap
 # already documented in modules/iam/main.tf (log group / CreateLogGroup).
 resource "aws_iam_role_policy" "ssm_kms_decrypt" {
-  name = "${var.project_name}-ssm-kms-decrypt-${var.aws_region}"
+  name = "${local.env_prefix}-ssm-kms-decrypt-${var.aws_region}"
   role = var.iam_role_name
 
   policy = jsonencode({
@@ -80,7 +89,7 @@ resource "aws_iam_role_policy" "ssm_kms_decrypt" {
 
 # --- JWT Secret ---
 resource "aws_ssm_parameter" "jwt_secret" {
-  name        = "/${var.project_name}/jwt-secret"
+  name        = "/${local.env_prefix}/jwt-secret"
   description = "JWT secret shared with Laravel backend"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -93,7 +102,7 @@ resource "aws_ssm_parameter" "jwt_secret" {
 
 # --- Laravel Internal Key ---
 resource "aws_ssm_parameter" "laravel_internal_key" {
-  name        = "/${var.project_name}/laravel-internal-key"
+  name        = "/${local.env_prefix}/laravel-internal-key"
   description = "Shared secret key for Laravel API authentication"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -106,7 +115,7 @@ resource "aws_ssm_parameter" "laravel_internal_key" {
 
 # --- Session Secret ---
 resource "aws_ssm_parameter" "session_secret" {
-  name        = "/${var.project_name}/session-secret"
+  name        = "/${local.env_prefix}/session-secret"
   description = "Express session secret"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -119,7 +128,7 @@ resource "aws_ssm_parameter" "session_secret" {
 
 # --- Cloudflare TURN API Key ---
 resource "aws_ssm_parameter" "cloudflare_turn_api_key" {
-  name        = "/${var.project_name}/cloudflare-turn-api-key"
+  name        = "/${local.env_prefix}/cloudflare-turn-api-key"
   description = "Cloudflare Realtime TURN API bearer token"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -135,7 +144,7 @@ resource "aws_ssm_parameter" "cloudflare_turn_api_key" {
 # values, and a disabled host's fetch_ssm gracefully returns "" for a missing param.
 resource "aws_ssm_parameter" "hls_r2_access_key_id" {
   count       = var.broadcast_hls_enabled ? 1 : 0
-  name        = "/${var.project_name}/hls-r2-access-key-id"
+  name        = "/${local.env_prefix}/hls-r2-access-key-id"
   description = "R2 Object Read/Write access key id for HLS publishing"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -148,7 +157,7 @@ resource "aws_ssm_parameter" "hls_r2_access_key_id" {
 
 resource "aws_ssm_parameter" "hls_r2_secret_access_key" {
   count       = var.broadcast_hls_enabled ? 1 : 0
-  name        = "/${var.project_name}/hls-r2-secret-access-key"
+  name        = "/${local.env_prefix}/hls-r2-secret-access-key"
   description = "R2 Object Read/Write secret access key for HLS publishing"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id
@@ -161,7 +170,7 @@ resource "aws_ssm_parameter" "hls_r2_secret_access_key" {
 
 # --- Redis AUTH Token ---
 resource "aws_ssm_parameter" "redis_auth_token" {
-  name        = "/${var.project_name}/redis-auth-token"
+  name        = "/${local.env_prefix}/redis-auth-token"
   description = "Redis AUTH token"
   type        = "SecureString"
   key_id      = aws_kms_key.ssm.key_id

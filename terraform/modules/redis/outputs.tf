@@ -14,7 +14,7 @@ output "redis_port" {
 # from root-level runs; nested module resources aren't reachable there.
 output "store_config" {
   value = {
-    replication_group_id     = "${var.project_name}-redis${var.name_suffix}"
+    replication_group_id     = "${local.env_prefix}-redis${var.name_suffix}"
     maxmemory_policy         = var.maxmemory_policy
     snapshot_retention_limit = var.snapshot_retention_limit
     snapshot_window          = var.snapshot_window

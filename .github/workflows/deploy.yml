@@ -311,12 +311,20 @@ jobs:
       - name: Discover ASG name (${{ matrix.region.name }})
         id: asg
         run: |
+          # Ticket 31 / decision D3: the Project tag is the BARE project name in
+          # every environment, so it no longer identifies one fleet by itself —
+          # staging and production now coexist in the same AWS account
+          # (ADR 0028). Filtering on Project alone would match both ASGs and
+          # `| [0]` would silently pick an arbitrary one, which is how a staging
+          # deploy reaches the production fleet. Environment is the discriminator
+          # (modules/autoscaling/main.tf declares it as an ASG tag). This job runs
+          # under the `aws-production` GitHub environment, so it targets production.
           ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
-            --query "AutoScalingGroups[?contains(Tags[?Key=='Project'].Value, 'flylive-audio')].AutoScalingGroupName | [0]" \
+            --query "AutoScalingGroups[?contains(Tags[?Key=='Project'].Value, 'flylive-audio') && contains(Tags[?Key=='Environment'].Value, 'production')].AutoScalingGroupName | [0]" \
             --output text)
 
           if [ -z "$ASG_NAME" ] || [ "$ASG_NAME" = "None" ]; then
-            echo "❌ No ASG found with Project=flylive-audio tag in ${{ matrix.region.aws_region }}"
+            echo "❌ No ASG found with Project=flylive-audio + Environment=production tags in ${{ matrix.region.aws_region }}"
             exit 1
           fi
 

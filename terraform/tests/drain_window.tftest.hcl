@@ -24,6 +24,7 @@ variables {
   # Required (no-default) module inputs — dummies, never applied.
   region                 = "ap-south-1"
   project_name           = "flylive-audio"
+  environment            = "production"
   ssh_public_key_path    = "./tests/fixtures/id_ed25519.pub"
   instance_profile_name  = "mock-profile"
   msab_security_group_id = "sg-mock"

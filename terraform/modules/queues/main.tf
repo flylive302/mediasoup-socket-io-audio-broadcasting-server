@@ -37,9 +37,18 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # --- Dead-letter queue (FIFO — a FIFO source requires a FIFO DLQ) ---
 resource "aws_sqs_queue" "msab_events_dlq" {
-  name       = "${var.project_name}-msab-events-dlq.fifo"
+  name       = "${local.env_prefix}-msab-events-dlq.fifo"
   fifo_queue = true
 
   # Dedup ids arrive with the message; no content-based fallback here either.
@@ -51,14 +60,14 @@ resource "aws_sqs_queue" "msab_events_dlq" {
   message_retention_seconds = 1209600
 
   tags = {
-    Name    = "${var.project_name}-msab-events-dlq"
+    Name    = "${local.env_prefix}-msab-events-dlq"
     Project = var.project_name
   }
 }
 
 # --- Main event queue ---
 resource "aws_sqs_queue" "msab_events" {
-  name       = "${var.project_name}-msab-events.fifo"
+  name       = "${local.env_prefix}-msab-events.fifo"
   fifo_queue = true
 
   # ADR 0029: the producer supplies an explicit MessageDeduplicationId (the
@@ -91,7 +100,7 @@ resource "aws_sqs_queue" "msab_events" {
   })
 
   tags = {
-    Name    = "${var.project_name}-msab-events"
+    Name    = "${local.env_prefix}-msab-events"
     Project = var.project_name
   }
 }
@@ -117,7 +126,7 @@ resource "aws_sqs_queue_redrive_allow_policy" "msab_events_dlq" {
 # Depth: at the ~3.1 msg/s average (ADR 0029), 500 visible messages is ~2.7
 # minutes of sustained backlog — the consumer is down or drowning, not bursting.
 resource "aws_cloudwatch_metric_alarm" "queue_depth" {
-  alarm_name          = "${var.project_name}-msab-events-depth"
+  alarm_name          = "${local.env_prefix}-msab-events-depth"
   alarm_description   = "Main event queue backlog: consumer down or too slow (500 msgs ≈ minutes of events at current volume)"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
@@ -139,7 +148,7 @@ resource "aws_cloudwatch_metric_alarm" "queue_depth" {
 # still hasn't reached their screen — economy events are user-visible state
 # (balances, seats), so minutes of staleness is an incident, not a backlog.
 resource "aws_cloudwatch_metric_alarm" "queue_age" {
-  alarm_name          = "${var.project_name}-msab-events-age"
+  alarm_name          = "${local.env_prefix}-msab-events-age"
   alarm_description   = "Oldest queued event exceeds 5 minutes — user-visible economy state is stale"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateAgeOfOldestMessage"
@@ -160,7 +169,7 @@ resource "aws_cloudwatch_metric_alarm" "queue_age" {
 # DLQ: a single dead-lettered message is already a lost user-visible event
 # awaiting replay — threshold is presence (>= 1), not volume.
 resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
-  alarm_name          = "${var.project_name}-msab-events-dlq-messages"
+  alarm_name          = "${local.env_prefix}-msab-events-dlq-messages"
   alarm_description   = "Dead-letter queue is non-empty: an economy event failed 5 deliveries and needs inspection + replay (see module header)"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"

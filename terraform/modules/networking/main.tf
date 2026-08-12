@@ -10,6 +10,15 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }
@@ -23,7 +32,7 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
 
   tags = {
-    Name    = "${var.project_name}-vpc"
+    Name    = "${local.env_prefix}-vpc"
     Project = var.project_name
   }
 }
@@ -33,7 +42,7 @@ resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name    = "${var.project_name}-igw"
+    Name    = "${local.env_prefix}-igw"
     Project = var.project_name
   }
 }
@@ -47,7 +56,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name    = "${var.project_name}-public-${count.index + 1}"
+    Name    = "${local.env_prefix}-public-${count.index + 1}"
     Project = var.project_name
   }
 }
@@ -60,7 +69,7 @@ resource "aws_subnet" "private" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
-    Name    = "${var.project_name}-private-${count.index + 1}"
+    Name    = "${local.env_prefix}-private-${count.index + 1}"
     Project = var.project_name
   }
 }
@@ -75,7 +84,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name    = "${var.project_name}-public-rt"
+    Name    = "${local.env_prefix}-public-rt"
     Project = var.project_name
   }
 }
@@ -88,7 +97,7 @@ resource "aws_route_table_association" "public" {
 
 # --- Security Group: MSAB Server ---
 resource "aws_security_group" "msab" {
-  name_prefix = "${var.project_name}-msab-"
+  name_prefix = "${local.env_prefix}-msab-"
   description = "Security group for MediaSoup audio server"
   vpc_id      = aws_vpc.main.id
 
@@ -151,7 +160,7 @@ resource "aws_security_group" "msab" {
   }
 
   tags = {
-    Name    = "${var.project_name}-msab-sg"
+    Name    = "${local.env_prefix}-msab-sg"
     Project = var.project_name
   }
 
@@ -162,7 +171,7 @@ resource "aws_security_group" "msab" {
 
 # --- Security Group: Redis (only from MSAB) ---
 resource "aws_security_group" "redis" {
-  name_prefix = "${var.project_name}-redis-"
+  name_prefix = "${local.env_prefix}-redis-"
   description = "Security group for ElastiCache Redis"
   vpc_id      = aws_vpc.main.id
 
@@ -182,7 +191,7 @@ resource "aws_security_group" "redis" {
   }
 
   tags = {
-    Name    = "${var.project_name}-redis-sg"
+    Name    = "${local.env_prefix}-redis-sg"
     Project = var.project_name
   }
 

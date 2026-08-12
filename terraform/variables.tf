@@ -15,7 +15,12 @@ variable "github_deploy_environment" {
 }
 
 variable "environment" {
-  description = "Deployment environment — used for the Environment tag only (cost allocation). Resource names are isolated by AWS account, not this value."
+  # ⚠️ This description used to read "Resource names are isolated by AWS account,
+  # not this value." That was a leftover from a two-account design and became
+  # FALSE with ADR 0028, which puts both environments in ONE account keyed by
+  # state file. Ticket 31 (decision D3) inverted it: names are qualified BY this
+  # value, and each module derives `local.env_prefix` from it.
+  description = "Deployment environment. Resource names are qualified BY this value — every module builds local.env_prefix = \"$${var.project_name}-$${var.environment}\" so staging and production can coexist in the single AWS account of ADR 0028. Two deliberate exceptions are account-global-shared and stay env-neutral (decision D2): the ECR repository + its lifecycle policy, and the GitHub OIDC identity provider. Also sets the Environment tag for cost allocation."
   type        = string
   default     = "production"
 

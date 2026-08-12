@@ -118,7 +118,7 @@ run "cache_store_still_evicts_freely_no_backups" {
   }
 
   assert {
-    condition     = module.region_mumbai[0].redis_cache_config.replication_group_id == "flylive-audio-redis"
+    condition     = module.region_mumbai[0].redis_cache_config.replication_group_id == "flylive-audio-production-redis"
     error_message = "Cache store keeps the original -redis name (greenfield; no rename churn)."
   }
 }
@@ -133,7 +133,7 @@ run "stores_are_two_distinct_groups" {
   }
 
   assert {
-    condition     = module.region_mumbai[0].redis_durable_config.replication_group_id == "flylive-audio-redis-durable"
+    condition     = module.region_mumbai[0].redis_durable_config.replication_group_id == "flylive-audio-production-redis-durable"
     error_message = "Durable store must carry the -durable suffix on its replication group."
   }
 }

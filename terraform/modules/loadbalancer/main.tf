@@ -27,9 +27,18 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # --- Network Load Balancer ---
 resource "aws_lb" "main" {
-  name               = "${var.project_name}-nlb"
+  name               = "${local.env_prefix}-nlb"
   internal           = false
   load_balancer_type = "network"
   subnets            = var.public_subnet_ids
@@ -37,14 +46,14 @@ resource "aws_lb" "main" {
   enable_cross_zone_load_balancing = true
 
   tags = {
-    Name    = "${var.project_name}-nlb"
+    Name    = "${local.env_prefix}-nlb"
     Project = var.project_name
   }
 }
 
 # --- Target Group: TCP (WebSocket/HTTP) ---
 resource "aws_lb_target_group" "app" {
-  name        = "${var.project_name}-app-tg"
+  name        = "${local.env_prefix}-app-tg"
   port        = var.app_port
   protocol    = "TCP"
   vpc_id      = var.vpc_id

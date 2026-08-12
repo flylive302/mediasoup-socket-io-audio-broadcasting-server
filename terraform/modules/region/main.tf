@@ -23,6 +23,7 @@ module "networking" {
   source = "../networking"
 
   project_name       = var.project_name
+  environment        = var.environment
   vpc_cidr           = var.vpc_cidr
   app_port           = var.app_port
   rtc_min_port       = var.rtc_min_port
@@ -37,6 +38,7 @@ module "redis" {
   source = "../redis"
 
   project_name            = var.project_name
+  environment             = var.environment
   redis_node_type         = var.redis_node_type
   private_subnet_ids      = module.networking.private_subnet_ids
   redis_security_group_id = module.networking.redis_security_group_id
@@ -56,6 +58,7 @@ module "redis_durable" {
   source = "../redis"
 
   project_name             = var.project_name
+  environment              = var.environment
   name_suffix              = "-durable"
   redis_node_type          = coalesce(var.redis_durable_node_type, var.redis_node_type)
   private_subnet_ids       = module.networking.private_subnet_ids
@@ -80,6 +83,7 @@ module "ssl" {
   providers = { aws = aws, cloudflare = cloudflare }
 
   project_name         = var.project_name
+  environment          = var.environment
   audio_domain         = var.audio_domain
   cloudflare_zone_id   = var.cloudflare_zone_id
   caa_records_override = var.caa_records_override
@@ -89,6 +93,7 @@ module "loadbalancer" {
   source = "../loadbalancer"
 
   project_name      = var.project_name
+  environment       = var.environment
   vpc_id            = module.networking.vpc_id
   public_subnet_ids = module.networking.public_subnet_ids
   app_port          = var.app_port
@@ -103,6 +108,7 @@ module "ssm" {
   source = "../ssm"
 
   project_name            = var.project_name
+  environment             = var.environment
   jwt_secret              = var.jwt_secret
   laravel_internal_key    = var.laravel_internal_key
   session_secret          = var.session_secret
@@ -132,6 +138,7 @@ module "cloudwatch" {
   source = "../cloudwatch"
 
   project_name           = var.project_name
+  environment            = var.environment
   aws_region             = var.aws_region
   alerts_topic_arn       = var.alerts_topic_arn
   expected_total_workers = local.expected_total_workers
@@ -142,6 +149,7 @@ module "autoscaling" {
 
   region                 = var.aws_region
   project_name           = var.project_name
+  environment            = var.environment
   instance_type          = var.instance_type
   instance_architecture  = var.instance_architecture
   ssh_public_key_path    = var.ssh_public_key_path

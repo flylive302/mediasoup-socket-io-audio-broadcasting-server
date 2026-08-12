@@ -80,11 +80,13 @@ output "alerts_topic_arn" {
 # module.queues (global). scripts/verify-alarms.mjs diffs this against live
 # CloudWatch — a name missing here makes that check silently under-verify.
 #
-# NOTE: alarm names are NOT region-qualified (they're built from project_name
-# only), so if a second region is ever enabled this list will contain
-# DUPLICATE strings — one per region, since CloudWatch alarms are a regional
-# resource and the same name in two regions is not a collision. Fine at
-# today's Mumbai-only shape; worth a second look if enabled_regions ever grows.
+# NOTE: alarm names are environment-qualified (ticket 31 / decision D3 — they
+# carry the "<project>-<environment>-" prefix, so staging and production alarms
+# never collide) but they are NOT region-qualified. If a second region is ever
+# enabled this list will contain DUPLICATE strings — one per region, since
+# CloudWatch alarms are a regional resource and the same name in two regions is
+# not a collision. Fine at today's Mumbai-only shape; worth a second look if
+# enabled_regions ever grows.
 output "alarm_names" {
   description = "Every CloudWatch alarm name the stack declares, across all enabled regions + module.queues — consumed by scripts/verify-alarms.mjs to prove live AWS state matches what Terraform declares"
   value = concat(

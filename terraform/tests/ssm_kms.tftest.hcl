@@ -25,7 +25,8 @@ mock_provider "aws" {
 
 variables {
   project_name            = "flylive-audio"
-  iam_role_name           = "flylive-audio-ec2-role"
+  environment             = "production"
+  iam_role_name           = "flylive-audio-production-ec2-role"
   aws_region              = "ap-south-1"
   jwt_secret              = "test-jwt-secret"
   laravel_internal_key    = "test-laravel-internal-key"
@@ -57,7 +58,7 @@ run "kms_key_is_customer_managed_with_rotation_and_deletion_window" {
   }
 
   assert {
-    condition     = aws_kms_alias.ssm.name == "alias/flylive-audio-ssm"
+    condition     = aws_kms_alias.ssm.name == "alias/flylive-audio-production-ssm"
     error_message = "SSM CMK alias must follow the alias/<project_name>-ssm convention"
   }
 }
@@ -156,12 +157,12 @@ run "kms_decrypt_grant_is_scoped_to_this_key_and_region_qualified" {
   }
 
   assert {
-    condition     = aws_iam_role_policy.ssm_kms_decrypt.role == "flylive-audio-ec2-role"
+    condition     = aws_iam_role_policy.ssm_kms_decrypt.role == "flylive-audio-production-ec2-role"
     error_message = "kms:Decrypt grant must attach to the shared EC2 instance role"
   }
 
   assert {
-    condition     = aws_iam_role_policy.ssm_kms_decrypt.name == "flylive-audio-ssm-kms-decrypt-ap-south-1"
+    condition     = aws_iam_role_policy.ssm_kms_decrypt.name == "flylive-audio-production-ssm-kms-decrypt-ap-south-1"
     error_message = "kms:Decrypt policy name must be region-qualified to avoid colliding across enabled regions"
   }
 

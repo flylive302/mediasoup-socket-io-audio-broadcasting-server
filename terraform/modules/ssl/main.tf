@@ -32,6 +32,13 @@ data "cloudflare_dns_records" "caa" {
 }
 
 locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+
   # Normalized CAA record list — from the live Cloudflare lookup in
   # production, or directly from var.caa_records_override in tests. ALL
   # precondition logic below is based on this local only, never on the data
@@ -74,7 +81,7 @@ resource "aws_acm_certificate" "main" {
   validation_method         = "DNS"
 
   tags = {
-    Name    = "${var.project_name}-cert"
+    Name    = "${local.env_prefix}-cert"
     Project = var.project_name
   }
 

@@ -14,6 +14,15 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # SNS topic for alerts is GLOBAL now (ticket 32) — see modules/alerting for
 # why. This module receives its ARN via var.alerts_topic_arn instead of
 # creating its own topic.
@@ -36,7 +45,7 @@ terraform {
 
 # --- Alarm: High Connection Count (fleet total) ---
 resource "aws_cloudwatch_metric_alarm" "high_connections" {
-  alarm_name          = "${var.project_name}-high-connections-alert"
+  alarm_name          = "${local.env_prefix}-high-connections-alert"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   metric_name         = "ActiveConnections"
@@ -55,7 +64,7 @@ resource "aws_cloudwatch_metric_alarm" "high_connections" {
 
 # --- Alarm: No Healthy Workers (fleet total) ---
 resource "aws_cloudwatch_metric_alarm" "no_workers" {
-  alarm_name          = "${var.project_name}-no-workers-alert"
+  alarm_name          = "${local.env_prefix}-no-workers-alert"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
   metric_name         = "WorkerCount"
@@ -74,7 +83,7 @@ resource "aws_cloudwatch_metric_alarm" "no_workers" {
 
 # --- Alarm: High CPU (fleet average) ---
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
-  alarm_name          = "${var.project_name}-high-cpu-alert"
+  alarm_name          = "${local.env_prefix}-high-cpu-alert"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   metric_name         = "WorkerCPU"
@@ -98,7 +107,7 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
 # 5 consecutive minutes; the IF() guard avoids noise when there are no
 # attempts at all.
 resource "aws_cloudwatch_metric_alarm" "reverse_pipe_failure_rate" {
-  alarm_name          = "${var.project_name}-reverse-pipe-failure-rate"
+  alarm_name          = "${local.env_prefix}-reverse-pipe-failure-rate"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   threshold           = 0.05
@@ -175,7 +184,7 @@ resource "aws_cloudwatch_metric_alarm" "reverse_pipe_failure_rate" {
 
 # --- Alarm: Event-loop lag p99 (fleet-worst instance) ---
 resource "aws_cloudwatch_metric_alarm" "event_loop_lag_p99" {
-  alarm_name          = "${var.project_name}-event-loop-lag-p99"
+  alarm_name          = "${local.env_prefix}-event-loop-lag-p99"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   metric_name         = "EventLoopLagP99Seconds"
@@ -219,7 +228,7 @@ resource "aws_cloudwatch_metric_alarm" "event_loop_lag_p99" {
 # only. Do not shorten the window to "catch deploys faster" — that is a
 # different alarm's responsibility and would only recreate the noise.
 resource "aws_cloudwatch_metric_alarm" "workers_below_expected" {
-  alarm_name          = "${var.project_name}-workers-below-expected"
+  alarm_name          = "${local.env_prefix}-workers-below-expected"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = var.workers_below_expected_evaluation_periods
   metric_name         = "WorkerCount"
@@ -238,7 +247,7 @@ resource "aws_cloudwatch_metric_alarm" "workers_below_expected" {
 
 # --- Alarm: Routers per worker (fleet-worst worker) ---
 resource "aws_cloudwatch_metric_alarm" "routers_per_worker_high" {
-  alarm_name          = "${var.project_name}-routers-per-worker-high"
+  alarm_name          = "${local.env_prefix}-routers-per-worker-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   metric_name         = "RoutersPerWorkerMax"
@@ -260,7 +269,7 @@ resource "aws_cloudwatch_metric_alarm" "routers_per_worker_high" {
 # state of this counter is zero — so the threshold is a bare 0, not a tuned
 # percentage.
 resource "aws_cloudwatch_metric_alarm" "redis_degradation_rate" {
-  alarm_name          = "${var.project_name}-redis-degradation-rate"
+  alarm_name          = "${local.env_prefix}-redis-degradation-rate"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   threshold           = 0
@@ -292,7 +301,7 @@ resource "aws_cloudwatch_metric_alarm" "redis_degradation_rate" {
 
 # --- Alarm: Socket registration failures rate (fleet) ---
 resource "aws_cloudwatch_metric_alarm" "socket_registration_failures" {
-  alarm_name          = "${var.project_name}-socket-registration-failures"
+  alarm_name          = "${local.env_prefix}-socket-registration-failures"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   threshold           = 0
@@ -333,7 +342,7 @@ resource "aws_cloudwatch_metric_alarm" "socket_registration_failures" {
 # silently mix one instance's in-use count against a DIFFERENT instance's
 # capacity. Revisit if capacity ever becomes instance-type-dependent.
 resource "aws_cloudwatch_metric_alarm" "hls_mixer_port_pool_high" {
-  alarm_name          = "${var.project_name}-hls-mixer-port-pool-high"
+  alarm_name          = "${local.env_prefix}-hls-mixer-port-pool-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   threshold           = var.hls_mixer_port_pool_alert_ratio
@@ -377,7 +386,7 @@ resource "aws_cloudwatch_metric_alarm" "hls_mixer_port_pool_high" {
 
 # --- Alarm: HLS publisher unexpected exits rate (fleet) ---
 resource "aws_cloudwatch_metric_alarm" "hls_publisher_unexpected_exits" {
-  alarm_name          = "${var.project_name}-hls-publisher-unexpected-exits"
+  alarm_name          = "${local.env_prefix}-hls-publisher-unexpected-exits"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   threshold           = 0
@@ -409,7 +418,7 @@ resource "aws_cloudwatch_metric_alarm" "hls_publisher_unexpected_exits" {
 
 # --- Alarm: Sentry dropped events rate (fleet, AC-5) ---
 resource "aws_cloudwatch_metric_alarm" "sentry_events_dropped" {
-  alarm_name          = "${var.project_name}-sentry-events-dropped"
+  alarm_name          = "${local.env_prefix}-sentry-events-dropped"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 5
   threshold           = 0
@@ -451,7 +460,7 @@ resource "aws_cloudwatch_dashboard" "msab" {
   # which are regional). A shared name makes every region's module fight over one
   # dashboard — perpetual diffs and concurrent-PutDashboard ConflictExceptions on
   # apply. One dashboard per region eliminates the collision (realtime-07).
-  dashboard_name = "${var.project_name}-operations-${var.aws_region}"
+  dashboard_name = "${local.env_prefix}-operations-${var.aws_region}"
 
   dashboard_body = jsonencode({
     widgets = [

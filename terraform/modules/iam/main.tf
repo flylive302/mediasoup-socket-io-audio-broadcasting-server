@@ -7,9 +7,18 @@
 #   - EC2 metadata (describe instances)
 # =============================================================================
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # --- IAM Role ---
 resource "aws_iam_role" "msab" {
-  name = "${var.project_name}-ec2-role"
+  name = "${local.env_prefix}-ec2-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -31,7 +40,7 @@ resource "aws_iam_role" "msab" {
 
 # --- CloudWatch Metrics Policy ---
 resource "aws_iam_role_policy" "cloudwatch_metrics" {
-  name = "${var.project_name}-cloudwatch-metrics"
+  name = "${local.env_prefix}-cloudwatch-metrics"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -55,7 +64,7 @@ resource "aws_iam_role_policy" "cloudwatch_metrics" {
 
 # --- Auto Scaling Lifecycle Policy ---
 resource "aws_iam_role_policy" "asg_lifecycle" {
-  name = "${var.project_name}-asg-lifecycle"
+  name = "${local.env_prefix}-asg-lifecycle"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -76,7 +85,7 @@ resource "aws_iam_role_policy" "asg_lifecycle" {
 
 # --- EC2 Describe Policy (for metadata enrichment) ---
 resource "aws_iam_role_policy" "ec2_describe" {
-  name = "${var.project_name}-ec2-describe"
+  name = "${local.env_prefix}-ec2-describe"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -95,12 +104,11 @@ resource "aws_iam_role_policy" "ec2_describe" {
 }
 
 # --- CloudWatch Log Group — MSAB container logs (shipped by the CloudWatch
-# Agent installed in modules/autoscaling/user-data.sh:264-292). The runtime
-# agent config there hard-codes log_group_name = "/flylive-audio/msab"; this
-# resource name is built from the same var.project_name as everything else
-# in this module so the two can never desync (bash and Terraform can't share
-# a variable, so this is enforced by convention + this comment, not code —
-# if project_name ever changes, user-data.sh's literal must be updated too).
+# Agent installed in modules/autoscaling/user-data.sh:264-292). The log group
+# name is env-qualified (/${local.env_prefix}/msab); user-data.sh no longer
+# hard-codes it — the CloudWatch Agent config is templated from the
+# `name_prefix` variable passed in by modules/autoscaling/main.tf, so bash and
+# Terraform now derive the same name from the same source and cannot desync.
 #
 # retention_in_days is explicit (not left at the provider default of "never
 # expire"): 30 days is an operational debugging window for a realtime audio
@@ -122,7 +130,7 @@ resource "aws_iam_role_policy" "ec2_describe" {
 # instead of self-healing. Revisit placement (per-region, in modules/region
 # or modules/autoscaling) before turning on a second region.
 resource "aws_cloudwatch_log_group" "msab" {
-  name              = "/${var.project_name}/msab"
+  name              = "/${local.env_prefix}/msab"
   retention_in_days = var.log_retention_days
 
   tags = {
@@ -147,7 +155,7 @@ resource "aws_cloudwatch_log_group" "msab" {
 # self-healing. Re-add CreateLogGroup if that trade-off stops being
 # acceptable.
 resource "aws_iam_role_policy" "cloudwatch_logs" {
-  name = "${var.project_name}-cloudwatch-logs"
+  name = "${local.env_prefix}-cloudwatch-logs"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -160,7 +168,7 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
           "logs:PutLogEvents",
           "logs:DescribeLogStreams",
         ]
-        Resource = "arn:aws:logs:*:*:log-group:/${var.project_name}/*"
+        Resource = "arn:aws:logs:*:*:log-group:/${local.env_prefix}/*"
       }
     ]
   })
@@ -220,7 +228,7 @@ locals {
 # ONLY the region segment, keeping account id and repository name pinned; see
 # that output's description for the full reasoning.
 resource "aws_iam_role_policy" "ecr_pull" {
-  name = "${var.project_name}-ecr-pull"
+  name = "${local.env_prefix}-ecr-pull"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -248,7 +256,7 @@ resource "aws_iam_role_policy" "ecr_pull" {
 
 # --- SSM Parameter Store — fetch secrets at boot ---
 resource "aws_iam_role_policy" "ssm_parameters" {
-  name = "${var.project_name}-ssm-parameters"
+  name = "${local.env_prefix}-ssm-parameters"
   role = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -260,7 +268,7 @@ resource "aws_iam_role_policy" "ssm_parameters" {
           "ssm:GetParameter",
           "ssm:GetParameters",
         ]
-        Resource = "arn:aws:ssm:*:*:parameter/${var.project_name}/*"
+        Resource = "arn:aws:ssm:*:*:parameter/${local.env_prefix}/*"
       }
     ]
   })
@@ -274,7 +282,7 @@ resource "aws_iam_role_policy" "sqs_consume" {
   # Gated on a static flag, not on the ARN being non-empty — the ARN is
   # computed (unknown at plan), and count may not depend on unknown values.
   count = var.enable_event_queue_consume ? 1 : 0
-  name  = "${var.project_name}-sqs-consume"
+  name  = "${local.env_prefix}-sqs-consume"
   role  = aws_iam_role.msab.id
 
   policy = jsonencode({
@@ -303,7 +311,7 @@ resource "aws_iam_role_policy_attachment" "ssm_session_manager" {
 
 # --- Instance Profile ---
 resource "aws_iam_instance_profile" "msab" {
-  name = "${var.project_name}-ec2-profile"
+  name = "${local.env_prefix}-ec2-profile"
   role = aws_iam_role.msab.name
 
   tags = {
@@ -348,7 +356,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 # A boundary does not GRANT anything — it caps the maximum. The role's
 # effective permissions are (attached policies ∩ this boundary).
 resource "aws_iam_policy" "github_actions_boundary" {
-  name        = "${var.project_name}-gha-deploy-boundary"
+  name        = "${local.env_prefix}-gha-deploy-boundary"
   description = "Permissions boundary for the GitHub Actions deploy role — caps it at ECR push (MSAB repo only) + ASG instance refresh, regardless of what policies get attached later"
 
   policy = jsonencode({
@@ -411,7 +419,7 @@ locals {
 }
 
 resource "aws_iam_role" "github_actions" {
-  name                 = "${var.project_name}-github-actions"
+  name                 = "${local.env_prefix}-github-actions"
   permissions_boundary = aws_iam_policy.github_actions_boundary.arn
 
   assume_role_policy = jsonencode({
@@ -444,7 +452,7 @@ resource "aws_iam_role" "github_actions" {
 
 # --- ECR push: authenticate + push image (build-and-push job) ---
 resource "aws_iam_role_policy" "github_actions_ecr_push" {
-  name = "${var.project_name}-gha-ecr-push"
+  name = "${local.env_prefix}-gha-ecr-push"
   role = aws_iam_role.github_actions.id
 
   policy = jsonencode({
@@ -477,7 +485,7 @@ resource "aws_iam_role_policy" "github_actions_ecr_push" {
 
 # --- ASG instance refresh: roll new image into both regions (deploy job) ---
 resource "aws_iam_role_policy" "github_actions_asg_refresh" {
-  name = "${var.project_name}-gha-asg-refresh"
+  name = "${local.env_prefix}-gha-asg-refresh"
   role = aws_iam_role.github_actions.id
 
   policy = jsonencode({

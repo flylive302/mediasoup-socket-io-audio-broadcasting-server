@@ -4,6 +4,11 @@ variable "project_name" {
   type = string
 }
 
+variable "environment" {
+  description = "Deployment environment (staging|production). Qualifies every resource NAME in this module so both environments can coexist in one AWS account (ADR 0028, ticket 31 / decision D3)."
+  type        = string
+}
+
 variable "iam_role_name" {
   description = "Name of the shared EC2 instance IAM role (modules/iam) — the kms:Decrypt grant for this region's CMK is attached here"
   type        = string

@@ -189,7 +189,7 @@ docker pull $ECR_REPO_URL:${image_tag}
 # --- Fetch Secrets from SSM Parameter Store ---
 # Secrets are KMS-encrypted in SSM (ticket 16) and reach the container through a
 # 0600 env-file written below — never through the docker command line.
-SSM_PREFIX="/${project_name}"
+SSM_PREFIX="/${name_prefix}"
 REGION="${region}"
 
 fetch_ssm() {
@@ -385,7 +385,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWEO
       "files": {
         "collect_list": [{
           "file_path": "/var/lib/docker/containers/*/*.log",
-          "log_group_name": "/flylive-audio/msab",
+          "log_group_name": "/${name_prefix}/msab",
           "log_stream_name": "{instance_id}",
           "timezone": "UTC",
           "multi_line_start_pattern": "^\\{"
@@ -400,7 +400,7 @@ CWEOF
   -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
 
-echo "✅ CloudWatch Agent started — logs → /flylive-audio/msab"
+echo "✅ CloudWatch Agent started — logs → /${name_prefix}/msab"
 
 # --- Install Lifecycle Drain Service (BEFORE the container — ticket 19) ---
 # AUDIT-017 FIX: Embed drain script inline (removes GitHub and Docker cp dependencies)

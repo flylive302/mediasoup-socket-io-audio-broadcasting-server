@@ -4,6 +4,11 @@ variable "project_name" {
   type = string
 }
 
+variable "environment" {
+  description = "Deployment environment (staging|production). Qualifies every resource NAME in this module so both environments can coexist in one AWS account (ADR 0028, ticket 31 / decision D3)."
+  type        = string
+}
+
 variable "vpc_cidr" {
   description = "VPC CIDR — from the ticket-11 allocation table (docs/issues/aws-platform-build/11-CIDR-ALLOCATION.md). Non-overlapping per region+environment; ONE-WAY once addresses are in use."
   type        = string

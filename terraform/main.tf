@@ -330,6 +330,13 @@ module "region_singapore" {
 # Global: ECR Container Registry (one repo, enabled regions pull from it)
 # =============================================================================
 
+# ⛔ This module deliberately takes NO `environment` argument. Under decision D3
+# (ticket 31) every other module qualifies its resource names by environment so
+# staging and production can coexist in one AWS account — but the ECR repository
+# and its lifecycle policy are declared account-global-SHARED (decision D2) and
+# are already applied. Renaming them forces a replace, which destroys the image
+# warehouse both environments boot from. The absence of the argument is the
+# guarantee: modules/ecr cannot see var.environment, so it cannot rename itself.
 module "ecr" {
   source = "./modules/ecr"
 
@@ -357,6 +364,7 @@ module "alerting" {
   source = "./modules/alerting"
 
   project_name = var.project_name
+  environment  = var.environment
   alert_email  = var.alert_email
 }
 
@@ -371,6 +379,7 @@ module "queues" {
   source = "./modules/queues"
 
   project_name     = var.project_name
+  environment      = var.environment
   alerts_topic_arn = module.alerting.alerts_topic_arn
 }
 
@@ -382,6 +391,7 @@ module "iam" {
   source = "./modules/iam"
 
   project_name          = var.project_name
+  environment           = var.environment
   ecr_repository_arn    = module.ecr.repository_arn
   ecr_pull_resource_arn = module.ecr.pull_resource_arn
 

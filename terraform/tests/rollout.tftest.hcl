@@ -18,6 +18,7 @@ mock_provider "aws" {}
 variables {
   region                 = "ap-south-1"
   project_name           = "flylive-audio"
+  environment            = "production"
   ssh_public_key_path    = "./tests/fixtures/id_ed25519.pub"
   instance_profile_name  = "mock-profile"
   msab_security_group_id = "sg-mock"
@@ -115,12 +116,12 @@ run "abort_is_alarm_driven_and_rolls_back" {
   }
 
   assert {
-    condition     = contains(aws_autoscaling_group.msab.instance_refresh[0].preferences[0].alarm_specification[0].alarms, "flylive-audio-refresh-unhealthy-sustained")
+    condition     = contains(aws_autoscaling_group.msab.instance_refresh[0].preferences[0].alarm_specification[0].alarms, "flylive-audio-production-refresh-unhealthy-sustained")
     error_message = "The refresh must watch the sustained-unhealthy alarm — it is the automated abort signal"
   }
 
   assert {
-    condition     = contains(aws_autoscaling_group.msab.instance_refresh[0].preferences[0].alarm_specification[0].alarms, "flylive-audio-zero-healthy-hosts")
+    condition     = contains(aws_autoscaling_group.msab.instance_refresh[0].preferences[0].alarm_specification[0].alarms, "flylive-audio-production-zero-healthy-hosts")
     error_message = "The refresh must watch the zero-healthy-hosts alarm — a total outage mid-rollout must abort it"
   }
 }

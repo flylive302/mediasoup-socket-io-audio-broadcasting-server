@@ -22,6 +22,13 @@ terraform {
 }
 
 locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+
   # --- Container memory cap, COMPUTED (ticket 18 AC #6) ----------------------
   # No `7g`/`6g` literal exists anywhere: the cap is this instance type's RAM
   # minus a stated host reserve. c7i.xlarge (8192 MiB) − 2 GiB = 6144 MiB = the
@@ -101,7 +108,7 @@ data "aws_ami" "ubuntu" {
 
 # --- SSH Key Pair ---
 resource "aws_key_pair" "deploy" {
-  key_name   = "${var.project_name}-asg-deploy-key"
+  key_name   = "${local.env_prefix}-asg-deploy-key"
   public_key = file(var.ssh_public_key_path)
 
   tags = {
@@ -111,7 +118,7 @@ resource "aws_key_pair" "deploy" {
 
 # --- Launch Template ---
 resource "aws_launch_template" "msab" {
-  name_prefix   = "${var.project_name}-lt-"
+  name_prefix   = "${local.env_prefix}-lt-"
   image_id      = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
   key_name      = aws_key_pair.deploy.key_name
@@ -143,7 +150,7 @@ resource "aws_launch_template" "msab" {
   # User data script — same as compute module
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     region                 = var.region
-    project_name           = var.project_name
+    name_prefix            = local.env_prefix
     ecr_repo_url           = var.ecr_repo_url
     app_port               = var.app_port
     rtc_min_port           = var.rtc_min_port
@@ -194,7 +201,7 @@ resource "aws_launch_template" "msab" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name    = "${var.project_name}-asg-instance"
+      Name    = "${local.env_prefix}-asg-instance"
       Project = var.project_name
       Role    = "msab"
     }
@@ -220,7 +227,7 @@ resource "aws_launch_template" "msab" {
 # max_healthy_percentage > 100 needs max_size headroom, so instance refresh here must
 # terminate-then-launch and briefly runs below fleet_size. 29 owns that trade-off.
 resource "aws_autoscaling_group" "msab" {
-  name_prefix         = "${var.project_name}-asg-"
+  name_prefix         = "${local.env_prefix}-asg-"
   min_size            = var.fleet_size
   max_size            = var.fleet_size
   desired_capacity    = var.fleet_size
@@ -318,6 +325,20 @@ resource "aws_autoscaling_group" "msab" {
     propagate_at_launch = true
   }
 
+  # Ticket 31 / decision D3. The Project tag stays the BARE project name in
+  # both environments, so it can no longer identify one fleet on its own once
+  # staging and production coexist in the single AWS account of ADR 0028 —
+  # .github/workflows/deploy.yml discovers the ASG by tag, and a Project-only
+  # filter would return both and pick an arbitrary one. This tag is the
+  # discriminator that filter uses. Provider default_tags do NOT reach an ASG
+  # (aws_autoscaling_group takes tags only through these blocks), which is why
+  # it is declared explicitly here rather than inherited.
+  tag {
+    key                 = "Environment"
+    value               = var.environment
+    propagate_at_launch = true
+  }
+
   tag {
     key                 = "ManagedBy"
     value               = "terraform-asg"
@@ -363,7 +384,7 @@ resource "aws_autoscaling_lifecycle_hook" "terminating" {
 
 # --- CloudWatch Alarm: High Connections (visibility only — no action) ---
 resource "aws_cloudwatch_metric_alarm" "high_connections" {
-  alarm_name          = "${var.project_name}-high-connections"
+  alarm_name          = "${local.env_prefix}-high-connections"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   metric_name         = "ActiveConnections"
@@ -381,7 +402,7 @@ resource "aws_cloudwatch_metric_alarm" "high_connections" {
 
 # --- CloudWatch Alarm: Low Connections (visibility only) ---
 resource "aws_cloudwatch_metric_alarm" "low_connections" {
-  alarm_name          = "${var.project_name}-low-connections"
+  alarm_name          = "${local.env_prefix}-low-connections"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 10
   metric_name         = "ActiveConnections"
@@ -405,7 +426,7 @@ resource "aws_cloudwatch_metric_alarm" "low_connections" {
 # instance that keeps failing /health. treat_missing_data = notBreaching so quiet
 # periods (metric gaps) never abort a rollout.
 resource "aws_cloudwatch_metric_alarm" "refresh_unhealthy_sustained" {
-  alarm_name          = "${var.project_name}-refresh-unhealthy-sustained"
+  alarm_name          = "${local.env_prefix}-refresh-unhealthy-sustained"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 3
   metric_name         = "UnHealthyHostCount"
@@ -429,7 +450,7 @@ resource "aws_cloudwatch_metric_alarm" "refresh_unhealthy_sustained" {
 # AUDIT-024: Fires when ALL instances behind the NLB are unhealthy.
 # This is the earliest warning of a complete audio service outage.
 resource "aws_cloudwatch_metric_alarm" "zero_healthy_hosts" {
-  alarm_name          = "${var.project_name}-zero-healthy-hosts"
+  alarm_name          = "${local.env_prefix}-zero-healthy-hosts"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1
   metric_name         = "HealthyHostCount"

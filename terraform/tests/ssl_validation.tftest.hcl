@@ -45,6 +45,7 @@ mock_provider "aws" {
 mock_provider "cloudflare" {}
 
 variables {
+  environment        = "production"
   project_name       = "flylive-audio"
   audio_domain       = "audio.flyliveapp.com"
   cloudflare_zone_id = "mock-zone-id"

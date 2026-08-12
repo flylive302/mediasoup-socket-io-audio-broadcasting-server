@@ -36,9 +36,10 @@ mock_provider "aws" {
 }
 
 variables {
+  environment      = "production"
   project_name     = "flylive-audio"
   aws_region       = "ap-south-1"
-  alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-alerts"
+  alerts_topic_arn = "arn:aws:sns:ap-south-1:111111111111:flylive-audio-production-alerts"
 }
 
 # -----------------------------------------------------------------------------

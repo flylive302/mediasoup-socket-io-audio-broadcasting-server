@@ -10,9 +10,18 @@ terraform {
   }
 }
 
+locals {
+  # Ticket 31 / decision D3: every runtime resource NAME is qualified by the
+  # environment so staging and production can coexist in AWS account
+  # 505307260926 (ADR 0028). Deterministic from var.environment — full token,
+  # no abbreviation map (all names verified inside AWS length limits).
+  # TAGS keep using var.project_name; only NAMES take the prefix.
+  env_prefix = "${var.project_name}-${var.environment}"
+}
+
 # --- Subnet Group ---
 resource "aws_elasticache_subnet_group" "main" {
-  name       = "${var.project_name}-redis${var.name_suffix}-subnet"
+  name       = "${local.env_prefix}-redis${var.name_suffix}-subnet"
   subnet_ids = var.private_subnet_ids
 
   tags = {
@@ -23,7 +32,7 @@ resource "aws_elasticache_subnet_group" "main" {
 # --- Parameter Group ---
 resource "aws_elasticache_parameter_group" "main" {
   family = "redis7"
-  name   = "${var.project_name}-redis${var.name_suffix}-params"
+  name   = "${local.env_prefix}-redis${var.name_suffix}-params"
 
   parameter {
     name  = "maxmemory-policy"
@@ -37,7 +46,7 @@ resource "aws_elasticache_parameter_group" "main" {
 
 # --- ElastiCache Replication Group (Multi-AZ, TLS, AUTH) ---
 resource "aws_elasticache_replication_group" "main" {
-  replication_group_id = "${var.project_name}-redis${var.name_suffix}"
+  replication_group_id = "${local.env_prefix}-redis${var.name_suffix}"
   description          = "${var.project_name} Redis${var.name_suffix} - Multi-AZ with TLS and AUTH"
 
   engine               = "redis"
@@ -89,7 +98,7 @@ resource "aws_elasticache_replication_group" "main" {
   }
 
   tags = {
-    Name    = "${var.project_name}-redis${var.name_suffix}"
+    Name    = "${local.env_prefix}-redis${var.name_suffix}"
     Project = var.project_name
   }
 }
