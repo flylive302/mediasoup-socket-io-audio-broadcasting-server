@@ -203,11 +203,21 @@ resource "aws_autoscaling_group" "msab" {
   health_check_grace_period = local.instance_warmup_seconds
 
   # Simple launch template — used when no instance type fallbacks are configured
+  #
+  # 🔴 ticket 34: this MUST be `latest_version`, not the literal `"$Latest"`.
+  # `instance_refresh` fires only when the ASG resource itself has a diff. With
+  # `"$Latest"` neither `id` nor `version` ever changes, so an image_tag bump
+  # produced a plan containing ONLY the launch template — the ASG was absent, no
+  # refresh started, and the fleet kept running the previous image while
+  # deploy.yml's "no refresh found" branch reported the release green.
+  # `latest_version` changes on every template revision, so the ASG diffs and the
+  # refresh below (canary + soak + abort alarms + auto_rollback) actually runs.
+  # ⛔ Do not "simplify" this back to "$Latest".
   dynamic "launch_template" {
     for_each = length(var.instance_type_overrides) == 0 ? [1] : []
     content {
       id      = aws_launch_template.msab.id
-      version = "$Latest"
+      version = aws_launch_template.msab.latest_version
     }
   }
 
@@ -220,7 +230,8 @@ resource "aws_autoscaling_group" "msab" {
       launch_template {
         launch_template_specification {
           launch_template_id = aws_launch_template.msab.id
-          version            = "$Latest"
+          # ticket 34 — same reasoning as the simple path above. Do not use "$Latest".
+          version = aws_launch_template.msab.latest_version
         }
 
         dynamic "override" {
