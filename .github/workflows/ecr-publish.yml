@@ -1,0 +1,144 @@
+name: ECR Publish — build + push image, NO deploy
+
+# Ticket 33 fix B — the build-only ECR path.
+#
+# Publishing is not releasing (ticket 30's words). This workflow puts a
+# sha-<commit8> image into ECR and touches NOTHING else — no terraform, no ASG,
+# no fleet. It exists so staging can be moved to a new image the same way
+# tickets 06/08/32 were applied: bump `image_tag` in staging.tfvars, local
+# `terraform apply`, and let the ASG's instance_refresh roll (ticket 34 fixed
+# the refresh trigger).
+#
+# Relationship to the other pipelines (ticket 30's separation is preserved):
+#   deploy.yml               → PRODUCTION app release (build + scoped apply + refresh)
+#   terraform-aws-infra.yml  → infrastructure (refuses image_tag changes)
+#   ecr-publish.yml (this)   → ECR publish only; deploys nothing, so it needs no
+#                              environment approval gate and cannot reach any fleet
+#   ghcr-publish.yml         → GHCR (the VULTR registry) — unrelated to AWS
+#
+# Immutable-repo interplay: this pushes the SAME multi-arch manifest deploy.yml
+# would build. The ECR repo is immutable, so if production later needs this
+# exact commit, deploy.yml must be dispatched with the `image_tag` input pinned
+# to this tag (its documented redeploy path) — its own build of the same tag
+# would fail with ImageTagAlreadyExistsException. Conversely, if the tag already
+# exists here, this workflow verifies and succeeds without pushing.
+#
+# NOTE: `vars.AWS_DEPLOY_ROLE_ARN` must be readable WITHOUT the aws-production
+# environment (deploy.yml reads it under that environment). If this run fails
+# with an empty role ARN, mirror the variable at repository level — the role
+# only allows ECR push + describe, so repo-level exposure adds no fleet access.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ecr-publish-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type Check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Test
+        run: npm test
+
+  build-and-push:
+    needs: ci
+    runs-on: ubuntu-latest
+    # Ticket 12: OIDC federation — short-lived identity token, no static keys.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          ECR_REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          ECR_REPO="flylive-audio/msab"
+          SHA_TAG="sha-${GITHUB_SHA::8}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPO}"
+
+          echo "registry=${ECR_REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "repository=${ECR_REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
+
+          echo "📦 Image: ${FULL_IMAGE}:${SHA_TAG}"
+
+      - name: Check whether the tag already exists (immutable repo)
+        id: exists
+        run: |
+          if aws ecr describe-images \
+               --repository-name "${{ steps.meta.outputs.repository }}" \
+               --image-ids imageTag="${{ steps.meta.outputs.image_tag }}" \
+               --query 'imageDetails[0].imagePushedAt' --output text >/dev/null 2>&1; then
+            echo "ℹ️  ${{ steps.meta.outputs.image_tag }} already exists in ECR — nothing to push."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.exists.outputs.exists == 'false' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        if: ${{ steps.exists.outputs.exists == 'false' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          # Ticket 14: sha tag ONLY — the ECR repo is IMMUTABLE; nothing may
+          # reference ":latest".
+          tags: |
+            ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Multi-arch, identical to deploy.yml's build: amd64 (c7i) + arm64
+          # (c8g/Graviton). Keeping the manifest identical is what lets
+          # production redeploy this exact tag later via deploy.yml's
+          # image_tag input.
+          platforms: linux/amd64,linux/arm64
+
+      - name: Verify image in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name "${{ steps.meta.outputs.repository }}" \
+            --image-ids imageTag="${{ steps.meta.outputs.image_tag }}" \
+            --query 'imageDetails[0].{Size: imageSizeInBytes, Pushed: imagePushedAt, Tags: imageTags}' \
+            --output table
+          echo "✅ ${{ steps.meta.outputs.image_tag }} present in ECR."
+          echo "Next (staging): set image_tag = \"${{ steps.meta.outputs.image_tag }}\" in terraform/staging.tfvars and run a local terraform apply — the ASG refresh rolls the box (ticket 34)."
