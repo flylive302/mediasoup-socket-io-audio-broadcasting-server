@@ -334,9 +334,15 @@ jobs:
       - name: Wait for the terraform-triggered refresh (${{ matrix.region.name }})
         id: find-refresh
         # The refresh is started BY the apply (launch-template change trigger),
-        # not by this workflow. Give the ASG up to 3 minutes to register it. If
-        # none appears, this region's plan was a no-op for the fleet (e.g. a
-        # region whose template already carried the tag) — report and pass.
+        # not by this workflow. Give the ASG up to 3 minutes to register it.
+        #
+        # Ticket 34 fix B: "no refresh appeared" is AMBIGUOUS — it is the branch
+        # for a genuine no-op (fleet already on the target template) AND the
+        # branch taken when the refresh should have fired and didn't (the
+        # `version = "$Latest"` bug made every release land here while reporting
+        # green). So this step never passes on absence alone: it verifies every
+        # InService instance is on the launch template's latest version, and
+        # fails the release if any is not.
         run: |
           ASG_NAME="${{ steps.asg.outputs.asg_name }}"
           for i in $(seq 1 12); do
@@ -358,7 +364,41 @@ jobs:
             echo "  ⏳ No active refresh yet (status: $STATUS) — ${i}/12"
             sleep 15
           done
-          echo "ℹ️  No refresh started in this region — fleet already on the target template."
+
+          echo "ℹ️  No refresh started in this region — verifying the fleet is genuinely on the latest template version."
+          ASG_JSON=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query 'AutoScalingGroups[0]' --output json)
+
+          # The ASG references its LT via .LaunchTemplate (simple path) or
+          # .MixedInstancesPolicy (instance-type-fallback path) — same module,
+          # two shapes (modules/autoscaling/main.tf).
+          LT_ID=$(echo "$ASG_JSON" | jq -r '.LaunchTemplate.LaunchTemplateId
+            // .MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId
+            // empty')
+          if [ -z "$LT_ID" ]; then
+            echo "❌ Could not resolve the ASG's launch template id — cannot prove the fleet is current."
+            exit 1
+          fi
+
+          LATEST_VERSION=$(aws ec2 describe-launch-template-versions \
+            --launch-template-id "$LT_ID" --versions '$Latest' \
+            --query 'LaunchTemplateVersions[0].VersionNumber' --output text)
+
+          # An instance with no LaunchTemplate block, a different LT id, or an
+          # older version counts as stale — absence of proof is failure here.
+          STALE=$(echo "$ASG_JSON" | jq -r --arg lt "$LT_ID" --arg v "$LATEST_VERSION" \
+            '[.Instances[] | select(.LifecycleState == "InService")
+              | select((.LaunchTemplate.LaunchTemplateId // "") != $lt or (.LaunchTemplate.Version // "") != $v)
+              | .InstanceId] | join(" ")')
+
+          if [ -n "$STALE" ]; then
+            echo "❌ No instance refresh started, but these InService instances are NOT on launch-template version $LATEST_VERSION: $STALE"
+            echo "   The apply should have rolled the fleet and did not — this is ticket 34's failure mode. Failing the release."
+            exit 1
+          fi
+
+          echo "✅ All InService instances are on launch-template version $LATEST_VERSION — genuine no-op."
           echo "refresh_id=" >> "$GITHUB_OUTPUT"
 
       - name: Watch Instance Refresh (${{ matrix.region.name }})
