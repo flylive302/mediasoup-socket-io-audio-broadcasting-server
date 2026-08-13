@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Ticket 09 saturation ramp — SIZE A: c7i.xlarge (4 vCPU, 3 workers), today's staging/prod shape.",
+    "The steps array is IDENTICAL to config.ramp-sizeB-c7i-2xlarge.json — comparability is the whole",
+    "point (ticket 09). Only expectedWorkers and roomPrefix differ between the two files.",
+    "",
+    "target.url is a placeholder — re-derive the live staging IP per the runbook step 0 and patch",
+    "on-box with jq before every campaign (the checked-in IP goes stale on every instance refresh).",
+    "",
+    "holdSeconds 600 = SLO doc §7.0 rule 4 minimum; recorder.mjs computeKnee ignores shorter steps.",
+    "stopOnFail true so the ramp halts at the knee instead of burning hours past it.",
+    "",
+    "fleet.userIdBase DELIBERATELY ABSENT — see config.loadgen-2x10.json comment (setting it pins",
+    "every bot to one JWT id).",
+    "",
+    "Loadgen host must be c7i.8xlarge: the last step runs ~2040 bots with real Opus decode at a",
+    "measured ~0.0105 vCPU/bot — ~67% of 32 vCPU, just inside the 70% generator-headroom rule",
+    "(ticket 09 Trap 1). Anything smaller makes the top steps invalid data points.",
+    "",
+    "Schedule v3 (2026-08-14): v1 (4x10 .. 18x45) all-PASSED at 12% host CPU — nowhere near the",
+    "knee. v2 held rooms at 20 and grew only listeners — VOID at step 1, because a listener-only",
+    "step fires no audio:produce and G1 correctly fails (SLO doc §7.5 note). v3 grows BOTH: every",
+    "step adds 2 rooms (so speakers keep producing join/produce events in the window) and tops out",
+    "at 30x68 = ~2100 bots / ~4080 consumers — the most the 32-vCPU spot quota lets one generator",
+    "drive at 70% headroom. If this finds no knee, record capacity as a floor, not a knee."
+  ],
+  "target": {
+    "url": "http://PATCH-ME-ON-BOX:3030",
+    "origin": "https://staging.flyliveapp.com",
+    "environmentName": "load-test",
+    "expectedWorkers": 3,
+    "region": "ap-south-1"
+  },
+  "prometheus": { "url": "http://127.0.0.1:9090" },
+  "fleet": { "processes": 24, "staggerMs": 100 },
+  "ramp": {
+    "roomPrefix": "t09rampA2",
+    "speakersPerRoom": 2,
+    "holdSeconds": 600,
+    "stopOnFail": true,
+    "steps": [
+      { "rooms": 20, "listenersPerRoom": 30 },
+      { "rooms": 22, "listenersPerRoom": 45 },
+      { "rooms": 24, "listenersPerRoom": 55 },
+      { "rooms": 26, "listenersPerRoom": 62 },
+      { "rooms": 28, "listenersPerRoom": 66 },
+      { "rooms": 30, "listenersPerRoom": 68 }
+    ]
+  }
+}

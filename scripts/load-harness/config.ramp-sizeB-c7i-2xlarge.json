@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Ticket 09 saturation ramp — SIZE B: c7i.2xlarge (8 vCPU, 7 workers), the candidate upsize.",
+    "Steps array IDENTICAL to config.ramp-sizeA-c7i-xlarge.json — only expectedWorkers and",
+    "roomPrefix differ. Staging must be resized (staging.tfvars instance_type) and refreshed to",
+    "c7i.2xlarge BEFORE this run, and restored to c7i.xlarge after.",
+    "",
+    "target.url is a placeholder — the resize replaces the instance, so the IP is ALWAYS new for",
+    "this run. Re-derive per runbook step 0 and patch on-box with jq.",
+    "",
+    "See size A's _comment for holdSeconds/stopOnFail/userIdBase/loadgen-host-size rationale."
+  ],
+  "target": {
+    "url": "http://PATCH-ME-ON-BOX:3030",
+    "origin": "https://staging.flyliveapp.com",
+    "environmentName": "load-test",
+    "expectedWorkers": 7,
+    "region": "ap-south-1"
+  },
+  "prometheus": { "url": "http://127.0.0.1:9090" },
+  "fleet": { "processes": 24, "staggerMs": 100 },
+  "ramp": {
+    "roomPrefix": "t09rampB2",
+    "speakersPerRoom": 2,
+    "holdSeconds": 600,
+    "stopOnFail": true,
+    "steps": [
+      { "rooms": 20, "listenersPerRoom": 30 },
+      { "rooms": 22, "listenersPerRoom": 45 },
+      { "rooms": 24, "listenersPerRoom": 55 },
+      { "rooms": 26, "listenersPerRoom": 62 },
+      { "rooms": 28, "listenersPerRoom": 66 },
+      { "rooms": 30, "listenersPerRoom": 68 }
+    ]
+  }
+}

@@ -16,7 +16,7 @@ import { parseArgs } from 'node:util';
 import { assertSafeTarget } from './src/guard.mjs';
 import { mintToken } from './src/token.mjs';
 import { PromClient } from './src/prom.mjs';
-import { evaluateStep } from './src/queries.mjs';
+import { evaluateStep, evaluateSignalling } from './src/queries.mjs';
 import { RunRecorder } from './src/recorder.mjs';
 
 const { values: argv } = parseArgs({
@@ -87,18 +87,29 @@ function workerCall(w, msg, replyType) {
   });
 }
 
+// Rooms this run has already populated, and how many listeners each holds.
+// scaleTo must top existing rooms UP to the new listenersPerRoom, not only
+// create new rooms — found 2026-08-13 (ramp A, first multi-step run): without
+// this, step N's "18×45" actually delivered 4@10 + 2@15 + … + 2@45, and the
+// recorded load was 496 bots where the config said 846.
+const roomListenerCounts = new Map();
+
 async function scaleTo(rooms, listenersPerRoom, speakersPerRoom) {
   const specs = [];
-  for (let r = assignedRooms; r < rooms; r++) {
+  for (let r = 0; r < rooms; r++) {
     const roomId = `${config.ramp.roomPrefix ?? 'load-room'}-${r}`;
-    for (let s = 0; s < speakersPerRoom; s++) {
-      specs.push({ roomId, role: 'speaker', seatIndex: s + 1 });
+    if (r >= assignedRooms) {
+      for (let s = 0; s < speakersPerRoom; s++) {
+        specs.push({ roomId, role: 'speaker', seatIndex: s + 1 });
+      }
     }
-    for (let l = 0; l < listenersPerRoom; l++) {
+    const current = roomListenerCounts.get(roomId) ?? 0;
+    for (let l = current; l < listenersPerRoom; l++) {
       specs.push({ roomId, role: 'listener' });
     }
+    if (listenersPerRoom > current) roomListenerCounts.set(roomId, listenersPerRoom);
   }
-  assignedRooms = rooms;
+  assignedRooms = Math.max(assignedRooms, rooms);
 
   const perWorker = workers.map(() => []);
   specs.forEach((spec, i) => {
@@ -162,10 +173,24 @@ async function main() {
     await scaleTo(rooms, listenersPerRoom, speakersPerRoom);
 
     console.log(`  holding ${holdSeconds}s…`);
-    await new Promise((r) => setTimeout(r, holdSeconds * 1000));
+    // Signalling gates (G1/G2, Q14-Q16) use [5m] windows; the join phase is
+    // over within the hold's first minute, so for long holds they must be
+    // captured mid-hold or the window is empty and the step reads VOID
+    // (SLO doc §7.5, evaluation-timing note). Short holds (<300s) keep the
+    // single end-of-hold evaluation — the whole step fits in the window.
+    let signalling = null;
+    if (holdSeconds >= 300) {
+      const midMs = 240 * 1000;
+      await new Promise((r) => setTimeout(r, midMs));
+      signalling = await evaluateSignalling(prom, { region });
+      console.log(`  signalling gates @t=240s: ${signalling.gates.map((g) => `${g.id}=${g.status}`).join(' ')}`);
+      await new Promise((r) => setTimeout(r, holdSeconds * 1000 - midMs));
+    } else {
+      await new Promise((r) => setTimeout(r, holdSeconds * 1000));
+    }
 
     const fleet = await collectFleetStats();
-    const slo = await evaluateStep(prom, { expectedWorkers: config.target.expectedWorkers, region });
+    const slo = await evaluateStep(prom, { expectedWorkers: config.target.expectedWorkers, region, signalling });
     const record = { stepIndex: i, rooms, listenersPerRoom, speakersPerRoom, startedAt, endedAt: new Date().toISOString(), fleet, slo };
     recorder.recordStep(record);
     steps.push(record);

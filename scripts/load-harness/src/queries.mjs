@@ -432,7 +432,32 @@ async function runGate(promClient, gateDef, { guardStatus, expectedWorkers, regi
  * docs/reference/audio-slo-and-load-test-queries.md §7.0/§7.7 — do not
  * change them here without changing the doc first.
  */
-export async function evaluateStep(promClient, { expectedWorkers, region } = {}) {
+// §7.5 evaluation-timing note: under a one-shot-join harness, the five
+// signalling queries' [5m] windows only contain data while the step's join
+// phase is recent. For holds ≥300s the caller captures these mid-hold via
+// evaluateSignalling() and passes the snapshot into evaluateStep(); evaluated
+// at end-of-hold instead, G1/G2 read an empty window and every step is VOID.
+export const SIGNALLING_GUARD_IDS = ["G1", "G2"];
+export const SIGNALLING_GATE_IDS = ["Q14", "Q15", "Q16"];
+
+export async function evaluateSignalling(promClient, { region } = {}) {
+  if (!region) {
+    throw new Error("evaluateSignalling: options.region is required — same value as evaluateStep's.");
+  }
+  const at = new Date().toISOString();
+  const guards = [];
+  for (const g of GUARDS.filter((g) => SIGNALLING_GUARD_IDS.includes(g.id))) {
+    guards.push({ ...(await runGuard(promClient, g, region)), evaluatedAt: at });
+  }
+  const guardStatus = Object.fromEntries(guards.map((g) => [g.id, g.pass]));
+  const gates = [];
+  for (const gateDef of GATES.filter((g) => SIGNALLING_GATE_IDS.includes(g.id))) {
+    gates.push({ ...(await runGate(promClient, gateDef, { guardStatus, region })), evaluatedAt: at });
+  }
+  return { at, guards, gates };
+}
+
+export async function evaluateStep(promClient, { expectedWorkers, region, signalling } = {}) {
   if (!region) {
     throw new Error(
       "evaluateStep: options.region is required — it is the value of the `region` label MSAB " +
@@ -451,6 +476,10 @@ export async function evaluateStep(promClient, { expectedWorkers, region } = {})
 
   const guards = [];
   for (const g of GUARDS) {
+    if (signalling && SIGNALLING_GUARD_IDS.includes(g.id)) {
+      guards.push(signalling.guards.find((sg) => sg.id === g.id));
+      continue;
+    }
     guards.push(await runGuard(promClient, g, region));
   }
   const guardStatus = Object.fromEntries(guards.map((g) => [g.id, g.pass]));
@@ -465,6 +494,10 @@ export async function evaluateStep(promClient, { expectedWorkers, region } = {})
 
   const gates = [];
   for (const gateDef of GATES) {
+    if (signalling && SIGNALLING_GATE_IDS.includes(gateDef.id)) {
+      gates.push(signalling.gates.find((sg) => sg.id === gateDef.id));
+      continue;
+    }
     gates.push(
       await runGate(promClient, gateDef, { guardStatus: combinedGuardStatus, expectedWorkers, region })
     );
