@@ -216,6 +216,37 @@ variable "hls_r2_secret_access_key" {
   default   = ""
 }
 
+# --- Per-instance TLS termination (issue 36) ---
+# Reuses the SAME Cloudflare Origin CA material as the regional load balancer
+# (root var.lb_ssl_certificate/lb_ssl_private_key) — its SAN already covers
+# `*.audio.flyliveapp.com`, the exact label depth issue 16's per-instance
+# hostnames sit at (confirmed live 2026-08-16 against prod.tfvars: SAN =
+# *.audio.flyliveapp.com, *.flyliveapp.com, flyliveapp.com). No second
+# cert-issuance step. Defaults are empty so an environment that hasn't set
+# these yet (or a future one whose cert doesn't cover the wildcard) boots the
+# app container fine — cloud-init skips rendering the local terminator when
+# either is empty, fails open rather than blocking the app on a cert problem.
+variable "ssl_certificate" {
+  description = "PEM certificate for the instance's local TLS terminator (Cloudflare Origin CA — same material as the LB's ssl_certificate). Empty = terminator not rendered."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "ssl_private_key" {
+  description = "PEM private key matching ssl_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "ssl_chain" {
+  description = "Optional PEM certificate chain, appended after ssl_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # --- Valkey (from the valkey module's outputs) ---
 
 variable "redis_host" {

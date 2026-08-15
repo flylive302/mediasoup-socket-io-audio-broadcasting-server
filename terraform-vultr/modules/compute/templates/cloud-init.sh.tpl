@@ -244,5 +244,77 @@ if [ $HEALTH_ELAPSED -ge $HEALTH_MAX_WAIT ]; then
   echo "WARNING: health check did not pass in $${HEALTH_MAX_WAIT}s — check 'docker logs msab'"
 fi
 
+# --- Per-instance TLS termination (issue 36) ---
+# nginx sidecar on :443, proxying to the app container on 127.0.0.1:${app_port}
+# with WebSocket upgrade headers (Socket.IO/WSS is the whole workload). Reuses
+# the same Cloudflare Origin CA material as the regional load balancer — its
+# SAN already covers `*.audio.flyliveapp.com`, so this needs no cert-issuance
+# step of its own. Fails OPEN, not closed: if the cert/key vars are empty
+# (unset for this environment, or a future cert that doesn't cover the
+# wildcard), skip the terminator entirely rather than aborting a bootstrap the
+# app itself doesn't need — the LB path (:${app_port} unchanged) still works.
+if [ -n "${tls_certificate}" ] && [ -n "${tls_private_key}" ]; then
+  echo "=== Configuring per-instance TLS terminator (nginx :443 -> 127.0.0.1:${app_port}) ==="
+  TLS_DIR="$APP_DIR/tls"
+  mkdir -p "$TLS_DIR"
+
+  cat > "$TLS_DIR/fullchain.pem" << 'CERTEOF'
+${tls_certificate}
+${tls_chain}
+CERTEOF
+
+  cat > "$TLS_DIR/privkey.pem" << 'KEYEOF'
+${tls_private_key}
+KEYEOF
+
+  chmod 600 "$TLS_DIR/privkey.pem"
+  chmod 644 "$TLS_DIR/fullchain.pem"
+
+  cat > "$APP_DIR/nginx-tls.conf" << 'NGINXEOF'
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:${app_port};
+        proxy_http_version 1.1;
+
+        # WebSocket upgrade (Socket.IO/WSS) — must pass through unchanged.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    3600s;
+        proxy_send_timeout    3600s;
+    }
+}
+NGINXEOF
+
+  docker run -d \
+    --name msab-tls \
+    --restart unless-stopped \
+    --network host \
+    --log-driver=json-file \
+    --log-opt max-size=20m \
+    --log-opt max-file=3 \
+    -v "$TLS_DIR:/etc/nginx/tls:ro" \
+    -v "$APP_DIR/nginx-tls.conf:/etc/nginx/conf.d/default.conf:ro" \
+    nginx:1.27-alpine
+
+  echo "Per-instance TLS terminator started (msab-tls container)."
+else
+  echo "Per-instance TLS terminator SKIPPED — ssl_certificate/ssl_private_key not set for this environment."
+fi
+
 echo "=== MSAB Vultr bootstrap complete ==="
 echo "Health check: http://${announced_ip}:${app_port}/health"

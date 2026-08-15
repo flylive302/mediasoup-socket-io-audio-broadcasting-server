@@ -103,6 +103,15 @@ module "compute" {
   redis_port     = module.valkey[each.key].port
   redis_password = module.valkey[each.key].password
 
+  # Per-instance TLS termination (issue 36) — reuses the SAME Cloudflare
+  # Origin CA material as the regional LB (var.lb_ssl_*). Confirmed live
+  # 2026-08-16 against prod.tfvars: the existing cert's SAN already covers
+  # `*.audio.flyliveapp.com`, the exact label depth issue 16's per-instance
+  # hostnames sit at — no second cert to issue.
+  ssl_certificate = var.lb_ssl_certificate
+  ssl_private_key = var.lb_ssl_private_key
+  ssl_chain       = var.lb_ssl_chain
+
   broadcast_hls_enabled    = var.broadcast_hls_enabled
   hls_r2_endpoint          = var.hls_r2_endpoint
   hls_r2_bucket            = var.hls_r2_bucket

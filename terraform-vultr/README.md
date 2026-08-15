@@ -111,26 +111,87 @@ surface all exist now. Flip it to `true` in `*.tfvars` only after the gap below
 is closed. Requires `cloudflare_zone_id` and `cloudflare_api_token` (Zone:DNS:Edit
 on the `audio_domain` zone) — pass via `*.tfvars`/`TF_VAR_*`, never hardcoded.
 
-**🔴 Known gap — do not flip `manage_instance_dns` until this is closed:** the
-MSAB container serves plain HTTP/WS on `var.app_port`; **TLS is terminated ONLY
-by the regional load balancer** (`modules/loadbalancer`, Cloudflare Origin CA
-cert on `:443` — see that module's `variables.tf`). The instance's reserved IP
-has nothing listening on 443 with a trusted cert. A Cloudflare-proxied record
-pointing straight at that IP cannot complete a `Full (strict)` handshake (the
-mode the existing proxied regional records rely on) — Cloudflare's edge would
-get a connection refusal or an untrusted cert at the origin leg, so the record
-would resolve but the endpoint would not actually be reachable over HTTPS. This
-ticket provisions the DNS half only, per its own scope; per-instance TLS
-termination (an Origin CA cert + a local terminator on each instance, or an
-equivalent) is a separate, currently unscoped piece of work that must land
-first. Until then this is DNS the app cannot yet serve behind.
+**Gap closed (issue 36, 2026-08-16) — per-instance TLS termination.** Every
+instance now runs a second container, an nginx sidecar (`msab-tls`, cloud-init
+`modules/compute/templates/cloud-init.sh.tpl`), listening `:443` and proxying
+to `127.0.0.1:${app_port}` with WebSocket upgrade headers passed through
+(`Upgrade`/`Connection: upgrade` — Socket.IO/WSS is the whole workload).
+`:${app_port}` itself is untouched — the LB path serves exactly as before; the
+terminator is additive, a second container next to `msab`, not a change to it.
+
+The terminator uses the **same Cloudflare Origin CA cert/key as the regional
+load balancer** (`var.lb_ssl_certificate` / `var.lb_ssl_private_key`, threaded
+root → `modules/compute` (`ssl_certificate`/`ssl_private_key`/`ssl_chain`,
+`sensitive = true`) → cloud-init, which writes them to
+`/opt/msab/tls/{fullchain,privkey}.pem` and mounts them read-only into the
+nginx container). No second cert to issue: confirmed live 2026-08-16 against
+`prod.tfvars`'s cert (public material — SAN is not sensitive) —
+
+```
+subject=O = "CloudFlare, Inc.", OU = CloudFlare Origin CA, CN = CloudFlare Origin Certificate
+X509v3 Subject Alternative Name:
+    DNS:*.audio.flyliveapp.com, DNS:*.flyliveapp.com, DNS:flyliveapp.com
+```
+
+— already covers `*.audio.flyliveapp.com`, the exact label depth the
+per-instance hostnames above sit at. **Cert delivery is not a manual step**:
+whenever an instance is created, cloud-init renders the terminator from the
+same `*.tfvars` values the LB already consumes. If `ssl_certificate`/
+`ssl_private_key` are ever empty for an environment (e.g. a future cert that
+doesn't cover the wildcard), cloud-init **fails open** — it skips the
+terminator and logs a warning, it does not abort the app container's boot.
+
+**Firewall:** `modules/networking` previously opened only `app_port` (TCP) and
+the WebRTC UDP/TCP range — inbound `443` to instances was **not** open
+(`vultr_firewall_rule.tls_tcp`, issue 36, same `0.0.0.0/0` permissiveness as
+the existing `app_tcp` rule; tightening to Cloudflare-only source ranges is a
+follow-up, the LB's `allowed_sources` mechanism doesn't have an instance-level
+equivalent for firewall rules).
+
+**Ships inert on the frozen Vultr fleet**, same as ticket 16: cloud-init only
+runs at instance creation, never at `apply` against a live instance, so this
+lands as code + docs with zero effect on the one hand-managed box until either
+a new instance is created or bom-02 is manually rebuilt with it.
+
+**Verifying a live handshake, once a box exists with this cloud-init:**
+
+```bash
+# 1. TLS handshake straight against the instance IP, forcing the hostname's SNI
+#    (works before/without a DNS record — bypasses Cloudflare's edge entirely):
+curl -v --resolve flylive-audio-production-bom-02.audio.flyliveapp.com:443:<instance-ip> \
+  https://flylive-audio-production-bom-02.audio.flyliveapp.com/health
+
+# 2. Inspect the served cert/chain directly (confirms nginx is serving the
+#    Origin CA cert, not a self-signed default):
+openssl s_client -connect <instance-ip>:443 \
+  -servername flylive-audio-production-bom-02.audio.flyliveapp.com </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -ext subjectAltName
+
+# 3. End-to-end through the proxied DNS record (only once bom-02's record
+#    exists AND manage_instance_dns's gap is otherwise closed):
+curl -v https://flylive-audio-production-bom-02.audio.flyliveapp.com/health
+
+# 4. WebSocket upgrade specifically (Socket.IO handshake, not just HTTP):
+curl -v --resolve flylive-audio-production-bom-02.audio.flyliveapp.com:443:<instance-ip> \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://flylive-audio-production-bom-02.audio.flyliveapp.com/socket.io/
+```
+
+A working (1)+(2) proves the terminator; (3) proves the DNS+edge leg once the
+record exists; (4) proves the WSS upgrade actually passes through, not just
+plain HTTPS.
 
 **Operator manual procedure — the one live record for `bom-02`:** the fleet is
 currently a single hand-managed box
 (`flylive-audio-production-bom-02`, see `docs/reference/hard-won-gotchas.md` §
 *Vultr fleet / Terraform deploy* — Terraform itself must NOT be applied against
-real credentials right now). Until per-instance TLS lands and
-`manage_instance_dns` is safe to flip, create bom-02's record by hand:
+real credentials right now). This code ships inert for that box (cloud-init
+only runs at creation) — bom-02 itself needs the terminator added by hand
+(install nginx or run the same `docker run ... nginx:1.27-alpine` command
+against the same cert material, port 443 firewall rule added via the Vultr
+dashboard) before its DNS record is anything but a name that doesn't resolve
+to a working endpoint. Once that's done, create bom-02's record:
 
 1. Cloudflare dashboard → the `flyliveapp.com` zone → **DNS → Records → Add record**.
 2. Type: `A`. Name: `flylive-audio-production-bom-02.audio` (Cloudflare appends

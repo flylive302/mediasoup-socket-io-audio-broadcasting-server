@@ -31,6 +31,24 @@ resource "vultr_firewall_rule" "app_tcp" {
   notes             = "App HTTP/WS"
 }
 
+# --- Per-instance TLS termination (issue 36) ---
+# The instance's local terminator (nginx sidecar, cloud-init) listens :443 with
+# the same Cloudflare Origin CA cert the LB uses, so a proxied per-instance DNS
+# record (issue 16) can complete a Full(strict) handshake straight to the
+# instance. Same permissiveness as app_tcp below — Cloudflare-only restriction
+# would need `subnet`/`subnet_size` per published edge range, which Vultr
+# firewall rules don't resolve from the literal "cloudflare" keyword the way
+# the LB's `allowed_sources` does; tightening this is a follow-up, not a blocker.
+resource "vultr_firewall_rule" "tls_tcp" {
+  firewall_group_id = vultr_firewall_group.msab.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "443"
+  notes             = "Per-instance TLS termination (issue 36)"
+}
+
 # --- WebRTC UDP (includes SFU cascade ports — cross-region traffic comes from public IPs) ---
 resource "vultr_firewall_rule" "rtc_udp" {
   firewall_group_id = vultr_firewall_group.msab.id

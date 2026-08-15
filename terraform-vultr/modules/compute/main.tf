@@ -90,6 +90,11 @@ resource "vultr_instance" "main" {
     rtc_min_port         = var.rtc_min_port
     rtc_max_port         = var.rtc_max_port
     image_ref            = "${var.ghcr_image}:${var.image_tag}"
+    # Per-instance TLS termination (issue 36) — see variables.tf for why this
+    # reuses the LB's Origin CA material rather than issuing a second cert.
+    tls_certificate = var.ssl_certificate
+    tls_private_key = var.ssl_private_key
+    tls_chain       = var.ssl_chain
     # msab-sentry §5: image_tag doubles as SENTRY_RELEASE, environment as
     # SENTRY_ENVIRONMENT, in the .env heredoc. image_tag MUST match the
     # sha-<commit8> the image was built + sourcemap-uploaded under.
