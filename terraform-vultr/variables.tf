@@ -333,6 +333,39 @@ variable "cloudflare_turn_key_id" {
   default     = ""
 }
 
+# --- Per-instance DNS (issue 16) ---------------------------------------------
+# `<instance-hostname>.audio.<domain>` — exactly one label below var.audio_domain
+# (default "audio.flyliveapp.com"), which is what the existing `*.audio.<domain>`
+# wildcard cert covers. instance-hostname is main.tf's rendered
+# `${project_name}-${environment}-${region}-NN` (modules/compute/main.tf) — the
+# SAME identity MSAB uses as INSTANCE_ID_OVERRIDE, not a new identifier.
+#
+# 🔴 UNSET BY DEFAULT (ship-inert): flipping this to true is a SEPARATE, later
+# step from applying this code. `manage_instance_dns = false` means the
+# cloudflare_dns_record.instance resources have `for_each = {}` — zero records
+# requested, zero Cloudflare API calls, true no-op even if `terraform apply`
+# somehow ran. See terraform-vultr/README.md § Per-instance DNS for the gap this
+# does NOT close (the instance itself does not terminate TLS — only the regional
+# load balancer does) and the operator's manual bom-02 record procedure.
+variable "manage_instance_dns" {
+  description = "Create/destroy one Cloudflare DNS record per instance, tied to instance lifecycle. Default false = fully inert (zero records, zero API calls). See README.md § Per-instance DNS before ever setting true — the instance origin does not yet terminate TLS, so a proxied record here cannot complete a Full(strict) handshake until that gap closes."
+  type        = bool
+  default     = false
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token (Zone:DNS:Edit on the audio_domain zone). Only USED when manage_instance_dns = true. The default below is an inert placeholder, not a real credential — it exists only because the cloudflare provider validates its token's character set at config-eval time regardless of whether any cloudflare_dns_record is requested, so an empty string would fail `terraform validate`/`plan` even with the DNS gate off. Never hardcode a real token here — pass one via TF_VAR_cloudflare_api_token or *.tfvars (gitignored) when manage_instance_dns is actually flipped to true."
+  type        = string
+  sensitive   = true
+  default     = "unset-placeholder-token-0000000000000000000"
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for the zone hosting audio_domain. Only read when manage_instance_dns = true."
+  type        = string
+  default     = ""
+}
+
 variable "sentry_dsn" {
   description = "Sentry DSN for the node-msab project (msab-sentry §5). Optional by design — an empty value disables error reporting (cloud-init warns, never aborts) so telemetry can never take audio down. Sourced from the TF_VAR_sentry_dsn vultr-production environment secret."
   type        = string

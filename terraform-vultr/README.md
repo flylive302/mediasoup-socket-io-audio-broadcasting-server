@@ -85,6 +85,70 @@ Cloudflare's edge, not public browsers directly. Raw WebRTC media/cascade bypass
 hostname entirely (they use the instance's reserved IP directly), so proxying only the
 signaling/WSS hostname is safe.
 
+## Per-instance DNS (issue 16)
+
+**Naming scheme:** `<instance-hostname>.<audio_domain>` — e.g.
+`flylive-audio-production-bom-02.audio.flyliveapp.com`. `<instance-hostname>` is
+exactly the hostname `modules/compute/main.tf` already renders for the instance
+(`${project_name}-${environment}-${region}-NN`, format `%02d`) — the same string
+used as the boot-time `INSTANCE_ID_OVERRIDE`. No new identifier: a Room's stored
+pin (ticket 07) is derivable from instance identity alone. This sits exactly one
+label below `var.audio_domain` (default `audio.flyliveapp.com`), the label depth
+the live `*.audio.<domain>` wildcard certificate covers — one label deeper fails
+TLS.
+
+**Terraform (ships INERT):** `cloudflare_dns_record.instance` in the root
+`main.tf`, one record per fleet instance (flattened across every region,
+`for_each` over `local.instance_dns_records`), `type = A`, `content` = the
+instance's reserved/announced IP, `proxied = true`, `ttl = 1` (Cloudflare's
+required value for proxied records). Creation/destruction is tied 1:1 to the
+instance via `for_each`, so scaling `fleet_regions` up or down creates/removes
+the matching DNS record automatically — no manual step, per the ticket's
+acceptance criteria. **Gated behind `var.manage_instance_dns` (default `false`)**
+— with it unset, `for_each` evaluates to `{}` and zero Cloudflare API calls are
+ever made, so this ships inert even though the resource, provider, and variable
+surface all exist now. Flip it to `true` in `*.tfvars` only after the gap below
+is closed. Requires `cloudflare_zone_id` and `cloudflare_api_token` (Zone:DNS:Edit
+on the `audio_domain` zone) — pass via `*.tfvars`/`TF_VAR_*`, never hardcoded.
+
+**🔴 Known gap — do not flip `manage_instance_dns` until this is closed:** the
+MSAB container serves plain HTTP/WS on `var.app_port`; **TLS is terminated ONLY
+by the regional load balancer** (`modules/loadbalancer`, Cloudflare Origin CA
+cert on `:443` — see that module's `variables.tf`). The instance's reserved IP
+has nothing listening on 443 with a trusted cert. A Cloudflare-proxied record
+pointing straight at that IP cannot complete a `Full (strict)` handshake (the
+mode the existing proxied regional records rely on) — Cloudflare's edge would
+get a connection refusal or an untrusted cert at the origin leg, so the record
+would resolve but the endpoint would not actually be reachable over HTTPS. This
+ticket provisions the DNS half only, per its own scope; per-instance TLS
+termination (an Origin CA cert + a local terminator on each instance, or an
+equivalent) is a separate, currently unscoped piece of work that must land
+first. Until then this is DNS the app cannot yet serve behind.
+
+**Operator manual procedure — the one live record for `bom-02`:** the fleet is
+currently a single hand-managed box
+(`flylive-audio-production-bom-02`, see `docs/reference/hard-won-gotchas.md` §
+*Vultr fleet / Terraform deploy* — Terraform itself must NOT be applied against
+real credentials right now). Until per-instance TLS lands and
+`manage_instance_dns` is safe to flip, create bom-02's record by hand:
+
+1. Cloudflare dashboard → the `flyliveapp.com` zone → **DNS → Records → Add record**.
+2. Type: `A`. Name: `flylive-audio-production-bom-02.audio` (Cloudflare appends
+   the zone, giving `flylive-audio-production-bom-02.audio.flyliveapp.com`).
+3. IPv4 address: bom-02's reserved/announced public IP (Vultr dashboard →
+   the instance → **Overview** → its IPv4, or `terraform output region_public_ips`
+   if you have current state access).
+4. Proxy status: **Proxied (orange cloud)** — consistent with the existing
+   regional records, so the origin IP stays hidden. Per the gap above, this
+   record will resolve but will **not** yet serve a working HTTPS endpoint
+   until per-instance TLS termination exists — do not treat a created record
+   as a green light for a client to use it.
+5. TTL: Auto (forced by proxy status).
+6. Save, then verify DNS-only (not TLS — see the gap):
+   `dig +short flylive-audio-production-bom-02.audio.flyliveapp.com` should
+   return Cloudflare edge IPs (not bom-02's own IP — that's expected under
+   proxy).
+
 ## Image registry — ghcr.io
 
 The MSAB image is built and pushed by `.github/workflows/ghcr-publish.yml` on every push to

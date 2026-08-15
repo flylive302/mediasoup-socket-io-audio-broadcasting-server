@@ -130,6 +130,46 @@ module "loadbalancer" {
   allowed_sources = var.lb_allowed_sources
 }
 
+# --- Per-instance DNS (issue 16) ---------------------------------------------
+# One Cloudflare A record per fleet instance, name derived from the SAME
+# hostname main.tf already renders for the instance (modules/compute/main.tf:
+# "${project_name}-${environment}-${region}-NN", also the INSTANCE_ID_OVERRIDE
+# basis) — no new identifier. Flattened across every region so scaling
+# fleet_regions (or adding a region) grows/shrinks records automatically; no
+# separate DNS step. Gated by var.manage_instance_dns (default false, see
+# variables.tf) — for_each on an empty map when unset, so this is a genuine
+# no-op until an operator deliberately flips it, per the ship-inert rule.
+#
+# 🔴 KNOWN GAP (see README.md § Per-instance DNS before flipping the gate):
+# the instance's app container serves plain HTTP/WS on var.app_port — TLS is
+# ONLY terminated by the regional load balancer (modules/loadbalancer, Cloudflare
+# Origin CA on :443). A proxied record pointing straight at an instance's
+# reserved IP has nothing trusted to complete a Full(strict) handshake against
+# today. This resource is the DNS half only; per-instance TLS termination is
+# not in scope here and must land before `manage_instance_dns = true` is safe.
+locals {
+  instance_dns_records = var.manage_instance_dns ? merge([
+    for r, m in module.compute : {
+      for idx, hostname in m.instance_hostnames :
+      "${r}-${idx}" => {
+        hostname = hostname
+        ip       = m.public_ips[idx]
+      }
+    }
+  ]...) : {}
+}
+
+resource "cloudflare_dns_record" "instance" {
+  for_each = local.instance_dns_records
+
+  zone_id = var.cloudflare_zone_id
+  name    = "${each.value.hostname}.${var.audio_domain}"
+  type    = "A"
+  content = each.value.ip
+  proxied = true
+  ttl     = 1 # Cloudflare requires ttl=1 ("Auto") on proxied records.
+}
+
 # --- State migration: un-keyed (slice D/E) -> keyed (slice 06) ----------------
 # Terraform treats `module.compute` and `module.compute["bom"]` as DIFFERENT
 # addresses. WITHOUT these `moved` blocks the first 3-region apply against the

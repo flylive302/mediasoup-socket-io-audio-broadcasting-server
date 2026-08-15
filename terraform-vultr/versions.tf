@@ -17,6 +17,15 @@ terraform {
       source  = "vultr/vultr"
       version = "~> 2.22"
     }
+    # Per-instance DNS (issue 16). Pinned to match the AWS tree's own Cloudflare
+    # provider pin (../terraform/main.tf) so both trees share one known-good
+    # major version. Gated to inert by var.manage_instance_dns (default false,
+    # see variables.tf) — declaring the provider costs nothing at init/plan
+    # time even with zero cloudflare_dns_record instances.
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5"
+    }
   }
 
   # -------------------------------------------------------------------------

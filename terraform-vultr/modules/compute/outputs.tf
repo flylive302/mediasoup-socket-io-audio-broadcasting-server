@@ -8,6 +8,11 @@ output "instance_ids" {
   description = "All fleet instance IDs — wired straight into the load balancer's attached_instances."
 }
 
+output "instance_hostnames" {
+  value       = vultr_instance.main[*].hostname
+  description = "Every fleet instance's rendered hostname (`$${project_name}-$${environment}-$${region}-NN`), same order as public_ips (index-aligned). This is the ONLY instance identity in the system (also the boot-time INSTANCE_ID_OVERRIDE basis) — per-instance DNS (issue 16) derives its record name from this, not a new identifier."
+}
+
 # Exposed so the root module's output can carry its own precondition too —
 # `terraform test`'s expect_failures can only target root-level checkable
 # objects, not a nested module's own output precondition.

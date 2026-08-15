@@ -15,3 +15,14 @@
 provider "vultr" {
   # api_key intentionally omitted — sourced from VULTR_API_KEY in the environment.
 }
+
+# --- Cloudflare (per-instance DNS, issue 16) ---------------------------------
+# Only exercised when var.manage_instance_dns = true (default false — see
+# variables.tf). Configuring the provider here is itself inert: with zero
+# cloudflare_dns_record resources requested, no Cloudflare API call is made,
+# so an empty/placeholder token doesn't block `terraform validate` or
+# `terraform test`. Same pattern as the AWS tree's provider (../terraform/main.tf)
+# — token via var.cloudflare_api_token, never hardcoded.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
