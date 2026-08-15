@@ -65,6 +65,13 @@ jobs:
   build-and-push:
     needs: ci
     runs-on: ubuntu-latest
+    # The staging deploy role's OIDC trust requires sub =
+    # repo:…:environment:aws-staging (ticket 12) — without this line the
+    # token's sub is ref:refs/heads/master and AssumeRoleWithWebIdentity is
+    # denied (first dispatch failed exactly this way, 2026-08-15). GitHub
+    # auto-creates the environment on first reference; it carries no approval
+    # gate, so this adds no manual step.
+    environment: aws-staging
     # Ticket 12: OIDC federation — short-lived identity token, no static keys.
     permissions:
       id-token: write
