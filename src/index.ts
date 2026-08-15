@@ -8,6 +8,7 @@ import { startQualitySampler, stopQualitySampler } from "./domains/media/quality
 import { startRtpStatisticsSweeper, stopRtpStatisticsSweeper } from "./domains/media/quality/rtpStatisticsSweeper.js";
 import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain.js";
 import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
+import { createRejectionBreaker } from "./infrastructure/rejection-breaker.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
 
 // ─── Module-Level Shutdown Reference ─────────────────────────────
@@ -281,7 +282,10 @@ const start = async () => {
 
 const REJECTION_THRESHOLD = 5;
 const REJECTION_WINDOW_MS = 30_000;
-const rejectionTimestamps: number[] = [];
+const rejectionBreaker = createRejectionBreaker({
+  threshold: REJECTION_THRESHOLD,
+  windowMs: REJECTION_WINDOW_MS,
+});
 
 // This path has no force-exit timer (unlike uncaughtException below), so a
 // longer flush is free.
@@ -291,23 +295,30 @@ const REJECTION_FLUSH_MS = 5_000;
 // src/instrument.ts — it would double-report every rejection, and it cannot
 // carry the count/threshold context the circuit breaker below produces.
 process.on("unhandledRejection", async (err) => {
-  const now = Date.now();
-  rejectionTimestamps.push(now);
+  const verdict = rejectionBreaker.record(err, Date.now());
 
-  // Trim timestamps outside the sliding window
-  while (rejectionTimestamps.length > 0 && rejectionTimestamps[0]! < now - REJECTION_WINDOW_MS) {
-    rejectionTimestamps.shift();
+  // aws-production/35: Redis failover-window rejections (command timeouts,
+  // connection-closed, max-retries) are a known self-healing degradation —
+  // they must not convert a ~40s Redis blip into a full socket drop. Logged
+  // and captured, but excluded from the crash threshold.
+  if (verdict.action === "redis-transient") {
+    logger.error({ err }, "Unhandled Rejection (Redis transient — excluded from crash threshold)");
+    captureSafe(err, {
+      level: "error",
+      tags: { path: "unhandledRejection", classification: "redis-transient" },
+    });
+    return;
   }
 
-  if (rejectionTimestamps.length >= REJECTION_THRESHOLD) {
+  if (verdict.action === "crash") {
     logger.fatal(
-      { err, count: rejectionTimestamps.length, windowMs: REJECTION_WINDOW_MS },
+      { err, count: verdict.count, windowMs: REJECTION_WINDOW_MS },
       `Unhandled Rejection: ${REJECTION_THRESHOLD} rejections in ${REJECTION_WINDOW_MS / 1000}s — shutting down`,
     );
     await captureAndFlush(err, REJECTION_FLUSH_MS, {
       level: "fatal",
       tags: { path: "unhandledRejection" },
-      extra: { count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+      extra: { count: verdict.count, threshold: REJECTION_THRESHOLD },
     });
     if (crashShutdownFn) {
       void crashShutdownFn("unhandledRejection_threshold");
@@ -316,7 +327,7 @@ process.on("unhandledRejection", async (err) => {
     }
   } else {
     logger.error(
-      { err, count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+      { err, count: verdict.count, threshold: REJECTION_THRESHOLD },
       "Unhandled Rejection (transient — process continues)",
     );
     // Captured even below the threshold, deliberately: a service leaking four
@@ -325,7 +336,7 @@ process.on("unhandledRejection", async (err) => {
     captureSafe(err, {
       level: "error",
       tags: { path: "unhandledRejection" },
-      extra: { count: rejectionTimestamps.length, threshold: REJECTION_THRESHOLD },
+      extra: { count: verdict.count, threshold: REJECTION_THRESHOLD },
     });
   }
 });
