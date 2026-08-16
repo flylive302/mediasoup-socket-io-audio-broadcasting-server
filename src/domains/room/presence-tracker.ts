@@ -22,6 +22,7 @@ import type { Server } from "socket.io";
 import type { RoomStateRepository } from "./roomState.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { logger } from "@src/infrastructure/logger.js";
+import { config } from "@src/config/index.js";
 
 export class PresenceTracker {
   /** roomId → epoch ms when presence was first observed at zero. */
@@ -30,10 +31,43 @@ export class PresenceTracker {
   constructor(
     private readonly io: Server,
     private readonly state: RoomStateRepository,
+    /**
+     * aws-production/19: injected so tests can flip it; reads the boot config
+     * lazily by default. Under affinity every member of a Room is on the
+     * owning instance, so the local adapter answer is the complete answer.
+     */
+    private readonly affinityEnabled: () => boolean = () =>
+      config.AFFINITY_ENABLED,
   ) {}
 
-  /** Real region-wide socket presence for a Room. */
+  /**
+   * Real socket presence for a Room.
+   *
+   * aws-production/19 (msab-fetchsockets-quadratic-presence /
+   * msab-heartbeat-fetchsockets-fanout): with affinity ON, answer from LOCAL
+   * adapter state first — no Redis fan-out, no per-subscriber wait — which
+   * removes the fleet-wide fetchSockets from the 30s ownership heartbeat and
+   * the auto-close confirms. Locality is verified, not assumed: a local answer
+   * of ZERO is the dangerous one (rollout stragglers may be connected on
+   * another instance, and closing on a confidently-wrong empty is worse than
+   * a slow correct answer), so zero always re-checks through the cross-fleet
+   * helper. A non-zero local answer can at worst briefly under-count
+   * stragglers — which only ever keeps a Room open, never closes it.
+   *
+   * Affinity OFF (production today): unchanged region-wide behavior.
+   */
   async present(roomId: string): Promise<number> {
+    if (this.affinityEnabled()) {
+      try {
+        const local = await this.io.in(roomId).local.fetchSockets();
+        if (local.length > 0) return local.length;
+      } catch (err) {
+        logger.warn(
+          { err, roomId },
+          "PresenceTracker: local presence read failed — using cross-fleet path",
+        );
+      }
+    }
     const sockets = await fetchSocketsSafe(this.io, roomId, logger);
     return sockets.length;
   }

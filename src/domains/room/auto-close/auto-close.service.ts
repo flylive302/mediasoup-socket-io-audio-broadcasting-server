@@ -20,13 +20,34 @@ const STATE_KEY_PREFIX = "room:state:";
  */
 const MAX_PRESENCE_CHECKS_PER_SWEEP = 50;
 
+/**
+ * aws-production/19 (msab-autoclose-full-keyspace-scan-per-instance): with
+ * affinity on, the hot sweep scopes to locally-owned rooms; the fleet-wide
+ * SCAN survives only as a rare ORPHAN safety net — every Nth sweep, and only
+ * admitting rooms with NO owner claim (a crashed instance's rooms would
+ * otherwise never be closed by anyone and stay is_live=true in Laravel
+ * forever). 10 × 30s poll ≈ a 5-minute orphan-detection ceiling, on top of
+ * the 90s ownership TTL that must lapse first.
+ */
+const ORPHAN_SWEEP_EVERY = 10;
+
+/** Mirrors RoomRegistry's CAS claim key (`cascade:room:{id}:owner`). */
+const OWNER_KEY = (roomId: string) => `cascade:room:${roomId}:owner`;
+
 export class AutoCloseService {
   private readonly evaluator: AutoCloseEvaluator;
+
+  /** Counts owned-scope sweeps to pace the orphan safety net. */
+  private sweepCount = 0;
 
   constructor(
     private readonly redis: Redis,
     private readonly presenceTracker: PresenceTracker,
     evaluator: AutoCloseEvaluator = new AutoCloseEvaluator(),
+    /** Rooms this instance hosts (RoomManager's local map). Null = fleet-scan only. */
+    private readonly getLocalRoomIds: (() => string[]) | null = null,
+    private readonly affinityEnabled: () => boolean = () =>
+      config.AFFINITY_ENABLED,
   ) {
     this.evaluator = evaluator;
   }
@@ -102,10 +123,65 @@ export class AutoCloseService {
   }
 
   /**
-   * Phase 1: cheap candidate filter — Rooms whose activity key expired. One
-   * pipelined EXISTS per room, one round-trip regardless of room count.
+   * Phase 1: cheap candidate filter — Rooms whose activity key expired.
+   *
+   * aws-production/19: with affinity on and a local registry wired, the hot
+   * path is bounded by THIS instance's rooms (no keyspace SCAN); the fleet
+   * SCAN runs only as the paced orphan safety net. Affinity off: the original
+   * fleet-wide SCAN, unchanged.
    */
   private async getCandidateRoomIds(): Promise<string[]> {
+    if (this.affinityEnabled() && this.getLocalRoomIds) {
+      return this.getOwnedScopeCandidates();
+    }
+    return this.getFleetScanCandidates();
+  }
+
+  private async getOwnedScopeCandidates(): Promise<string[]> {
+    this.sweepCount++;
+    const localRoomIds = this.getLocalRoomIds!();
+    const candidates = await this.filterActivityExpired(localRoomIds);
+
+    if (this.sweepCount % ORPHAN_SWEEP_EVERY !== 0) return candidates;
+
+    // Orphan safety net: fleet-scanned rooms that are not local AND have no
+    // owner claim anywhere. Rooms owned elsewhere are left to their owner.
+    try {
+      const scanned = await this.getFleetScanCandidates();
+      const localSet = new Set(localRoomIds);
+      const foreign = scanned.filter((roomId) => !localSet.has(roomId));
+      if (foreign.length === 0) return candidates;
+
+      const pipeline = this.redis.pipeline();
+      for (const roomId of foreign) {
+        pipeline.exists(OWNER_KEY(roomId));
+      }
+      const results = await pipeline.exec();
+      if (!results) return candidates;
+
+      const orphans: string[] = [];
+      for (let i = 0; i < foreign.length; i++) {
+        const existsResult = results[i];
+        // Fail safe: a Redis error must never make a room look ownerless.
+        if (existsResult?.[0]) continue;
+        if (existsResult?.[1] === 0) orphans.push(foreign[i]!);
+      }
+
+      if (orphans.length > 0) {
+        logger.warn(
+          { count: orphans.length },
+          "AutoClose: orphan sweep admitted ownerless rooms",
+        );
+      }
+      return [...candidates, ...orphans];
+    } catch (err) {
+      recordRedisDegradation("auto-close", "read");
+      logger.error({ err }, "AutoClose: orphan sweep failed; local candidates only");
+      return candidates;
+    }
+  }
+
+  private async getFleetScanCandidates(): Promise<string[]> {
     try {
       // BL-004 FIX: Use SCAN instead of KEYS to avoid blocking Redis
       const roomStateKeys: string[] = [];
@@ -128,7 +204,22 @@ export class AutoCloseService {
         key.replace(STATE_KEY_PREFIX, ""),
       );
 
-      // Single pipeline: batch all EXISTS calls
+      return this.filterActivityExpired(roomIds);
+    } catch (err) {
+      recordRedisDegradation("auto-close", "read");
+      logger.error({ err }, "Failed to get inactive rooms");
+      return [];
+    }
+  }
+
+  /**
+   * One pipelined EXISTS per room, one round-trip regardless of room count.
+   * A room is a candidate when its activity key has expired.
+   */
+  private async filterActivityExpired(roomIds: string[]): Promise<string[]> {
+    if (roomIds.length === 0) return [];
+
+    try {
       const pipeline = this.redis.pipeline();
       for (const roomId of roomIds) {
         pipeline.exists(ACTIVITY_KEY(roomId));

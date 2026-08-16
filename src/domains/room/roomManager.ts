@@ -313,6 +313,15 @@ export class RoomManager {
   }
 
   /**
+   * aws-production/19: the rooms this instance hosts, for owned-scope
+   * consumers (auto-close candidate filter) — the local answer that replaces
+   * fleet-wide discovery under affinity.
+   */
+  listRoomIds(): string[] {
+    return [...this.rooms.keys()];
+  }
+
+  /**
    * F-2: keep the Prometheus rooms gauge in lockstep with the rooms map.
    * Called on every add/remove so it can never drift between scrapes.
    */

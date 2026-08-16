@@ -4,17 +4,34 @@ import type { Server } from "socket.io";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 
 // ── Mock io: io.in(room).fetchSockets() → configurable socket array ──
+// aws-production/19: also models `.local.fetchSockets()` (adapter-local, no
+// Redis fan-out) with its own socket set + call counters, so tests can prove
+// which path answered.
 function createMockIo() {
   const roomSockets = new Map<string, unknown[]>();
+  const localSockets = new Map<string, unknown[]>();
+  const calls = { cross: 0, local: 0 };
   const io = {
     in: (roomId: string) => ({
-      fetchSockets: async () => roomSockets.get(roomId) ?? [],
+      fetchSockets: async () => {
+        calls.cross++;
+        return roomSockets.get(roomId) ?? [];
+      },
+      local: {
+        fetchSockets: async () => {
+          calls.local++;
+          return localSockets.get(roomId) ?? [];
+        },
+      },
     }),
   } as unknown as Server;
   return {
     io,
+    calls,
     setSockets: (roomId: string, n: number) =>
       roomSockets.set(roomId, Array.from({ length: n }, (_, i) => ({ id: `s${i}` }))),
+    setLocalSockets: (roomId: string, n: number) =>
+      localSockets.set(roomId, Array.from({ length: n }, (_, i) => ({ id: `l${i}` }))),
   };
 }
 
@@ -119,6 +136,53 @@ describe("PresenceTracker", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("local-first presence under affinity (aws-production/19)", () => {
+    it("a non-zero LOCAL answer is complete — no cross-fleet fan-out", async () => {
+      const local = new PresenceTracker(mockIo.io, state, () => true);
+      mockIo.setLocalSockets("r1", 3);
+      mockIo.setSockets("r1", 99); // would be wrong to consult
+
+      await expect(local.present("r1")).resolves.toBe(3);
+      expect(mockIo.calls.local).toBe(1);
+      expect(mockIo.calls.cross).toBe(0);
+    });
+
+    it("a LOCAL zero is verified cross-fleet — never a confidently wrong empty", async () => {
+      const local = new PresenceTracker(mockIo.io, state, () => true);
+      mockIo.setLocalSockets("r1", 0);
+      mockIo.setSockets("r1", 2); // rollout stragglers on another instance
+
+      await expect(local.present("r1")).resolves.toBe(2);
+      expect(mockIo.calls.local).toBe(1);
+      expect(mockIo.calls.cross).toBe(1);
+    });
+
+    it("a failed local read degrades to the cross-fleet helper", async () => {
+      const failingIo = {
+        in: () => ({
+          fetchSockets: async () => [{ id: "s0" }],
+          local: {
+            fetchSockets: async () => {
+              throw new Error("adapter down");
+            },
+          },
+        }),
+      } as unknown as Server;
+      const local = new PresenceTracker(failingIo, state, () => true);
+
+      await expect(local.present("r1")).resolves.toBe(1);
+    });
+
+    it("affinity OFF keeps the region-wide path untouched", async () => {
+      const off = new PresenceTracker(mockIo.io, state, () => false);
+      mockIo.setLocalSockets("r1", 3);
+      mockIo.setSockets("r1", 7);
+
+      await expect(off.present("r1")).resolves.toBe(7);
+      expect(mockIo.calls.local).toBe(0);
     });
   });
 });

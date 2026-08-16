@@ -118,8 +118,16 @@ export async function initializeSocket(
   const presenceService = new PresenceService(redisCache, io, clientManager);
   presenceService.start();
 
-  // Initialize auto-close system (presence-gated, not integer-gated)
-  const autoCloseService = new AutoCloseService(redis, presenceTracker);
+  // Initialize auto-close system (presence-gated, not integer-gated).
+  // aws-production/19: local room registry wired so the sweep scopes to
+  // owned rooms when AFFINITY_ENABLED (fleet SCAN survives as the paced
+  // orphan safety net only).
+  const autoCloseService = new AutoCloseService(
+    redis,
+    presenceTracker,
+    undefined,
+    () => roomManager.listRoomIds(),
+  );
   const autoCloseJob = new AutoCloseJob(
     autoCloseService,
     async (roomId: string, reason: string) => {
