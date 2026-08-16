@@ -179,7 +179,6 @@ CLOUDFLARE_TURN_KEY_ID=${cloudflare_turn_key_id}
 
 # SFU Cascade
 CASCADE_ENABLED=${cascade_enabled}
-CASCADE_THRESHOLD=1800
 PUBLIC_IP=${announced_ip}
 
 # Room affinity attestation (aws-app-affinity/12) — operator-set, not

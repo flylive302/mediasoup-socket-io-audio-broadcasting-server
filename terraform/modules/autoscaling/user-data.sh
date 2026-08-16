@@ -326,7 +326,6 @@ AWS_REGION=${region}
 
 # SFU Cascade
 CASCADE_ENABLED=${cascade_enabled}
-CASCADE_THRESHOLD=1800
 PUBLIC_IP=$PUBLIC_IP
 
 # ICE Servers — Cloudflare Realtime TURN (dynamic credentials)

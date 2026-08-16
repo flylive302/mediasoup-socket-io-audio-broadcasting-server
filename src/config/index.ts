@@ -397,7 +397,9 @@ const configSchema = z.object({
 
   // SFU Cascade (Phase 5)
   CASCADE_ENABLED: booleanEnvSchema,                      // Feature flag, default false
-  CASCADE_THRESHOLD: z.coerce.number().default(1800),     // Listeners before spawning edge
+  // CASCADE_THRESHOLD removed (aws-production 24): defined and shipped to every
+  // instance env since Phase 5, but never read by any code in MSAB or Laravel —
+  // the edge-spawn decision it named was never built. Dead config, not a knob.
   INTERNAL_API_KEY: z.string().default(""),                // Shared secret for instance-to-instance auth
   // Rotation overlap only — see JWT_SECRET_PREVIOUS above. Comma-separated.
   INTERNAL_API_KEY_PREVIOUS: z.string().default(""),
