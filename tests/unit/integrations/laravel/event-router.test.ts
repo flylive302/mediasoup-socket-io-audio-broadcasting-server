@@ -31,6 +31,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     laravelEventProcessingDuration: { observe: vi.fn() },
     laravelEventsDeduplicated: { inc: vi.fn() },
     laravelEventsStaleRejected: { inc: vi.fn() },
+    laravelEventsFanoutSuppressed: { inc: vi.fn() },
     roomBlockMirror: { inc: vi.fn() },
   },
 }));
@@ -116,6 +117,16 @@ function createEvent(overrides: Partial<LaravelEvent> = {}): LaravelEvent {
     correlation_id: "test-corr-id",
     ...overrides,
   };
+}
+
+
+// A fan-out claim SET (aws-production 22) is expected on every routed event;
+// these ordering-guard tests only care that no MIRROR/WATERMARK write happened.
+function expectNoNonClaimSet(redis: any) {
+  const nonClaim = redis.set.mock.calls.filter(
+    (c: unknown[]) => !String(c[0]).startsWith("msab:ingest:dedup:fanout:"),
+  );
+  expect(nonClaim).toHaveLength(0);
 }
 
 describe("EventRouter", () => {
@@ -857,7 +868,7 @@ describe("EventRouter", () => {
         await new EventRouter(io, repo, clientManager, logger, redis).route(blockEvent(OLDER));
         await flushPromises();
 
-        expect(redis.set).not.toHaveBeenCalled();
+        expectNoNonClaimSet(redis);
         expect(metrics.laravelEventsStaleRejected.inc).toHaveBeenCalledWith({
           event_type: RELAY_EVENTS.room.ROOM_MEMBER_REMOVED,
         });
@@ -897,7 +908,7 @@ describe("EventRouter", () => {
         await flushPromises();
         await flushPromises();
 
-        expect(redis.set).not.toHaveBeenCalled();
+        expectNoNonClaimSet(redis);
         expect(seatRepository.leaveSeat).not.toHaveBeenCalled();
         expect(userRoomRepository.clear).not.toHaveBeenCalled();
         expect(statusCoalescer.schedule).not.toHaveBeenCalled();
@@ -999,7 +1010,7 @@ describe("EventRouter", () => {
         expect(key).toBe("auth:user_revoked:42");
         expect(value).toBe("1700000100");
         // The plain unconditional SET is gone — that was the replay hazard.
-        expect(redis.set).not.toHaveBeenCalled();
+        expectNoNonClaimSet(redis);
       });
 
       it("a replayed revocation does not overwrite a newer one", async () => {
@@ -1023,7 +1034,7 @@ describe("EventRouter", () => {
         await flushPromises();
 
         expect(redis.eval).not.toHaveBeenCalled();
-        expect(redis.set).not.toHaveBeenCalled();
+        expectNoNonClaimSet(redis);
         expect(logger.error).toHaveBeenCalled();
       });
     });
@@ -1048,5 +1059,148 @@ describe("EventRouter", () => {
 
       expect(redis.set).toHaveBeenCalledWith("room:7:blocked:42", "1", "EX", 3600);
     });
+  });
+});
+
+// ─── aws-production 22: fleet-wide fan-out claim ─────────────────────────────
+//
+// Laravel fans the same envelope to every instance AND each adapter emit
+// reaches the whole fleet — so exactly ONE instance may perform the emit per
+// event. These tests simulate two instances as two EventRouters sharing one
+// Redis (real SET NX semantics). If the claim gate is ever removed, the
+// "second instance suppresses" test fails — that is the regression guard the
+// ticket requires.
+describe("fleet-wide fan-out claim (aws-production 22)", () => {
+  // Minimal Redis honouring SET ... NX + DEL, shared across "instances".
+  function createNxRedis() {
+    const store = new Set<string>();
+    return {
+      set: vi.fn(
+        async (key: string, _value: string, ...args: unknown[]) => {
+          if (args.includes("NX")) {
+            if (store.has(key)) return null;
+            store.add(key);
+            return "OK";
+          }
+          store.add(key);
+          return "OK";
+        },
+      ),
+      del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
+      _store: store,
+    } as any;
+  }
+
+  function createInstance(redis: any) {
+    const io = createMockIO();
+    const repo = createMockRepo();
+    return {
+      io,
+      repo,
+      router: new EventRouter(io, repo, createMockClientManager(), createMockLogger(), redis),
+    };
+  }
+
+  let redis: ReturnType<typeof createNxRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = createNxRedis();
+  });
+
+  it("emits exactly once across two instances receiving the same room event", async () => {
+    const a = createInstance(redis);
+    const b = createInstance(redis);
+    const event = createEvent({ room_id: 123, user_id: null });
+
+    const first = await a.router.route(event);
+    const second = await b.router.route(event);
+
+    expect(a.io.to).toHaveBeenCalledWith("123");
+    expect(b.io.to).not.toHaveBeenCalled();
+    // Suppression is not a delivery failure — Laravel must not retry it.
+    expect(first.delivered).toBe(true);
+    expect(second.delivered).toBe(true);
+    expect(metrics.laravelEventsFanoutSuppressed.inc).toHaveBeenCalledTimes(1);
+    expect(metrics.laravelEventsFanoutSuppressed.inc).toHaveBeenCalledWith({
+      event_type: "balance.updated",
+    });
+  });
+
+  it("emits exactly once for broadcast events too", async () => {
+    const a = createInstance(redis);
+    const b = createInstance(redis);
+    const event = createEvent({ room_id: null, user_id: null });
+
+    await a.router.route(event);
+    await b.router.route(event);
+
+    expect(a.io.emit).toHaveBeenCalledTimes(1);
+    expect(b.io.emit).not.toHaveBeenCalled();
+  });
+
+  it("still runs per-instance side effects on the suppressed instance", async () => {
+    const a = createInstance(redis);
+    const b = createInstance(redis);
+    // force_disconnect: adapter emit is claimed, but disconnecting LOCAL
+    // sockets must happen on every instance holding one.
+    const socketB = { emit: vi.fn(), disconnect: vi.fn() };
+    b.io.sockets.sockets = new Map([["sock-b", socketB]]);
+    b.repo.getSocketIds.mockResolvedValue(["sock-b"]);
+    a.repo.getSocketIds.mockResolvedValue([]);
+
+    const event = createEvent({
+      event: RELAY_EVENTS.auth.FORCE_DISCONNECT,
+      user_id: 42,
+      room_id: null,
+      payload: { reason: "suspended" },
+    });
+
+    await a.router.route(event); // wins the claim
+    await b.router.route(event); // suppressed emit — local disconnect still runs
+
+    expect(socketB.disconnect).toHaveBeenCalledWith(true);
+    expect(socketB.emit).toHaveBeenCalledWith(
+      "auth:force_disconnect",
+      expect.objectContaining({ reason: "suspended" }),
+    );
+  });
+
+  it("fails open when the event has no correlation id", async () => {
+    const a = createInstance(redis);
+    const b = createInstance(redis);
+    const event = createEvent({ room_id: 123, user_id: null, correlation_id: "unknown" });
+
+    await a.router.route(event);
+    await b.router.route(event);
+
+    // No usable claim key — both emit (duplicates preferred over silence).
+    expect(a.io.to).toHaveBeenCalledWith("123");
+    expect(b.io.to).toHaveBeenCalledWith("123");
+  });
+
+  it("fails open when Redis errors on the claim", async () => {
+    redis.set.mockRejectedValue(new Error("redis down"));
+    const a = createInstance(redis);
+
+    const result = await a.router.route(createEvent({ room_id: 123, user_id: null }));
+
+    expect(a.io.to).toHaveBeenCalledWith("123");
+    expect(result.delivered).toBe(true);
+  });
+
+  it("releases the claim when routing throws after winning it", async () => {
+    const a = createInstance(redis);
+    a.io.to.mockImplementation(() => {
+      throw new Error("adapter exploded");
+    });
+
+    const result = await a.router.route(createEvent({ room_id: 123, user_id: null }));
+    await flushPromises();
+
+    expect(result.delivered).toBe(false);
+    expect(redis.del).toHaveBeenCalledTimes(1);
+    // The claim is free again — a redelivery can emit.
+    expect(redis._store.size).toBe(0);
   });
 });

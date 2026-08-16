@@ -109,14 +109,36 @@ function canonicalize(value: unknown): unknown {
  * instance routes it to its own local sockets. A fleet-wide key would make the
  * first instance to arrive suppress the event for all the others. Scoping by
  * instance suppresses redelivery to the same instance — the actual at-least-once
- * defect — and changes nothing about fan-out.
+ * defect — and changes nothing about fan-out. The fan-out problem (each
+ * instance's adapter emit ALSO reaching the whole fleet) is owned by the
+ * fleet-scoped claim below (`buildFanoutClaimKey`), which elects one emitter
+ * without stopping the others from processing their copy.
  */
 export function buildDedupKey(event: LaravelEvent): string | null {
+  const fingerprint = eventFingerprint(event);
+  if (fingerprint === null) {
+    return null;
+  }
+
+  // INSTANCE_ID is resolved at boot from IMDSv2 / hostname; the fallback keeps
+  // the key well-formed on a host where neither answered, at the cost of that
+  // host sharing a namespace with any other equally-unidentified host.
+  const instance = config.INSTANCE_ID || "unidentified";
+
+  return `${KEY_PREFIX}:${instance}:${fingerprint}`;
+}
+
+/**
+ * The whole-envelope fingerprint shared by the per-instance dedup key and the
+ * fleet-wide fan-out claim, or `null` when the event has no usable correlation
+ * id (both gates fail open in that case).
+ */
+function eventFingerprint(event: LaravelEvent): string | null {
   if (!event.correlation_id || event.correlation_id === ABSENT_CORRELATION_ID) {
     return null;
   }
 
-  const fingerprint = createHash("sha256")
+  return createHash("sha256")
     .update(
       JSON.stringify([
         event.correlation_id,
@@ -127,13 +149,53 @@ export function buildDedupKey(event: LaravelEvent): string | null {
       ]),
     )
     .digest("hex");
+}
 
-  // INSTANCE_ID is resolved at boot from IMDSv2 / hostname; the fallback keeps
-  // the key well-formed on a host where neither answered, at the cost of that
-  // host sharing a namespace with any other equally-unidentified host.
-  const instance = config.INSTANCE_ID || "unidentified";
+/**
+ * Fleet-wide fan-out claim key (aws-production 22) — deliberately NOT
+ * instance-scoped, unlike `buildDedupKey` above.
+ *
+ * Two redundant fan-out mechanisms exist: Laravel POSTs the same envelope to
+ * every instance, and every `io.to(...).emit()` rides the Redis adapter
+ * fleet-wide. On an N-instance fleet a client therefore receives each event
+ * N times. Every instance must still PROCESS its copy (Redis mirrors, local
+ * socket-data sync, seat ejection are per-instance work), so the ingest dedup
+ * key above stays instance-scoped — but only ONE instance may perform the
+ * adapter emit. This key elects that instance: first SET NX wins and emits;
+ * everyone else skips the emit and does the local work only.
+ *
+ * Under the SQS transport (single competing consumer per event) exactly one
+ * instance ingests, wins this claim trivially, and the adapter emit still
+ * reaches the whole fleet — the claim is a no-op there, not a hazard.
+ */
+export function buildFanoutClaimKey(event: LaravelEvent): string | null {
+  const fingerprint = eventFingerprint(event);
+  if (fingerprint === null) {
+    return null;
+  }
+  return `${KEY_PREFIX}:fanout:${fingerprint}`;
+}
 
-  return `${KEY_PREFIX}:${instance}:${fingerprint}`;
+/**
+ * Claim the fleet-wide adapter emit for one event. `true` = this instance
+ * emits; `false` = another instance already emitted.
+ *
+ * Suppresses ONLY on positive evidence (SET NX answering `null`, i.e. the key
+ * already exists). Any error — and any non-Redis stand-in that answers
+ * something other than `null` — resolves to `true`: a duplicated toast is a
+ * far smaller incident than a silently dropped event.
+ */
+export async function claimFanoutEmit(
+  redis: Redis,
+  key: string,
+  ttlSeconds: number = DEDUP_TTL_SECONDS,
+): Promise<boolean> {
+  try {
+    const result = await redis.set(key, "1", "EX", ttlSeconds, "NX");
+    return result !== null;
+  } catch {
+    return true;
+  }
 }
 
 /**

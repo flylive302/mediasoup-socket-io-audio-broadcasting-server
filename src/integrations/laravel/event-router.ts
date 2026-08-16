@@ -36,6 +36,11 @@ import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { UserRoomRepository } from "./user-room.repository.js";
 import { ejectRoomMember } from "@src/domains/room/ejectRoomMember.js";
+import {
+  buildFanoutClaimKey,
+  claimFanoutEmit,
+  releaseClaim,
+} from "@src/infrastructure/event-dedup.js";
 
 /** Payload for auth.force_disconnect relay event */
 interface ForceDisconnectPayload {
@@ -119,25 +124,46 @@ export class EventRouter {
       "Routing event",
     );
 
+    // aws-production 22: fleet-wide fan-out claim. Laravel fans the same
+    // envelope to every instance AND every io.to().emit() rides the Redis
+    // adapter fleet-wide — two redundant fan-outs, so an N-instance fleet
+    // delivers each event N times per client. Every instance still runs its
+    // per-instance work below (Redis mirrors, local socket-data sync, seat
+    // ejection), but only the claim winner performs the adapter emit.
+    // Fails open (no redis / no correlation id / Redis error → emit).
+    let fanoutClaimKey: string | null = null;
+    let shouldEmit = true;
+    if (this.redis) {
+      fanoutClaimKey = buildFanoutClaimKey(event);
+      if (fanoutClaimKey !== null) {
+        shouldEmit = await claimFanoutEmit(this.redis, fanoutClaimKey);
+      }
+    }
+    if (!shouldEmit) {
+      metrics.laravelEventsFanoutSuppressed.inc({ event_type: event.event });
+    }
+
     try {
       let result: EventRoutingResult;
 
       switch (target.type) {
         case "user":
         case "user_in_room":
-          result = await this.emitToUser(
-            target.userId,
-            event.event,
-            event.payload,
-          );
+          result = shouldEmit
+            ? await this.emitToUser(target.userId, event.event, event.payload)
+            : { delivered: true, targetCount: 0 };
           break;
 
         case "room":
-          result = this.emitToRoom(target.roomId, event.event, event.payload);
+          result = shouldEmit
+            ? this.emitToRoom(target.roomId, event.event, event.payload)
+            : { delivered: true, targetCount: 0 };
           break;
 
         case "broadcast":
-          result = this.emitToAll(event.event, event.payload);
+          result = shouldEmit
+            ? this.emitToAll(event.event, event.payload)
+            : { delivered: true, targetCount: 0 };
           break;
       }
 
@@ -298,6 +324,12 @@ export class EventRouter {
 
       return result;
     } catch (err) {
+      // Hand the fan-out claim back so a redelivery of this envelope can still
+      // emit — a throw after a won claim would otherwise silence the event
+      // fleet-wide for the claim TTL.
+      if (shouldEmit && fanoutClaimKey !== null) {
+        void releaseClaim(this.redis, fanoutClaimKey);
+      }
       this.logger.error(
         {
           err,
@@ -381,8 +413,9 @@ export class EventRouter {
 
   /**
    * Emit event to all sockets in a room.
-   * Emits unconditionally — Redis adapter handles cross-instance delivery.
-   * Local room count is informational only (not a delivery gate).
+   * The Redis adapter delivers fleet-wide, which is why route() lets only the
+   * fan-out-claim winner call this (aws-production 22). Local room count is
+   * informational only (not a delivery gate).
    */
   private emitToRoom(
     roomId: string,

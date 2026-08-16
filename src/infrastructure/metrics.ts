@@ -199,6 +199,22 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  /**
+   * Adapter emits suppressed by the fleet-wide fan-out claim (aws-production
+   * 22). Laravel fans the same envelope to every instance AND each adapter
+   * emit reaches the whole fleet — so exactly ONE instance may emit per
+   * event. On a single-instance fleet this stays flat at zero; on an
+   * N-instance fleet a healthy rate is (N−1)/N of room/user/broadcast events
+   * received. A flat zero on a multi-instance fleet means the claim is not
+   * engaging and clients are receiving duplicates.
+   */
+  laravelEventsFanoutSuppressed: new Counter({
+    name: "flylive_laravel_events_fanout_suppressed_total",
+    help: "Laravel event adapter emits suppressed because another instance already emitted",
+    labelNames: ["event_type"] as const,
+    registers: [metricsRegistry],
+  }),
+
   // Laravel Events backpressure
   laravelEventsInFlight: new Gauge({
     name: "flylive_laravel_events_in_flight",
