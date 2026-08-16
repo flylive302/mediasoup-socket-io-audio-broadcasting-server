@@ -457,3 +457,9 @@ variable "loadgen_harness_s3_uri" {
   type        = string
   default     = ""
 }
+
+variable "manage_audio_dns" {
+  description = "Create the audio_domain → NLB CNAME in each region. ⛔ Keep false in production until the ticket-28 cutover — audio.flyliveapp.com is a live A-record to Vultr; creating the CNAME IS the flip."
+  type        = bool
+  default     = true
+}

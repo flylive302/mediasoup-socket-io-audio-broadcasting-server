@@ -110,7 +110,11 @@ module "loadbalancer" {
 # Base audio hostname → NLB. DNS-only (never proxied): the NLB terminates TLS
 # itself with the ACM cert, and WebRTC/socket traffic is not Cloudflare-HTTP.
 # Per-instance hostnames are a separate surface (aws-production ticket 16).
+# ⛔ Gated (manage_audio_dns): in production audio.flyliveapp.com is a LIVE
+# A-record to Vultr until the ticket-28 cutover — creating this CNAME before
+# then IS the DNS flip. Staging keeps it on (its hostname serves nothing yet).
 resource "cloudflare_dns_record" "audio" {
+  count   = var.manage_audio_dns ? 1 : 0
   zone_id = var.cloudflare_zone_id
   name    = var.audio_domain
   type    = "CNAME"

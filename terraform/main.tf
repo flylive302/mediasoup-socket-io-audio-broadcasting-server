@@ -173,6 +173,7 @@ module "region_mumbai" {
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
+  manage_audio_dns                      = var.manage_audio_dns
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture
@@ -252,6 +253,7 @@ module "region_frankfurt" {
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
+  manage_audio_dns                      = var.manage_audio_dns
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture
@@ -311,6 +313,7 @@ module "region_singapore" {
   redis_auth_token                      = var.redis_auth_token
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
+  manage_audio_dns                      = var.manage_audio_dns
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture

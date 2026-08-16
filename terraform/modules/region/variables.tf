@@ -189,3 +189,9 @@ variable "loadgen_security_group_id" {
   type        = string
   default     = ""
 }
+
+variable "manage_audio_dns" {
+  description = "Create the audio_domain → NLB CNAME. ⛔ false in production until the ticket-28 cutover: the name is a LIVE A-record to Vultr, and creating this CNAME is the DNS flip."
+  type        = bool
+  default     = true
+}
