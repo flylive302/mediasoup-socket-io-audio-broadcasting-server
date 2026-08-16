@@ -48,7 +48,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.10"
+          terraform_version: "~1.14"
 
       - name: Init (no backend — offline)
         run: terraform init -backend=false -input=false
@@ -89,7 +89,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.10"
+          terraform_version: "~1.14"
 
       - name: Materialize gitignored backend + tfvars from secrets
         env:
