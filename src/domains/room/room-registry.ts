@@ -46,6 +46,15 @@ const OWNER_TTL_SECONDS = 90;
  */
 const OWNER_CACHE_MS = 5_000;
 
+/**
+ * aws-production/23: what a refresh actually did, so the holder can react.
+ *   "held"      — claim still ours; TTL extended.
+ *   "reclaimed" — key had expired with NO rival claim; atomically re-taken.
+ *   "lost"      — someone else holds the claim (or it expired and reclaim was
+ *                 not allowed). The caller must stop acting as origin.
+ */
+export type RefreshResult = "held" | "reclaimed" | "lost";
+
 export interface ClaimResult {
   /** True if this instance won the claim and should become origin. */
   won: boolean;
@@ -142,14 +151,33 @@ export class RoomRegistry {
    * F-34: refresh the short-TTL ownership claim. Called both on room activity
    * (join) and by RoomManager's periodic heartbeat so an idle but live origin
    * keeps its claim, while a crashed origin's claim expires in ≤OWNER_TTL_SECONDS.
+   *
+   * aws-production/23 (incident B1): the old Lua was a pure no-op once the key
+   * expired — an owner that ever missed 90s (GC pause, Redis blip, CPU
+   * saturation) never re-established its claim, kept its local cluster, and
+   * silently stopped being origin. With `allowReclaim`, an expired-but-unclaimed
+   * key is atomically re-taken in the same script (Redis serializes evals, so
+   * two racing reclaimers can't both win). A key held by a RIVAL is never
+   * touched — that is reported as "lost" and the caller must step down.
+   * `allowReclaim` stays false for callers that merely hold a room without
+   * owning it (cascade edges, the join-path courtesy refresh).
    */
-  async refreshOwnership(roomId: string, instanceId: string): Promise<void> {
+  async refreshOwnership(
+    roomId: string,
+    instanceId: string,
+    opts?: { allowReclaim?: boolean },
+  ): Promise<RefreshResult> {
     const key = `${KEY_PREFIX}${roomId}:owner`;
-    // Lua: only refresh if we still own it (prevents resurrecting a key after another instance reclaimed)
-    await this.redis.eval(
+    const result = await this.redis.eval(
       `
-      if redis.call('GET', KEYS[1]) == ARGV[1] then
-        return redis.call('EXPIRE', KEYS[1], ARGV[2])
+      local cur = redis.call('GET', KEYS[1])
+      if cur == ARGV[1] then
+        redis.call('EXPIRE', KEYS[1], ARGV[2])
+        return 1
+      end
+      if (not cur) and ARGV[3] == '1' then
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        return 2
       end
       return 0
       `,
@@ -157,7 +185,21 @@ export class RoomRegistry {
       key,
       instanceId,
       OWNER_TTL_SECONDS.toString(),
+      opts?.allowReclaim ? "1" : "0",
     );
+
+    if (result === 2) {
+      // Drop the cached read so isOwner reflects the reclaim immediately —
+      // a stale cached "false" here would suppress origin duties for up to
+      // OWNER_CACHE_MS after the self-heal.
+      this.ownerCache.delete(roomId);
+      this.logger.warn(
+        { roomId, instanceId },
+        "RoomRegistry: expired ownership claim reclaimed (owner stalled past TTL with no rival)",
+      );
+      return "reclaimed";
+    }
+    return result === 1 ? "held" : "lost";
   }
 
   // ─── Origin Info ────────────────────────────────────────────────

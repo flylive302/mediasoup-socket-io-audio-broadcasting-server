@@ -329,6 +329,20 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // aws-production/23: room origin-ownership transfers, as seen by the HOLDER.
+  // `kind` is a closed set: "reclaimed" (the owner's claim expired with no
+  // rival and was atomically re-taken — a stall self-heal; signals the process
+  // paused past the CAS TTL) and "stepped_down" (a rival claimed during the
+  // stall and this instance demoted itself — a real transfer). Steady state is
+  // ZERO; the incident baseline was 10–14 transfers/room/day. Page on any
+  // sustained stepped_down outside a drain window.
+  ownershipTransfers: new Counter({
+    name: "flylive_ownership_transfers_total",
+    help: "Room origin ownership transfers observed by the holding instance",
+    labelNames: ["kind"] as const, // reclaimed | stepped_down
+    registers: [metricsRegistry],
+  }),
+
   // observability-audio-quality 01: the live distribution of the SFU's own
   // 0–10 audio quality score across the fleet. Higher is better, so the
   // interesting tail is the LOW end — alarm on p01/p10, not on p90.

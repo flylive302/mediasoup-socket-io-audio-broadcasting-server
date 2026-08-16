@@ -156,8 +156,24 @@ export class RoomManager {
       const tracker = this.presenceTracker;
       const selfId = config.INSTANCE_ID;
       for (const roomId of this.rooms.keys()) {
+        // aws-production/23 (incident B1): the refresh result is consumed, not
+        // discarded. An expired-but-unclaimed key is atomically reclaimed (the
+        // common stall outcome — rivals only claim when a client lands on
+        // them); a key a rival now holds forces an explicit step-down. Cascade
+        // EDGE rooms are excluded from both: "lost" is their steady state and
+        // reclaiming would steal the origin's claim.
+        const isEdgeRoom =
+          this.cascadeCoordinator?.isEdgeRoom(roomId) ?? false;
         registry
-          ?.refreshOwnership(roomId, selfId)
+          ?.refreshOwnership(roomId, selfId, { allowReclaim: !isEdgeRoom })
+          .then((result) => {
+            if (isEdgeRoom) return;
+            if (result === "reclaimed") {
+              metrics.ownershipTransfers.inc({ kind: "reclaimed" });
+            } else if (result === "lost") {
+              this.stepDownAsOrigin(roomId);
+            }
+          })
           .catch((err) =>
             reactError(err, { roomId }, "Ownership heartbeat refresh failed"),
           );
@@ -298,6 +314,28 @@ export class RoomManager {
       clientManager,
       getRoom: (id) => this.getRoom(id),
     });
+  }
+
+  /**
+   * aws-production/23: explicit demotion after losing the ownership claim to a
+   * rival (detected by the heartbeat refresh, ≤~30s after the stall ends).
+   * Three effects, all idempotent:
+   *  - stop the HLS publisher so two origins never write the same stream
+   *  - drop the cached ownership read so every owns-gate (mode flips, seat
+   *    sweep, broadcast spawn) reads a fresh `false` immediately
+   *  - meter the transfer — steady state is zero, alarms page on this.
+   * Connected clients are NOT dropped: interactive audio keeps flowing through
+   * this box until they naturally reconnect and Laravel's resolver routes them
+   * to the new owner. The room's local cluster stays; only origin DUTIES stop.
+   */
+  private stepDownAsOrigin(roomId: string): void {
+    this.roomRegistry?.forgetOwnerCache(roomId);
+    this.broadcastOnRoomClosed?.(roomId);
+    metrics.ownershipTransfers.inc({ kind: "stepped_down" });
+    logger.error(
+      { roomId, instanceId: config.INSTANCE_ID },
+      "Ownership lost to a rival while holding the room — stepped down as origin",
+    );
   }
 
   /** Stop the ownership heartbeat — called during graceful shutdown. */
