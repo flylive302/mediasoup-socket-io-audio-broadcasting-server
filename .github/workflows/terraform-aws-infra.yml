@@ -100,20 +100,29 @@ jobs:
         # greenfield provisioning necessarily bakes an initial tag.
         run: |
           terraform show -json tfplan > plan.json
-          VIOLATIONS=$(jq -r '
-            [.resource_changes[]?
+          # user_data is base64gzip()'d (modules/autoscaling/main.tf) — a plain
+          # @base64d in jq greps compressed bytes and NEVER matches, so the tag
+          # diff must be extracted in shell: base64 -d, then gunzip (with a
+          # plain-text fallback for any future un-gzipped template).
+          extract_tags() {
+            printf '%s' "$1" | base64 -d > blob.bin 2>/dev/null || : > blob.bin
+            { gunzip -c blob.bin 2>/dev/null || cat blob.bin; } \
+              | grep -oE 'sha-[0-9a-f]{8}' | sort -u | paste -sd, -
+          }
+          VIOLATIONS=""
+          while IFS=$'\t' read -r addr before after; do
+            [ -n "$addr" ] || continue
+            before_tags=$(extract_tags "$before")
+            after_tags=$(extract_tags "$after")
+            if [ "$before_tags" != "$after_tags" ]; then
+              VIOLATIONS="${VIOLATIONS}${addr}: ${before_tags:-none} -> ${after_tags:-none}"$'\n'
+            fi
+          done < <(jq -r '.resource_changes[]?
               | select(.type == "aws_launch_template")
               | select(.change.before != null)
-              | {addr: .address,
-                 before: (.change.before.user_data // ""),
-                 after:  (.change.after.user_data  // "")}
-              | select(.before != .after)
-              | {addr,
-                 before_tags: ([.before | @base64d | capture("(?<t>sha-[0-9a-f]{8})"; "g") | .t] | sort),
-                 after_tags:  ([.after  | @base64d | capture("(?<t>sha-[0-9a-f]{8})"; "g") | .t] | sort)}
-              | select(.before_tags != .after_tags)
-              | "\(.addr): \(.before_tags | join(",")) -> \(.after_tags | join(","))"
-            ] | .[]' plan.json)
+              | select((.change.before.user_data // "") != (.change.after.user_data // ""))
+              | [.address, (.change.before.user_data // ""), (.change.after.user_data // "")]
+              | @tsv' plan.json)
           if [ -n "$VIOLATIONS" ]; then
             echo "::error::Plan would change the running application image — that is deploy.yml's job, not this pipeline's:"
             echo "$VIOLATIONS"
