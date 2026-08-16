@@ -8,6 +8,7 @@ import type {
   BatchProcessingResult,
   CascadeInfo,
   GiftTransaction,
+  RepinBatchResult,
   RoomStatusUpdate,
 } from "./types.js";
 
@@ -252,6 +253,66 @@ export class LaravelClient {
       throw error;
     } finally {
       clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Mark THIS instance draining (true) or back in service (false) in
+   * Laravel's placement registry (aws-production/20). Identity travels via
+   * the X-Instance-ID header every call already carries — Laravel refuses
+   * payload-named instances, so MSAB can only ever drain itself.
+   * Returns whether Laravel acknowledged; never throws (drain must proceed
+   * even when Laravel is unreachable).
+   */
+  async setInstanceDraining(draining: boolean): Promise<boolean> {
+    try {
+      const response = await this.post("/api/v1/internal/instances/draining", {
+        draining,
+      });
+
+      if (!response.ok) {
+        this.logger.error(
+          { status: response.status, draining },
+          "Failed to set instance draining flag",
+        );
+      }
+
+      return response.ok;
+    } catch (error) {
+      this.logger.error({ error, draining }, "Error setting instance draining flag");
+      return false;
+    }
+  }
+
+  /**
+   * Ask Laravel to re-pin one bounded batch of this instance's Rooms to
+   * healthy instances (aws-production/20). Returns Laravel's honest batch
+   * counts, or null on any failure — callers decide whether to retry.
+   */
+  async repinRooms(limit: number): Promise<RepinBatchResult | null> {
+    try {
+      const response = await this.post("/api/v1/internal/instances/repin-rooms", {
+        limit,
+      });
+
+      if (!response.ok) {
+        this.logger.error(
+          { status: response.status },
+          "Failed to re-pin rooms batch",
+        );
+        return null;
+      }
+
+      const data = (await response.json()) as Record<string, unknown>;
+
+      return {
+        repinned: typeof data.repinned === "number" ? data.repinned : 0,
+        unplaced: typeof data.unplaced === "number" ? data.unplaced : 0,
+        remaining: typeof data.remaining === "number" ? data.remaining : 0,
+      };
+    } catch (error) {
+      this.logger.error({ error }, "Error re-pinning rooms batch");
+      return null;
     }
   }
 
@@ -502,6 +563,14 @@ const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
     "/api/v1/internal/rooms/:id/members/:id/role",
   ],
   [/^\/api\/v1\/internal\/rooms\/[^/]+$/, "/api/v1/internal/rooms/:id"],
+  [
+    /^\/api\/v1\/internal\/instances\/draining$/,
+    "/api/v1/internal/instances/draining",
+  ],
+  [
+    /^\/api\/v1\/internal\/instances\/repin-rooms$/,
+    "/api/v1/internal/instances/repin-rooms",
+  ],
   [/^\/api\/v1\/internal\/users\/revoked$/, "/api/v1/internal/users/revoked"],
 ];
 

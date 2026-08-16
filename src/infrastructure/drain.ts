@@ -14,6 +14,7 @@
  */
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { RoomManager } from "@src/domains/room/roomManager.js";
+import type { RepinBatchResult } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { logger } from "./logger.js";
 import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
@@ -32,6 +33,49 @@ export interface DrainReport {
   outcome: DrainOutcome;
   roomsStillOpen: number;
   durationMs: number;
+  /**
+   * Cumulative re-pin totals when the affinity re-pin loop ran (aws-production/20),
+   * null when it didn't (affinity off / no client registered). Purely additive —
+   * never changes what `outcome` means.
+   */
+  repin?: RepinSummary | null;
+}
+
+/** Cumulative totals across all re-pin batches of one drain. */
+export interface RepinSummary {
+  repinned: number;
+  unplaced: number;
+  remaining: number;
+}
+
+/**
+ * The slice of LaravelClient the drain re-pin loop needs (aws-production/20).
+ * Registered from the composition root so this module stays free of a direct
+ * LaravelClient construction dependency.
+ */
+export interface DrainRepinClient {
+  setInstanceDraining(draining: boolean): Promise<boolean>;
+  repinRooms(limit: number): Promise<RepinBatchResult | null>;
+}
+
+/**
+ * Rooms moved per re-pin batch. Bounded so one draining instance never lands
+ * its whole Room set on the receiver at once (self-inflicted thundering herd).
+ * Epic 3b inherits this as the receiving-capacity assumption: a 50%-fleet
+ * refresh moves rooms at ≤ BATCH_SIZE per instance per BATCH_INTERVAL, so the
+ * surviving half absorbs a paced trickle, not a step function.
+ */
+export const REPIN_BATCH_SIZE = 25;
+export const REPIN_BATCH_INTERVAL_MS = 2_000;
+/** Consecutive Laravel failures before the loop gives up (drain continues regardless). */
+export const REPIN_MAX_CONSECUTIVE_FAILURES = 3;
+
+let repinClient: DrainRepinClient | null = null;
+let repinSummary: RepinSummary | null = null;
+
+/** Wire the Laravel client the drain loop re-pins through. Null clears it (tests). */
+export function registerDrainRepinClient(client: DrainRepinClient | null): void {
+  repinClient = client;
 }
 
 let draining = false;
@@ -78,7 +122,12 @@ export function getDrainReport(): DrainReport | null {
  */
 export function startDrain(
   roomManager: RoomManager,
-  opts?: { timeoutMs?: number; onComplete?: (report: DrainReport) => void },
+  opts?: {
+    timeoutMs?: number;
+    onComplete?: (report: DrainReport) => void;
+    /** Test seam; production reads config.AFFINITY_ENABLED. */
+    affinityEnabled?: () => boolean;
+  },
 ): void {
   if (draining) {
     logger.warn("Drain mode already active");
@@ -88,6 +137,7 @@ export function startDrain(
   draining = true;
   drained = false;
   lastDrainReport = null;
+  repinSummary = null;
   drainStartedAt = Date.now();
   drainTimeoutMs = opts?.timeoutMs ?? 600_000;
   onDrainComplete = opts?.onComplete ?? null;
@@ -96,6 +146,15 @@ export function startDrain(
     { timeoutMs: drainTimeoutMs },
     "🔄 Drain mode activated — rejecting new connections, waiting for rooms to close",
   );
+
+  // aws-production/20: under affinity, drain MOVES rooms (re-pins them to
+  // healthy instances via Laravel) instead of only waiting them out. Runs
+  // beside the poll/timeout machinery and never blocks or alters it — a
+  // Laravel outage degrades drain back to exactly its pre-affinity behavior.
+  const affinityEnabled = opts?.affinityEnabled ?? (() => config.AFFINITY_ENABLED);
+  if (affinityEnabled() && repinClient) {
+    void runRepinLoop(repinClient);
+  }
 
   // Poll room count every 5 seconds
   drainPollHandle = setInterval(() => {
@@ -119,6 +178,74 @@ export function startDrain(
 }
 
 /**
+ * The affinity drain re-pin loop (aws-production/20). Marks this instance
+ * draining in Laravel's placement registry (so nothing re-pins ONTO it —
+ * including a peer draining at the same time), then pulls bounded re-pin
+ * batches until Laravel reports none of our rooms remain, progress stalls
+ * (no healthy target), or the drain itself ends.
+ *
+ * Every exit path is honest: totals accumulate in `repinSummary`, which the
+ * final DrainReport and /admin/status expose — a stalled loop never reads as
+ * "all rooms moved".
+ */
+async function runRepinLoop(client: DrainRepinClient): Promise<void> {
+  repinSummary = { repinned: 0, unplaced: 0, remaining: -1 };
+
+  const acknowledged = await client.setInstanceDraining(true);
+  if (!acknowledged) {
+    logger.warn(
+      "Laravel did not acknowledge the draining flag — re-pins may land back on this instance",
+    );
+  }
+
+  let consecutiveFailures = 0;
+
+  while (draining && !drained) {
+    const batch = await client.repinRooms(REPIN_BATCH_SIZE);
+
+    if (batch === null) {
+      if (++consecutiveFailures >= REPIN_MAX_CONSECUTIVE_FAILURES) {
+        logger.warn(
+          { consecutiveFailures, repinSummary },
+          "⚠️ Re-pin loop giving up after repeated Laravel failures — drain continues by waiting rooms out",
+        );
+        return;
+      }
+    } else {
+      consecutiveFailures = 0;
+      repinSummary.repinned += batch.repinned;
+      repinSummary.unplaced += batch.unplaced;
+      repinSummary.remaining = batch.remaining;
+
+      logger.info({ batch, repinSummary }, "Drain re-pin batch applied");
+
+      if (batch.remaining === 0) {
+        logger.info({ repinSummary }, "✅ All rooms re-pinned away from this instance");
+        return;
+      }
+
+      if (batch.repinned === 0) {
+        logger.warn(
+          { repinSummary },
+          "⚠️ Re-pin loop stalled — no healthy target for the remaining rooms; drain continues by waiting them out",
+        );
+        return;
+      }
+    }
+
+    await sleepUnref(REPIN_BATCH_INTERVAL_MS);
+  }
+}
+
+/** setTimeout-based sleep that never keeps a shutting-down process alive. */
+function sleepUnref(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const handle = setTimeout(resolve, ms);
+    handle.unref?.();
+  });
+}
+
+/**
  * Complete the drain process. Builds the honest DrainReport — this is the
  * ONLY place drain completion is reported, so every caller (logs, HTTP
  * responses, onComplete callback) sees the same truthful outcome.
@@ -139,7 +266,7 @@ function completeDrain(outcome: DrainOutcome, roomsStillOpen: number): void {
   }
 
   const durationMs = drainStartedAt ? Date.now() - drainStartedAt : 0;
-  const report: DrainReport = { outcome, roomsStillOpen, durationMs };
+  const report: DrainReport = { outcome, roomsStillOpen, durationMs, repin: repinSummary };
   lastDrainReport = report;
 
   if (outcome === "all_rooms_closed") {
@@ -170,6 +297,7 @@ export function resetDrain(): void {
   drained = false;
   drainStartedAt = null;
   lastDrainReport = null;
+  repinSummary = null;
   onDrainComplete = null;
   if (drainPollHandle) {
     clearInterval(drainPollHandle);
@@ -260,6 +388,15 @@ export const createAdminRoutes = (
 
       resetDrain();
 
+      // aws-production/20: return the instance to Laravel's placement pool.
+      // Fire-and-forget — a failure here self-heals on the next drain cycle
+      // and must not fail the undrain itself.
+      if (wasDraining && repinClient) {
+        repinClient.setInstanceDraining(false).catch((error: unknown) => {
+          logger.warn({ error }, "Failed to clear draining flag in Laravel");
+        });
+      }
+
       logger.info(
         { wasDraining, discardedReport },
         "▶️ Drain cancelled — instance returned to rotation",
@@ -289,6 +426,7 @@ export const createAdminRoutes = (
         drained,
         drainOutcome: lastDrainReport?.outcome ?? null,
         roomsStillOpen: lastDrainReport?.roomsStillOpen ?? null,
+        repin: repinSummary,
         drainStartedAt: drainStartedAt ? new Date(drainStartedAt).toISOString() : null,
         rooms: roomManager.getRoomCount(),
         uptime: process.uptime(),

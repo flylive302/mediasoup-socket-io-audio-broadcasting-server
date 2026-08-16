@@ -11,6 +11,7 @@ import { ClientManager } from "@src/client/clientManager.js";
 // Handlers
 import { GiftHandler } from "@src/domains/gift/giftHandler.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
+import { registerDrainRepinClient } from "@src/infrastructure/drain.js";
 import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
 import { installSocketEventBudget } from "@src/infrastructure/socketEventBudget.js";
 import type { AppContext } from "@src/context.js";
@@ -79,6 +80,11 @@ export async function initializeSocket(
   // Note: LaravelClient is instantiated inside managers/handlers as needed,
   // or we can instantiate one singleton here.
   const laravelClient = new LaravelClient(logger);
+
+  // aws-production/20: under affinity, drain re-pins this instance's rooms
+  // away via Laravel. Registered here (the composition root) so drain.ts
+  // never constructs its own client.
+  registerDrainRepinClient(laravelClient);
 
   // realtime-02: coalesce Room status churn → ≤1 update/Room/window to Laravel.
   const statusCoalescer = new StatusCoalescer(laravelClient, logger);

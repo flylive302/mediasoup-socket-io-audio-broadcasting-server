@@ -64,6 +64,17 @@ export interface RoomStatusUpdate {
 }
 
 /**
+ * Honest counts from one drain re-pin batch (aws-production/20).
+ * `unplaced` = rooms Laravel found no healthy target for (pin kept);
+ * `remaining` = rooms still pinned to this instance after the batch.
+ */
+export interface RepinBatchResult {
+  repinned: number;
+  unplaced: number;
+  remaining: number;
+}
+
+/**
  * Cascade info returned by Laravel for cross-region room routing.
  * Used by edge instances to discover and connect to the origin instance.
  */
