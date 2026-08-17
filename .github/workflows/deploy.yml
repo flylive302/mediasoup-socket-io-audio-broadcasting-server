@@ -293,13 +293,13 @@ jobs:
       fail-fast: false # Don't stop watching other regions if one fails
       max-parallel: 3 # Observation only — the refreshes run concurrently regardless
       matrix:
+        # Must mirror terraform's enabled_regions — a disabled region has no ASG,
+        # so its monitor job can only fail (seen live: ticket-27 first rollout).
+        # Re-add frankfurt (eu-central-1) / singapore (ap-southeast-1) here when
+        # those region modules are actually enabled.
         region:
           - name: mumbai
             aws_region: ap-south-1
-          - name: frankfurt
-            aws_region: eu-central-1
-          - name: singapore
-            aws_region: ap-southeast-1
 
     steps:
       - name: Configure AWS Credentials

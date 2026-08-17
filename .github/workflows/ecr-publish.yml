@@ -71,7 +71,13 @@ jobs:
     # denied (first dispatch failed exactly this way, 2026-08-15). GitHub
     # auto-creates the environment on first reference; it carries no approval
     # gate, so this adds no manual step.
-    environment: aws-staging
+    # aws-production since ticket 27: the staging CI role was destroyed at the
+    # ticket-26 teardown, so aws-staging's role ARN points at nothing. The prod
+    # role's trust pin is repo+environment:aws-production; publishing an image
+    # is within its ECR-push grant. Cost: a dispatch now waits for the
+    # required-reviewer approval — acceptable for a rarely-used side door
+    # (deploy.yml is the normal build path).
+    environment: aws-production
     # Ticket 12: OIDC federation — short-lived identity token, no static keys.
     permissions:
       id-token: write
