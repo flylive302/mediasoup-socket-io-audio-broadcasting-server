@@ -48,6 +48,31 @@ elif ! grep -qE '^\s*proxied\s*=\s*true\s*$' <<<"$audio_dns_block" \
   violations=$((violations + 1))
 fi
 
+# --- Cutover invariant: Capacitor WebView origins stay in the CORS allowlist ---
+# aws-production ticket 28. MSAB's auth middleware (F-63, src/auth/middleware.ts)
+# refuses the socket handshake server-side for any origin not in CORS_ORIGINS.
+# Every mobile client is the Capacitor shell: Android WebView reports
+# Origin: https://localhost, iOS reports capacitor://localhost. The AWS fleet
+# shipped with only the web origins, which a live probe (2026-08-18) showed
+# would have refused every mobile client at the flip while web kept working.
+# This guards the variables.tf DEFAULT — the fallback if a truncated
+# TF_VARS_PROD paste ever drops the cors_origins line from prod.tfvars.
+cors_default=$(awk '/variable "cors_origins"/,/^}/' terraform/variables.tf 2>/dev/null \
+  | grep -E '^\s*default\s*=' || true)
+
+if [[ -z "$cors_default" ]]; then
+  echo "FAIL: cors_origins default not found in terraform/variables.tf"
+  echo "      If the variable was renamed or moved, update this check — do not delete it."
+  violations=$((violations + 1))
+elif ! grep -q 'https://localhost' <<<"$cors_default" \
+  || ! grep -q 'capacitor://localhost' <<<"$cors_default"; then
+  echo "FAIL: cors_origins default must include the Capacitor WebView origins"
+  echo "      (https://localhost for Android, capacitor://localhost for iOS)."
+  echo "      Without them MSAB refuses every mobile client's socket handshake (F-63)."
+  echo "$cors_default"
+  violations=$((violations + 1))
+fi
+
 if [[ $violations -gt 0 ]]; then
   echo "MSAB architecture checks failed with $violations violation group(s)."
   exit 1

@@ -31,9 +31,15 @@ variable "environment" {
 }
 
 variable "cors_origins" {
-  description = "Comma-separated CORS origins the MSAB app accepts (the web frontend). Staging overrides with https://app.staging.flyliveapp.com."
+  # Every legitimate client is WebView-backed and MUST be listed here or MSAB's
+  # auth middleware (F-63) refuses the socket handshake server-side: the web
+  # frontend origins PLUS the Capacitor native shell — Android WebView reports
+  # Origin: https://localhost, iOS reports capacitor://localhost. Dropping the
+  # capacitor origins takes every mobile client off audio (probe-verified
+  # against the live fleets, 2026-08-18).
+  description = "Comma-separated CORS origins the MSAB app accepts (web frontend + Capacitor WebView origins). Staging overrides the web origins with https://app.staging.flyliveapp.com."
   type        = string
-  default     = "https://flyliveapp.com,https://app.flyliveapp.com"
+  default     = "https://flyliveapp.com,https://app.flyliveapp.com,https://localhost,capacitor://localhost"
 }
 
 variable "laravel_api_url" {
