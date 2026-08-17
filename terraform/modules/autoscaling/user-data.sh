@@ -212,6 +212,10 @@ SECRET_INTERNAL_KEY=$(fetch_ssm "laravel-internal-key")
 SECRET_SESSION=$(fetch_ssm "session-secret")
 SECRET_TURN_API_KEY=$(fetch_ssm "cloudflare-turn-api-key")
 SECRET_REDIS_AUTH=$(fetch_ssm "redis-auth-token")
+# Rotation overlap (ticket 28) — the parameter only exists while a JWT rotation is
+# in flight, so an EMPTY value here is the normal steady state, not a failure.
+# Deliberately NOT in the critical-secrets gate below for exactly that reason.
+SECRET_JWT_PREVIOUS=$(fetch_ssm "jwt-secret-previous")
 # realtime-09 broadcast HLS R2 keys — optional (only consumed when BROADCAST_HLS_ENABLED);
 # intentionally NOT in the critical-secrets gate so a host boots fine with HLS disabled.
 SECRET_HLS_R2_ACCESS_KEY_ID=$(fetch_ssm "hls-r2-access-key-id")
@@ -239,7 +243,7 @@ fi
 # line. Docker rejects that at `docker run` — i.e. at boot, inside the launch
 # lifecycle hook, on an instance that then health-fails and gets replaced. Fail here
 # instead, with a message that names the parameter.
-for SECRET_NAME in SECRET_JWT SECRET_INTERNAL_KEY SECRET_SESSION SECRET_TURN_API_KEY SECRET_REDIS_AUTH SECRET_HLS_R2_ACCESS_KEY_ID SECRET_HLS_R2_SECRET_ACCESS_KEY; do
+for SECRET_NAME in SECRET_JWT SECRET_JWT_PREVIOUS SECRET_INTERNAL_KEY SECRET_SESSION SECRET_TURN_API_KEY SECRET_REDIS_AUTH SECRET_HLS_R2_ACCESS_KEY_ID SECRET_HLS_R2_SECRET_ACCESS_KEY; do
   if [ "$(printf '%s' "$${!SECRET_NAME}" | wc -l)" -gt 0 ]; then
     echo "❌ FATAL: $SECRET_NAME contains a newline — it cannot be written to a docker --env-file."
     echo "   Fix the SSM parameter value (single line, no CR/LF), then relaunch the instance."
@@ -364,6 +368,7 @@ touch /opt/msab/.env.secrets
 chmod 600 /opt/msab/.env.secrets
 cat > /opt/msab/.env.secrets << SECRETSEOF
 JWT_SECRET=$SECRET_JWT
+JWT_SECRET_PREVIOUS=$SECRET_JWT_PREVIOUS
 LARAVEL_INTERNAL_KEY=$SECRET_INTERNAL_KEY
 INTERNAL_API_KEY=$SECRET_INTERNAL_KEY
 SESSION_SECRET=$SECRET_SESSION

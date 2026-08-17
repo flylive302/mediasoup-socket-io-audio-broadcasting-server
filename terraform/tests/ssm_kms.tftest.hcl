@@ -144,6 +144,69 @@ run "hls_r2_parameters_use_the_customer_managed_key_when_enabled" {
 }
 
 # -----------------------------------------------------------------------------
+# JWT rotation overlap (aws-production/28). The AWS tree had no equivalent of
+# terraform-vultr's jwt_secret_previous, so a JWT rotation here would have been
+# a full audio outage: Laravel flips its signing key instantly, this fleet only
+# picks the new value up on an instance refresh, and every token minted in that
+# gap would fail verification.
+#
+# Two properties are load-bearing and pinned here:
+#   1. OUTSIDE a rotation (the default "") the parameter does not exist at all —
+#      SSM rejects an empty SecureString, and a missing parameter is exactly
+#      what user-data.sh's fetch_ssm() turns into "" (MSAB's own default), so
+#      steady-state boot behaviour is unchanged.
+#   2. DURING a rotation it is a SecureString on the same customer-managed key
+#      as every other secret — an overlap secret is still a secret.
+# -----------------------------------------------------------------------------
+run "jwt_rotation_overlap_parameter_is_absent_outside_a_rotation" {
+  command = plan
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  # jwt_secret_previous deliberately not set — "" is the steady state.
+  assert {
+    condition     = length(aws_ssm_parameter.jwt_secret_previous) == 0
+    error_message = "With no rotation in flight, the jwt-secret-previous parameter must not be created — SSM rejects an empty SecureString, and its absence is what makes JWT_SECRET_PREVIOUS empty at boot"
+  }
+}
+
+# command = apply for the same reason as the runs above — key_id equality
+# referenced through another resource's attribute is unknown at plan time.
+run "jwt_rotation_overlap_parameter_is_a_securestring_on_the_cmk" {
+  command = apply
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  variables {
+    jwt_secret_previous = "outgoing-jwt-secret-0123456789ab"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.jwt_secret_previous) == 1
+    error_message = "A non-empty jwt_secret_previous must create the rotation-overlap parameter"
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.jwt_secret_previous[0].name == "/flylive-audio-production/jwt-secret-previous"
+    error_message = "The rotation-overlap parameter's name must match what user-data.sh fetches (fetch_ssm \"jwt-secret-previous\")"
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.jwt_secret_previous[0].type == "SecureString"
+    error_message = "The rotation-overlap parameter holds a live secret — it must be a SecureString"
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.jwt_secret_previous[0].key_id == aws_kms_key.ssm.key_id
+    error_message = "jwt_secret_previous parameter must be encrypted with the customer-managed key"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # kms:Decrypt is granted to the shared EC2 role, scoped to exactly this
 # region's CMK ARN (not a wildcard), and the policy name is region-qualified
 # so two enabled regions never collide on the same role (see comment above

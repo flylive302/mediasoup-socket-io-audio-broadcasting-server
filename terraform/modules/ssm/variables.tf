@@ -25,6 +25,17 @@ variable "jwt_secret" {
   sensitive   = true
 }
 
+# Rotation overlap — see the root variables.tf comment. "" (the default) means
+# no rotation is in flight, and aws_ssm_parameter.jwt_secret_previous is not
+# created: SSM rejects an empty SecureString value, and a parameter that does
+# not exist is exactly what user-data.sh's fetch_ssm() turns into "".
+variable "jwt_secret_previous" {
+  description = "Rotation overlap for jwt_secret. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "laravel_internal_key" {
   description = "Shared secret key for Laravel API authentication"
   type        = string

@@ -16,9 +16,9 @@ output "kms_alias_name" {
 }
 
 # Map keyed by logical secret name -> SSM parameter name/ARN. The HLS R2 keys
-# are conditionally created (var.broadcast_hls_enabled), so they're included
-# via a merge rather than unconditional references that would fail when the
-# count is 0.
+# are conditionally created (var.broadcast_hls_enabled), and jwt_secret_previous
+# only exists during a rotation, so all of them are included via a merge rather
+# than unconditional references that would fail when the count is 0.
 output "parameter_names" {
   description = "Map of logical secret name to its SSM parameter name"
   value = merge(
@@ -29,6 +29,9 @@ output "parameter_names" {
       cloudflare_turn_api_key = aws_ssm_parameter.cloudflare_turn_api_key.name
       redis_auth_token        = aws_ssm_parameter.redis_auth_token.name
     },
+    length(aws_ssm_parameter.jwt_secret_previous) > 0 ? {
+      jwt_secret_previous = aws_ssm_parameter.jwt_secret_previous[0].name
+    } : {},
     var.broadcast_hls_enabled ? {
       hls_r2_access_key_id     = aws_ssm_parameter.hls_r2_access_key_id[0].name
       hls_r2_secret_access_key = aws_ssm_parameter.hls_r2_secret_access_key[0].name
@@ -46,6 +49,9 @@ output "parameter_arns" {
       cloudflare_turn_api_key = aws_ssm_parameter.cloudflare_turn_api_key.arn
       redis_auth_token        = aws_ssm_parameter.redis_auth_token.arn
     },
+    length(aws_ssm_parameter.jwt_secret_previous) > 0 ? {
+      jwt_secret_previous = aws_ssm_parameter.jwt_secret_previous[0].arn
+    } : {},
     var.broadcast_hls_enabled ? {
       hls_r2_access_key_id     = aws_ssm_parameter.hls_r2_access_key_id[0].arn
       hls_r2_secret_access_key = aws_ssm_parameter.hls_r2_secret_access_key[0].arn

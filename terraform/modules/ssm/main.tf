@@ -100,6 +100,26 @@ resource "aws_ssm_parameter" "jwt_secret" {
   }
 }
 
+# --- JWT Secret, rotation overlap (ticket 28) ---
+# Created ONLY while a rotation is in flight. Outside one the parameter is
+# absent, fetch_ssm() returns "", and JWT_SECRET_PREVIOUS lands in the env-file
+# empty — which is MSAB's own default, so boot behaviour is unchanged.
+# ⚠️ Adding/removing this parameter does NOT restart anything: instances read
+# SSM once, at boot (modules/autoscaling/user-data.sh). A rotation is
+# apply + instance refresh, in that order.
+resource "aws_ssm_parameter" "jwt_secret_previous" {
+  count       = var.jwt_secret_previous == "" ? 0 : 1
+  name        = "/${local.env_prefix}/jwt-secret-previous"
+  description = "Outgoing JWT secret(s) still accepted during a rotation (comma-separated)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.jwt_secret_previous
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 # --- Laravel Internal Key ---
 resource "aws_ssm_parameter" "laravel_internal_key" {
   name        = "/${local.env_prefix}/laravel-internal-key"

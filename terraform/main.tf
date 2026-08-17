@@ -180,6 +180,7 @@ module "region_mumbai" {
   ssh_public_key_path                   = var.ssh_public_key_path
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
+  jwt_secret_previous                   = var.jwt_secret_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id
@@ -260,6 +261,7 @@ module "region_frankfurt" {
   ssh_public_key_path                   = var.ssh_public_key_path
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
+  jwt_secret_previous                   = var.jwt_secret_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id
@@ -320,6 +322,7 @@ module "region_singapore" {
   ssh_public_key_path                   = var.ssh_public_key_path
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
+  jwt_secret_previous                   = var.jwt_secret_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id

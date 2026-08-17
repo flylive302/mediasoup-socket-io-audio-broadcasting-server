@@ -321,6 +321,28 @@ variable "jwt_secret" {
   sensitive   = true
 }
 
+# --- Secret-rotation overlap (ported from terraform-vultr, ticket 28) ---------
+# Comma-separated OUTGOING secrets that MSAB keeps ACCEPTING while a rotation is
+# in flight (src/auth/jwtValidator.ts builds its candidate list from
+# JWT_SECRET + JWT_SECRET_PREVIOUS). Laravel flips its signing key the instant
+# its console edit lands; this fleet takes a drain-gated instance refresh to
+# pick the new value up out of SSM. Without an overlap, every token minted in
+# that gap is rejected and the user is thrown off audio — i.e. a JWT rotation
+# on AWS would be a full audio outage.
+#
+# The Vultr tree has had this since the secrets-rotation epic; the AWS tree did
+# NOT, which is why it is being added before the cutover rather than after.
+#
+# Default "" = no rotation in progress; the SSM parameter is not created at all
+# and boot behaviour is byte-identical to a single key. Reset to "" once a roll
+# completes — while set, the old secret still verifies.
+variable "jwt_secret_previous" {
+  description = "Rotation overlap for jwt_secret. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "session_secret" {
   description = "Express session secret"
   type        = string

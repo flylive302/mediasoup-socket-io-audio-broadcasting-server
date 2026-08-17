@@ -133,6 +133,13 @@ variable "jwt_secret" {
   type      = string
   sensitive = true
 }
+# Rotation overlap — see the root variables.tf comment. "" = no rotation, and
+# the SSM parameter is then not created at all.
+variable "jwt_secret_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
 variable "session_secret" {
   type      = string
   sensitive = true

@@ -107,9 +107,42 @@ module "loadbalancer" {
   # attachment surface at all; the ASG's target_group_arns does the work.
 }
 
-# Base audio hostname → NLB. DNS-only (never proxied): the NLB terminates TLS
-# itself with the ACM cert, and WebRTC/socket traffic is not Cloudflare-HTTP.
-# Per-instance hostnames are a separate surface (aws-production ticket 16).
+# Base audio hostname → NLB. PROXIED (orange cloud) — changed 2026-08-17,
+# ticket 28. This record's proxy mode is a cutover-safety decision, not a
+# routing preference; do not "simplify" it back to DNS-only without reading
+# docs/runbooks/msab-aws-cutover.md §4a.
+#
+# Why proxied, when the previous comment here said "never proxied":
+#
+#   audio.flyliveapp.com is proxied TODAY (measured 2026-08-17: it resolves to
+#   104.21.8.242 / 172.67.188.214 — Cloudflare anycast — at TTL 300, which
+#   Cloudflare pins and which therefore cannot be lowered ahead of a flip).
+#   Publishing a DNS-only record here would change the PUBLIC answer from
+#   Cloudflare's anycast IPs to the NLB hostname, so every resolver holding the
+#   old answer keeps dialling Cloudflare's edge for a hostname Cloudflare no
+#   longer proxies — a hard error, for up to 300s, with no way to pre-shorten
+#   it. Keeping the record proxied changes only the ORIGIN behind an unchanged
+#   public answer: the flip takes effect at Cloudflare's edge immediately, and
+#   the rollback (repoint the origin back to bom-02) is exactly as immediate
+#   and exactly as symmetric.
+#
+#   The old rationale — "the NLB terminates TLS with the ACM cert, and
+#   WebRTC/socket traffic is not Cloudflare-HTTP" — does not actually argue for
+#   DNS-only. WebRTC media never touches this record (it goes direct to
+#   instance IPs on the RTC port range); what rides this hostname is Socket.IO
+#   signalling, which is HTTP/WS and already proxies through Cloudflare on the
+#   live Vultr stack today. Cloudflare validates the ACM cert on the origin leg
+#   under Full (Strict); the NLB's only public entry is the TLS listener on 443
+#   (modules/loadbalancer/main.tf), which is what Cloudflare dials.
+#
+# ttl = 1 is REQUIRED, not a choice: the Cloudflare API rejects any other TTL
+# on a proxied record ("automatic"). The 60 that used to be here was only
+# reachable because the record was DNS-only.
+#
+# Per-instance hostnames are a separate surface (aws-production ticket 16) and
+# are NOT covered by this decision — see the runbook's console table for the
+# open Origin-CA/browser-trust question on those.
+#
 # ⛔ Gated (manage_audio_dns): in production audio.flyliveapp.com is a LIVE
 # A-record to Vultr until the ticket-28 cutover — creating this CNAME before
 # then IS the DNS flip. Staging keeps it on (its hostname serves nothing yet).
@@ -119,8 +152,8 @@ resource "cloudflare_dns_record" "audio" {
   name    = var.audio_domain
   type    = "CNAME"
   content = module.loadbalancer.nlb_dns_name
-  proxied = false
-  ttl     = 60
+  proxied = true
+  ttl     = 1
 }
 
 # Secrets replicated into this region's SSM (SSM Parameter Store is regional —
@@ -131,6 +164,7 @@ module "ssm" {
   project_name            = var.project_name
   environment             = var.environment
   jwt_secret              = var.jwt_secret
+  jwt_secret_previous     = var.jwt_secret_previous
   laravel_internal_key    = var.laravel_internal_key
   session_secret          = var.session_secret
   cloudflare_turn_api_key = var.cloudflare_turn_api_key

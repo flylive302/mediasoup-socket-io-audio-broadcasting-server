@@ -350,6 +350,46 @@ run "rendered_script_sanitizes_secrets_for_the_env_file" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# JWT rotation overlap (aws-production/28). MSAB's verifier builds its candidate
+# list from JWT_SECRET + JWT_SECRET_PREVIOUS (src/auth/jwtValidator.ts) — but the
+# AWS bootstrap only ever wrote JWT_SECRET, so a rotation would have thrown every
+# listener off audio for the length of an instance refresh.
+#
+# The overlap value must reach the env-file, must be sanitized like every other
+# secret, and must NOT join the critical-secrets gate: outside a rotation the SSM
+# parameter does not exist, fetch_ssm returns "", and an empty value there is the
+# normal steady state rather than a reason to ABANDON the launch hook.
+# -----------------------------------------------------------------------------
+run "rotation_overlap_reaches_the_env_file_without_gating_boot" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "SECRET_JWT_PREVIOUS=$(fetch_ssm \"jwt-secret-previous\")")
+    error_message = "The bootstrap must fetch the jwt-secret-previous parameter — without it the AWS fleet has no JWT rotation path"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "JWT_SECRET_PREVIOUS=$SECRET_JWT_PREVIOUS")
+    error_message = "JWT_SECRET_PREVIOUS must be written to the secrets env-file — jwtValidator.ts reads it from there"
+  }
+
+  # The newline-rejection loop covers it; the empty-value FATAL gate must not.
+  assert {
+    condition     = strcontains(output.user_data_rendered, "SECRET_JWT SECRET_JWT_PREVIOUS SECRET_INTERNAL_KEY")
+    error_message = "SECRET_JWT_PREVIOUS must be in the newline-rejection loop — a CRLF-pasted overlap value would corrupt the env-file exactly like any other secret"
+  }
+
+  assert {
+    condition     = !strcontains(output.user_data_rendered, "\"JWT_PREVIOUS:$SECRET_JWT_PREVIOUS\"")
+    error_message = "SECRET_JWT_PREVIOUS must NOT join the critical-secrets gate — empty is its steady state, and gating on it would ABANDON every launch outside a rotation"
+  }
+}
+
 # =============================================================================
 # ticket 19 — bootstrap fails closed on any architecture, stable identity
 # =============================================================================
