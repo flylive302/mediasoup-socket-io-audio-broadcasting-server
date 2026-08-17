@@ -231,6 +231,18 @@ variable "laravel_api_url" {
   default     = "https://app.flyliveapp.com"
 }
 
+variable "event_queue_url" {
+  description = <<-EOT
+    URL of the msab-events FIFO queue (module.queues) the SQS consumer polls.
+    Empty (the default) renders NO EVENT_QUEUE_URL line into the instance env,
+    which is the consumer's inert state — ships-inert by default, per the same
+    rule as every other transport switch in this stack. Passed as a terraform
+    OUTPUT from the queues module, never as a tfvars literal.
+  EOT
+  type        = string
+  default     = ""
+}
+
 # --- Scaling Configuration ---
 
 variable "fleet_size" {

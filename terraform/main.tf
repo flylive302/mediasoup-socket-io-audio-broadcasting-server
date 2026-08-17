@@ -200,6 +200,16 @@ module "region_mumbai" {
   fleet_size                            = var.fleet_size
   alerts_topic_arn                      = module.alerting.alerts_topic_arn
 
+  # aws-production/28 Phase A step 5 — arm the instance's SQS consumer.
+  # The queue is global (one FIFO for every region, ADR 0029) and its URL is a
+  # terraform OUTPUT, so this needs no prod.tfvars entry and no TF_VARS_PROD
+  # re-paste. Additive: EVENT_HTTP_INGEST_ENABLED stays true, so HTTP ingest
+  # remains the live transport until Laravel's producer is provisioned and
+  # MSAB_TRANSPORT flips (ticket 29). Before this line the fleet had NO
+  # EVENT_QUEUE_URL at all — the consumer was inert while the runbook recorded
+  # it as armed "from the first serving minute".
+  event_queue_url = module.queues.queue_url
+
   # aws-production/08 — the msab SG's port-9100 ingress-from-loadgen rule.
   # loadgen_ingress_enabled is computed here (root scope) from root variables
   # ONLY, never from module.loadgen's own output — that output is unknown at
@@ -280,6 +290,16 @@ module "region_frankfurt" {
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
   alerts_topic_arn                      = module.alerting.alerts_topic_arn
+
+  # aws-production/28 Phase A step 5 — arm the instance's SQS consumer.
+  # The queue is global (one FIFO for every region, ADR 0029) and its URL is a
+  # terraform OUTPUT, so this needs no prod.tfvars entry and no TF_VARS_PROD
+  # re-paste. Additive: EVENT_HTTP_INGEST_ENABLED stays true, so HTTP ingest
+  # remains the live transport until Laravel's producer is provisioned and
+  # MSAB_TRANSPORT flips (ticket 29). Before this line the fleet had NO
+  # EVENT_QUEUE_URL at all — the consumer was inert while the runbook recorded
+  # it as armed "from the first serving minute".
+  event_queue_url = module.queues.queue_url
 }
 
 module "region_singapore" {
@@ -341,6 +361,16 @@ module "region_singapore" {
   hls_r2_secret_access_key              = var.hls_r2_secret_access_key
   fleet_size                            = var.fleet_size
   alerts_topic_arn                      = module.alerting.alerts_topic_arn
+
+  # aws-production/28 Phase A step 5 — arm the instance's SQS consumer.
+  # The queue is global (one FIFO for every region, ADR 0029) and its URL is a
+  # terraform OUTPUT, so this needs no prod.tfvars entry and no TF_VARS_PROD
+  # re-paste. Additive: EVENT_HTTP_INGEST_ENABLED stays true, so HTTP ingest
+  # remains the live transport until Laravel's producer is provisioned and
+  # MSAB_TRANSPORT flips (ticket 29). Before this line the fleet had NO
+  # EVENT_QUEUE_URL at all — the consumer was inert while the runbook recorded
+  # it as armed "from the first serving minute".
+  event_queue_url = module.queues.queue_url
 }
 
 # =============================================================================

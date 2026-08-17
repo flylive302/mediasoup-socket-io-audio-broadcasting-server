@@ -460,6 +460,7 @@ locals {
     laravel_api_url        = var.laravel_api_url
     cascade_enabled        = var.cascade_enabled
     cloudflare_turn_key_id = var.cloudflare_turn_key_id
+    event_queue_url        = var.event_queue_url
     image_tag              = var.image_tag
     jwt_max_age_seconds    = var.jwt_max_age_seconds
     laravel_api_timeout_ms = var.laravel_api_timeout_ms

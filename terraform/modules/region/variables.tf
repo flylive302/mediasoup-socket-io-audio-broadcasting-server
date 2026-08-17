@@ -152,6 +152,15 @@ variable "cloudflare_turn_key_id" { type = string }
 
 variable "cors_origins" { type = string }
 variable "laravel_api_url" { type = string }
+
+# msab-events FIFO queue URL (global module.queues) → the instance's SQS
+# consumer. Defaulted to "" so the consumer stays inert unless the root module
+# passes a real queue; see modules/autoscaling/variables.tf for the full rule.
+variable "event_queue_url" {
+  type    = string
+  default = ""
+}
+
 variable "jwt_max_age_seconds" { type = number }
 variable "laravel_api_timeout_ms" { type = number }
 variable "ice_stun_urls" { type = string }

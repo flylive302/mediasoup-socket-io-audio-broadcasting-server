@@ -319,6 +319,18 @@ ICE_STUN_URLS=${ice_stun_urls}
 MSAB_EVENTS_CHANNEL=flylive:msab:events
 MSAB_EVENTS_ENABLED=true
 
+# SQS event consumer (ticket 25/26). OMITTED when empty, which is the inert
+# state: createQueueConsumer() returns null without EVENT_QUEUE_URL, so no
+# consumer runs and the HTTP ingest route is the only transport. Arming this is
+# strictly ADDITIVE — EVENT_HTTP_INGEST_ENABLED is untouched and both transports
+# share one ingestEnvelope pipeline, so a message can only be routed or
+# dead-lettered, never double-delivered (the dedup seam absorbs redelivery).
+# The value is module.queues.queue_url, a terraform output — never a tfvars
+# literal, so it can never drift from the queue that actually exists.
+%{ if event_queue_url != "" ~}
+EVENT_QUEUE_URL=${event_queue_url}
+%{ endif ~}
+
 # CloudWatch (enabled in production)
 CLOUDWATCH_ENABLED=true
 

@@ -229,6 +229,7 @@ module "autoscaling" {
   laravel_api_url        = var.laravel_api_url
   cascade_enabled        = var.cascade_enabled
   cloudflare_turn_key_id = var.cloudflare_turn_key_id
+  event_queue_url        = var.event_queue_url
 
   # MSAB Application Config
   jwt_max_age_seconds    = var.jwt_max_age_seconds
