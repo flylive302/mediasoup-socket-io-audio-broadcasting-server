@@ -315,7 +315,8 @@ resource "aws_iam_user" "laravel_sqs_producer" {
 
   tags = {
     Project = var.project_name
-    Purpose = "Send-only SQS principal for Laravel realtime events (ticket 29)"
+    # IAM tag values forbid parentheses — [\p{L}\p{Z}\p{N}_.:/=+\-@]* only.
+    Purpose = "Send-only SQS principal for Laravel realtime events - ticket 29"
   }
 }
 
