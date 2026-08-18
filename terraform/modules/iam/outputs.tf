@@ -20,6 +20,16 @@ output "role_name" {
   value       = aws_iam_role.msab.name
 }
 
+output "laravel_sqs_producer_user_name" {
+  description = "IAM user name of Laravel's send-only SQS producer (ticket 29). Operator creates its access key in the console — the secret never enters terraform. Empty string when the flag is off."
+  value       = var.enable_event_queue_produce ? aws_iam_user.laravel_sqs_producer[0].name : ""
+}
+
+output "laravel_sqs_producer_user_arn" {
+  description = "ARN of the Laravel SQS producer user (ticket 29). Empty string when the flag is off."
+  value       = var.enable_event_queue_produce ? aws_iam_user.laravel_sqs_producer[0].arn : ""
+}
+
 output "github_actions_role_arn" {
   description = "ARN of the OIDC-federated GitHub Actions deploy role → aws-production env variable AWS_DEPLOY_ROLE_ARN (role ARNs are not secrets)"
   value       = aws_iam_role.github_actions.arn

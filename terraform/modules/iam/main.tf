@@ -303,6 +303,41 @@ resource "aws_iam_role_policy" "sqs_consume" {
   })
 }
 
+# --- SQS producer — ticket 29: Laravel's send-only principal ---
+# Laravel Cloud cannot assume a role in this account, so the producer is a
+# dedicated IAM user with a send-only policy scoped to the ONE msab-events
+# queue. Consume is deliberately absent (mirror of sqs_consume above).
+# The access key is created BY THE OPERATOR in the console — never in
+# terraform — so the secret never enters state, plan output, or CI.
+resource "aws_iam_user" "laravel_sqs_producer" {
+  count = var.enable_event_queue_produce ? 1 : 0
+  name  = "${local.env_prefix}-laravel-sqs-producer"
+
+  tags = {
+    Project = var.project_name
+    Purpose = "Send-only SQS principal for Laravel realtime events (ticket 29)"
+  }
+}
+
+resource "aws_iam_user_policy" "sqs_produce" {
+  count = var.enable_event_queue_produce ? 1 : 0
+  name  = "${local.env_prefix}-sqs-produce"
+  user  = aws_iam_user.laravel_sqs_producer[0].name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+        ]
+        Resource = var.event_queue_arn
+      }
+    ]
+  })
+}
+
 # --- SSM Session Manager — replaces SSH (browser-based shell via AWS Console) ---
 resource "aws_iam_role_policy_attachment" "ssm_session_manager" {
   role       = aws_iam_role.msab.name

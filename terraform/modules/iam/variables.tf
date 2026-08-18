@@ -38,6 +38,12 @@ variable "enable_event_queue_consume" {
   default     = false
 }
 
+variable "enable_event_queue_produce" {
+  description = "Create the send-only IAM user for Laravel (ticket 29). Static flag — count cannot depend on the computed queue ARN. Access key is operator-created in the console, never terraform."
+  type        = bool
+  default     = false
+}
+
 variable "event_queue_arn" {
   description = "ARN of the msab-events FIFO queue (ticket 25). Required when enable_event_queue_consume = true."
   type        = string

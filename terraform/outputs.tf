@@ -114,6 +114,16 @@ output "github_actions_role_arn" {
   value       = module.iam.github_actions_role_arn
 }
 
+# --- Laravel SQS producer user (ticket 29) ---
+# Send-only IAM user for Laravel's realtime-event publisher. The access key is
+# created BY THE OPERATOR in the IAM console (Security credentials → Create
+# access key) and pasted into Laravel Cloud env — the secret never touches
+# terraform state, plan output, or CI.
+output "laravel_sqs_producer_user_name" {
+  description = "IAM user name for Laravel's send-only SQS producer — create its access key in the console, never terraform"
+  value       = module.iam.laravel_sqs_producer_user_name
+}
+
 # --- Load generator (aws-production/08) ---
 # null when loadgen_enabled=false (or environment != staging) — modules/loadgen's
 # own outputs are already try()-wrapped, so these just forward that null

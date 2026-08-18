@@ -515,6 +515,10 @@ module "iam" {
   enable_event_queue_consume = true
   event_queue_arn            = module.queues.queue_arn
 
+  # Ticket 29: send-only IAM user for Laravel (producer principal). Access
+  # key is operator-created in the console — never terraform.
+  enable_event_queue_produce = true
+
   # OIDC deploy role trust (ticket 12): which GitHub environment's jobs may
   # assume the deploy role. Staging must point at its own GitHub environment
   # so a staging run can never assume the production role (and vice versa).
