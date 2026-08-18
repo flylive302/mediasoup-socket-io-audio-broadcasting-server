@@ -448,6 +448,17 @@ variable "ice_stun_urls" {
   default     = "stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53"
 }
 
+# Sentry error reporting (env-diff finding, 2026-08-18: Vultr had it, AWS did
+# not — an observability blackout on flip day). Empty (default) ships inert:
+# the SENTRY_* block is omitted from the rendered env entirely, matching the
+# HLS URL-var pattern. SENTRY_RELEASE is always image_tag (the sha-<commit8>
+# the sourcemaps were uploaded under), never a separate literal.
+variable "sentry_dsn" {
+  description = "Sentry DSN for MSAB error reporting. Empty = Sentry disabled (SENTRY_* omitted from the instance env)."
+  type        = string
+  default     = ""
+}
+
 # --- Alerting (ticket 32) ---
 # Empty (default) ships alerting INERT: the global SNS topic (modules/alerting)
 # is created, alarms are wired to it, but nobody is subscribed — so nothing

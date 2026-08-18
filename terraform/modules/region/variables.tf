@@ -161,6 +161,13 @@ variable "event_queue_url" {
   default = ""
 }
 
+# Sentry DSN → instance env. Defaulted "" (Sentry off) — same inert-when-empty
+# contract as event_queue_url above.
+variable "sentry_dsn" {
+  type    = string
+  default = ""
+}
+
 variable "jwt_max_age_seconds" { type = number }
 variable "laravel_api_timeout_ms" { type = number }
 variable "ice_stun_urls" { type = string }

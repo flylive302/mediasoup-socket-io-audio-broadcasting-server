@@ -243,6 +243,19 @@ variable "event_queue_url" {
   default     = ""
 }
 
+variable "sentry_dsn" {
+  description = <<-EOT
+    Sentry DSN for MSAB error reporting (env-diff finding 2026-08-18: the Vultr
+    fleet reported to Sentry, the AWS fleet did not). Empty (the default)
+    renders NO SENTRY_* lines into the instance env — Sentry stays off. When
+    set, SENTRY_RELEASE is var.image_tag (must be the byte-identical
+    sha-<commit8> the image's sourcemaps were uploaded under, which image_tag
+    already is by construction) and SENTRY_ENVIRONMENT is var.environment.
+  EOT
+  type        = string
+  default     = ""
+}
+
 # --- Scaling Configuration ---
 
 variable "fleet_size" {

@@ -210,6 +210,9 @@ module "region_mumbai" {
   # it as armed "from the first serving minute".
   event_queue_url = module.queues.queue_url
 
+  # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
+  sentry_dsn = var.sentry_dsn
+
   # aws-production/08 — the msab SG's port-9100 ingress-from-loadgen rule.
   # loadgen_ingress_enabled is computed here (root scope) from root variables
   # ONLY, never from module.loadgen's own output — that output is unknown at
@@ -300,6 +303,9 @@ module "region_frankfurt" {
   # EVENT_QUEUE_URL at all — the consumer was inert while the runbook recorded
   # it as armed "from the first serving minute".
   event_queue_url = module.queues.queue_url
+
+  # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
+  sentry_dsn = var.sentry_dsn
 }
 
 module "region_singapore" {
@@ -371,6 +377,9 @@ module "region_singapore" {
   # EVENT_QUEUE_URL at all — the consumer was inert while the runbook recorded
   # it as armed "from the first serving minute".
   event_queue_url = module.queues.queue_url
+
+  # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
+  sentry_dsn = var.sentry_dsn
 }
 
 # =============================================================================

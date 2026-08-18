@@ -331,6 +331,16 @@ MSAB_EVENTS_ENABLED=true
 EVENT_QUEUE_URL=${event_queue_url}
 %{ endif ~}
 
+# Sentry (env-diff finding 2026-08-18 — Vultr reported, AWS didn't). Omitted
+# entirely when the DSN is unset, same contract as the HLS URL vars below.
+# SENTRY_RELEASE must be the byte-identical sha-<commit8> the image's
+# sourcemaps were uploaded under; image_tag is that tag by construction.
+%{ if sentry_dsn != "" ~}
+SENTRY_DSN=${sentry_dsn}
+SENTRY_RELEASE=${image_tag}
+SENTRY_ENVIRONMENT=${sentry_environment}
+%{ endif ~}
+
 # CloudWatch (enabled in production)
 CLOUDWATCH_ENABLED=true
 
