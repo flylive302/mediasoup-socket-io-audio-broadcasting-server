@@ -93,7 +93,10 @@ function createMockContext(remoteSockets: unknown[] = []) {
       getRoom: vi.fn().mockReturnValue(null),
       getOrCreateRoom: vi
         .fn()
-        .mockResolvedValue({ router: { rtpCapabilities: {} } }),
+        .mockResolvedValue({
+          router: { rtpCapabilities: {} },
+          getSourceProducers: vi.fn().mockReturnValue([]),
+        }),
       state: {
         get: vi.fn().mockResolvedValue(null),
         save: vi.fn().mockResolvedValue(undefined),
@@ -368,6 +371,102 @@ describe("joinRoomHandler", () => {
         { producerId: "prod-mic-99", userId: 99, source: "mic" },
       ]);
     });
+
+    // aws-production/38: a speaker connected through ANOTHER instance is
+    // reverse-piped into this origin's source router (registerProducer) but
+    // has no local clientManager entry, so the local-client loop alone never
+    // surfaces them — an origin-side joiner would miss that speaker entirely.
+    // The cluster's router-level list is authoritative (it is what
+    // /internal/room/:id/producers serves to attaching edges) and must be
+    // merged into the join snapshot.
+    it("includes reverse-piped producers absent from local clients, and marks the owner as speaker", async () => {
+      const edgeSpeaker = makeUser({ id: 77 });
+      const ctx = createMockContext([
+        { id: "remote-edge-77", data: { user: edgeSpeaker } },
+      ]);
+      ctx.roomManager.getOrCreateRoom = vi.fn().mockResolvedValue({
+        router: { rtpCapabilities: {} },
+        getSourceProducers: vi
+          .fn()
+          .mockReturnValue([
+            { producerId: "prod-rp-77", userId: 77, kind: "audio", source: "mic" },
+          ]),
+      });
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        existingProducers: Array<{ producerId: string; userId: number; source: string }>;
+        participants: Array<{ id: number; isSpeaker: boolean }>;
+      };
+      expect(result.existingProducers).toEqual([
+        { producerId: "prod-rp-77", userId: 77, source: "mic" },
+      ]);
+      expect(result.participants.find((p) => p.id === 77)?.isSpeaker).toBe(true);
+    });
+
+    // aws-production/38: producers already surfaced by the local-client loop
+    // must not be duplicated by the router-level merge.
+    it("does not duplicate producers present both locally and on the cluster", async () => {
+      const remoteUser = makeUser({ id: 99 });
+      const ctx = createMockContext([
+        { id: "remote-1", data: { user: remoteUser } },
+      ]);
+      ctx.clientManager.getClientsInRoom = vi.fn().mockReturnValue([
+        {
+          socketId: "remote-1",
+          userId: 99,
+          isSpeaker: true,
+          producers: new Map([["mic", "prod-mic-99"]]),
+        },
+      ]);
+      ctx.io.sockets.sockets = new Map([["remote-1", { connected: true }]]);
+      ctx.roomManager.getOrCreateRoom = vi.fn().mockResolvedValue({
+        router: { rtpCapabilities: {} },
+        getSourceProducers: vi
+          .fn()
+          .mockReturnValue([
+            { producerId: "prod-mic-99", userId: 99, kind: "audio", source: "mic" },
+          ]),
+      });
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        existingProducers: Array<{ producerId: string; userId: number; source: string }>;
+      };
+      expect(result.existingProducers).toEqual([
+        { producerId: "prod-mic-99", userId: 99, source: "mic" },
+      ]);
+    });
+
+    // aws-production/38: a stale router-level producer owned by the joining
+    // user (e.g. rejoin within the seat grace window before the old
+    // transport closes) must never be handed back to them for self-consume.
+    it("excludes the joining user's own producers from the router-level merge", async () => {
+      const ctx = createMockContext([]);
+      ctx.roomManager.getOrCreateRoom = vi.fn().mockResolvedValue({
+        router: { rtpCapabilities: {} },
+        getSourceProducers: vi
+          .fn()
+          .mockReturnValue([
+            { producerId: "prod-stale-42", userId: 42, kind: "audio", source: "mic" },
+          ]),
+      });
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        existingProducers: Array<{ producerId: string; userId: number; source: string }>;
+      };
+      expect(result.existingProducers).toEqual([]);
+    });
   });
 
   // Ghost-cluster guard: a pre-existing local cluster must be backed by valid
@@ -462,8 +561,14 @@ describe("joinRoomHandler", () => {
     }) {
       const ctx = createMockContext();
       let detached = false;
-      const edgeCluster = { router: { rtpCapabilities: edgeCaps } };
-      const originCluster = { router: { rtpCapabilities: originCaps } };
+      const edgeCluster = {
+        router: { rtpCapabilities: edgeCaps },
+        getSourceProducers: vi.fn().mockReturnValue([]),
+      };
+      const originCluster = {
+        router: { rtpCapabilities: originCaps },
+        getSourceProducers: vi.fn().mockReturnValue([]),
+      };
 
       // Edge cluster present until handleOriginClosed detaches it.
       ctx.roomManager.getRoom = vi.fn(() => (detached ? null : edgeCluster));

@@ -88,7 +88,10 @@ function createMockContext(state: Record<string, unknown> | null) {
       getRoom: vi.fn().mockReturnValue(null),
       getOrCreateRoom: vi
         .fn()
-        .mockResolvedValue({ router: { rtpCapabilities: {} } }),
+        .mockResolvedValue({
+          router: { rtpCapabilities: {} },
+          getSourceProducers: vi.fn().mockReturnValue([]),
+        }),
       state: {
         get: vi.fn().mockResolvedValue(state),
         save: vi.fn().mockResolvedValue(undefined),

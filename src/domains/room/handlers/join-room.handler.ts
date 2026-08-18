@@ -463,6 +463,29 @@ async function processJoin(
     }
   }
 
+  // aws-production/38: reverse-piped producers (speakers connected through
+  // another instance) are registered on this origin's source router but have
+  // no local clientManager entry, so the local-client loop above never sees
+  // them — an origin-side joiner would miss every cross-instance speaker.
+  // The router-level list is authoritative (it is exactly what
+  // /internal/room/:id/producers serves to attaching edges); merge anything
+  // the local loop didn't surface. Edge joins are excluded: their list was
+  // just replaced wholesale with the origin's piped producers above.
+  if (!cascadeCoordinator?.isEdgeRoom(roomId)) {
+    const knownProducerIds = new Set(existingProducers.map((p) => p.producerId));
+    for (const sp of cluster.getSourceProducers()) {
+      if (knownProducerIds.has(sp.producerId)) continue;
+      if (sp.userId === userId) continue; // never hand a joiner their own stale producer
+      existingProducers.push({
+        producerId: sp.producerId,
+        userId: sp.userId,
+        source: sp.source,
+      });
+      const participant = participantMap.get(sp.userId);
+      if (participant) participant.isSpeaker = true;
+    }
+  }
+
   // Captured here (not earlier): the realtime-20 recovery may have swapped
   // `cluster`, so the response must reflect the FINAL cluster's router caps.
   const rtpCapabilities = cluster.router?.rtpCapabilities;
