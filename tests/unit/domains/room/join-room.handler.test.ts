@@ -651,4 +651,118 @@ describe("joinRoomHandler", () => {
       expect(result.rtpCapabilities).toEqual(edgeCaps);
     });
   });
+
+  // aws-production/38-B: seats[] (Redis, always complete) render with no
+  // avatar/profile when participants[] is missing that user — a lone
+  // participants-fetch failure must not silently ship seats-without-profiles.
+  describe("edge participants retry (aws-production/38-B)", () => {
+    const edgeCaps = { edge: true };
+    const snapshotWithSeat = {
+      seats: [{ seatIndex: 0, userId: 99, isMuted: false }],
+      lockedSeats: [],
+      seatCount: 15,
+      musicPlayer: null,
+    };
+    const originParticipant = {
+      id: 99,
+      name: "Origin User",
+      signature: "sig",
+      avatar: "avatar.jpg",
+      frame_id: null,
+      chat_bubble_id: null,
+      entry_animation_id: null,
+      data_card_id: null,
+      mice_wave_id: null,
+      slides_id: null,
+      gender: 1,
+      country: "US",
+      wealth_xp: "0",
+      charm_xp: "0",
+      vip_level: 0,
+      date_of_birth: null,
+      isSpeaker: false,
+    };
+
+    function makeEdgeContext() {
+      const ctx = createMockContext();
+      const edgeCluster = {
+        router: { rtpCapabilities: edgeCaps },
+        getSourceProducers: vi.fn().mockReturnValue([]),
+      };
+      ctx.roomManager.getRoom = vi.fn().mockReturnValue(edgeCluster);
+      ctx.roomManager.getOrCreateRoom = vi.fn().mockResolvedValue(edgeCluster);
+
+      ctx.roomRegistry = {
+        getOwner: vi.fn().mockResolvedValue("self"),
+        claimOwnership: vi.fn().mockResolvedValue({ won: false, owner: "origin" }),
+        registerOrigin: vi.fn().mockResolvedValue(undefined),
+        refreshOwnership: vi.fn().mockResolvedValue(undefined),
+      };
+
+      ctx.cascadeCoordinator = {
+        isEdgeRoom: vi.fn(() => true),
+        handleCrossRegionJoin: vi.fn().mockResolvedValue({ isEdge: false }),
+        handleSameRegionEdge: vi.fn().mockResolvedValue({ isEdge: true }),
+        fetchAndPipeExistingProducers: vi.fn().mockResolvedValue([]),
+        fetchOriginRoomSnapshot: vi.fn().mockResolvedValue(snapshotWithSeat),
+        fetchOriginParticipants: vi.fn(),
+        handleOriginClosed: vi.fn().mockResolvedValue(undefined),
+      };
+
+      return ctx;
+    }
+
+    it("BUG REPRO (pre-fix): a lone participants failure ships the seat with no profile and never retries", async () => {
+      const ctx = makeEdgeContext();
+      ctx.cascadeCoordinator.fetchOriginParticipants.mockResolvedValue(null);
+
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+      await h({ roomId: "room-38b" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        seats: unknown[];
+        participants: unknown[];
+      };
+      // Seat is present (Redis-complete)...
+      expect(result.seats).toEqual([{ seatIndex: 0, userId: 99, isMuted: false }]);
+      // ...but its occupant has no participant/profile entry.
+      expect(result.participants.find((p: any) => p.id === 99)).toBeUndefined();
+      // Fix under test: this must retry, not just try once.
+      expect(
+        ctx.cascadeCoordinator.fetchOriginParticipants.mock.calls.length,
+      ).toBeGreaterThan(1);
+      // No full detach/re-resolution — snapshot succeeded, origin IS reachable.
+      expect(ctx.cascadeCoordinator.handleOriginClosed).not.toHaveBeenCalled();
+    });
+
+    it("retries participants when the snapshot succeeded and the retry recovers the profile", async () => {
+      const ctx = makeEdgeContext();
+      ctx.cascadeCoordinator.fetchOriginParticipants
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce([originParticipant]);
+
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+      await h({ roomId: "room-38b" }, cb);
+
+      expect(ctx.cascadeCoordinator.fetchOriginParticipants).toHaveBeenCalledTimes(2);
+      const result = cb.mock.calls[0]?.[0] as { participants: any[] };
+      expect(result.participants.find((p: any) => p.id === 99)).toBeDefined();
+      expect(ctx.cascadeCoordinator.handleOriginClosed).not.toHaveBeenCalled();
+    });
+
+    it("does not retry when participants succeeds on the first attempt", async () => {
+      const ctx = makeEdgeContext();
+      ctx.cascadeCoordinator.fetchOriginParticipants.mockResolvedValue([
+        originParticipant,
+      ]);
+
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+      await h({ roomId: "room-38b" }, cb);
+
+      expect(ctx.cascadeCoordinator.fetchOriginParticipants).toHaveBeenCalledTimes(1);
+    });
+  });
 });

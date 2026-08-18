@@ -430,6 +430,13 @@ resource "aws_iam_policy" "github_actions_boundary" {
         ]
         Resource = "*"
       },
+      {
+        # Deploy monitor's no-refresh fallback compares the ASG's launch template
+        # version. Read-only; EC2 Describe* is not resource-scopable.
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeLaunchTemplateVersions"]
+        Resource = "*"
+      },
       # SendCommand: two statements, deliberately (see local.ssm_send_command_statements).
       local.ssm_send_command_statements[0],
       local.ssm_send_command_statements[1],
@@ -539,6 +546,13 @@ resource "aws_iam_role_policy" "github_actions_asg_refresh" {
           "autoscaling:CancelInstanceRefresh",
           "autoscaling:CompleteLifecycleAction",
         ]
+        Resource = "*"
+      },
+      {
+        # Deploy monitor's no-refresh fallback compares the ASG's launch template
+        # version. Read-only; EC2 Describe* is not resource-scopable.
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeLaunchTemplateVersions"]
         Resource = "*"
       },
       # SendCommand: two statements, deliberately (see local.ssm_send_command_statements).

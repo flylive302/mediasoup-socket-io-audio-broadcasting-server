@@ -171,6 +171,14 @@ async function resolveClusterForJoin(
  * snapshot in one round. `originUnreachable` flags a dead/relocated origin —
  * BOTH the participants and snapshot endpoints failing (AbortError on a dead
  * host, or 404 after the room moved). A single transient miss won't trip it.
+ *
+ * aws-production/38-B: `seats[]` (from the snapshot) is always complete —
+ * profiles come only from `participants[]`. If the snapshot succeeded but
+ * participants failed alone, the origin is clearly reachable (so this is NOT
+ * `originUnreachable` and the caller won't retry) — without a retry HERE that
+ * lone failure would silently ship seats with mic-waves but no avatars. One
+ * bounded retry before giving up; still null after the retry just means this
+ * join's snapshot renders profile-less seats, same as any other transient miss.
  */
 async function fetchEdgeOriginData(
   cascadeCoordinator: NonNullable<AppContext["cascadeCoordinator"]>,
@@ -178,11 +186,17 @@ async function fetchEdgeOriginData(
   cluster: RoomMediaCluster,
   seatCount: number,
 ) {
-  const [piped, originParticipants, snapshot] = await Promise.all([
+  const [piped, firstParticipants, snapshot] = await Promise.all([
     cascadeCoordinator.fetchAndPipeExistingProducers(roomId, cluster),
     cascadeCoordinator.fetchOriginParticipants(roomId),
     cascadeCoordinator.fetchOriginRoomSnapshot(roomId, seatCount),
   ]);
+
+  let originParticipants = firstParticipants;
+  if (snapshot !== null && originParticipants === null) {
+    originParticipants = await cascadeCoordinator.fetchOriginParticipants(roomId);
+  }
+
   const originUnreachable = snapshot === null && originParticipants === null;
   return { piped, originParticipants, snapshot, originUnreachable };
 }
