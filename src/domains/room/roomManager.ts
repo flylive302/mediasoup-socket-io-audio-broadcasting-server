@@ -172,7 +172,25 @@ export class RoomManager {
               metrics.ownershipTransfers.inc({ kind: "reclaimed" });
             } else if (result === "lost") {
               this.stepDownAsOrigin(roomId);
+              return;
             }
+            // aws-production/38-D: the `:origin` info key (24h TTL) is written
+            // only in the join handler's claim branch, which a room living on
+            // its owner never re-enters — while this claim refresh runs
+            // forever. Without re-registering here, any room alive >24h loses
+            // its origin info and every join landing on the OTHER instance is
+            // refused ("cascade edge setup failed"). registerOrigin re-creates
+            // an expired key and preserves listenerCount on a live one.
+            registry
+              ?.registerOrigin(roomId, {
+                instanceId: selfId,
+                ip: config.PUBLIC_IP,
+                port: config.PORT,
+                listenerCount: 0,
+              })
+              .catch((err) =>
+                reactError(err, { roomId }, "Origin info refresh failed"),
+              );
           })
           .catch((err) =>
             reactError(err, { roomId }, "Ownership heartbeat refresh failed"),

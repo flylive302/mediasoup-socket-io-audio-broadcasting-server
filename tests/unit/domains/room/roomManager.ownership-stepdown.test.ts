@@ -56,6 +56,8 @@ function makeManager(
   const presenceTracker = { reconcile: vi.fn(async () => 3) };
   const roomRegistry = {
     refreshOwnership: vi.fn(async () => refreshResult),
+    // 38-D: held/reclaimed refreshes also re-register origin info.
+    registerOrigin: vi.fn(async () => undefined),
     isOwner: vi.fn(async () => refreshResult !== "lost"),
     forgetOwnerCache: vi.fn(),
   };
