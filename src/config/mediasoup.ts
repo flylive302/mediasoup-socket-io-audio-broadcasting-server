@@ -58,9 +58,11 @@ export const mediasoupConfig = {
   } as mediasoup.types.WebRtcTransportOptions,
 
   // Max incoming bitrate per transport (applied via setMaxIncomingBitrate after creation)
-  // 192k = stereo music producer at 128k target + FEC/overhead headroom;
-  // voice mics are capped client-side at 64k mono via codecOptions.
-  maxIncomingBitrate: 192000,
+  // 256k = DJ transport worst case: stereo music producer at 128k target +
+  // the DJ's own voice mic (capped client-side at 96k mono via codecOptions,
+  // raised from 64k on 2026-08-23) + FEC/overhead headroom. Was 192k, which
+  // starved the music once the mic cap went up.
+  maxIncomingBitrate: 256000,
 
   // Speaking-indicator settings (AudioLevelObserver: reports ALL producers
   // above threshold each interval — concurrent speakers, not one dominant).
