@@ -148,6 +148,9 @@ export class GiftHandler {
 
     // ── REACT ────────────────────────────────────────────────
 
+    // Disconnect-log correlation counter (see AuthSocketData.giftSendCount).
+    sock.data.giftSendCount = (sock.data.giftSendCount ?? 0) + 1;
+
     this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context);
 
     // BL-001 FIX: Record room activity to prevent auto-close during active gifting

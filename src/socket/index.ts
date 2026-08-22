@@ -299,7 +299,12 @@ async function handleDisconnect(
 ): Promise<void> {
   const { clientManager, userSocketRepository, userRoomRepository, logger: log, appContext, presenceService } = deps;
 
-  log.info({ socketId: socket.id, reason }, "Socket disconnected");
+  // giftSendCount: lets a "ping timeout" be tied to a gift combo in CloudWatch
+  // (gift-burst-ping-timeout, 2026-08-22).
+  log.info(
+    { socketId: socket.id, reason, giftSendCount: socket.data.giftSendCount ?? 0 },
+    "Socket disconnected",
+  );
 
   const client = clientManager.getClient(socket.id);
 

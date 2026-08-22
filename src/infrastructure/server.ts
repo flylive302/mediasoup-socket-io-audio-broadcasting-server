@@ -106,8 +106,11 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     // case. The common foreground-close case is unaffected: `pagehide` still
     // emits `room:leave` immediately (useRoomLifecycle.ts), so only hard-kills
     // pay the extra delay. ADR 0002 explicitly accepts this for launch.
+    // gift-burst-ping-timeout: env-driven (default 60 s, was a hard-coded 20 s).
+    // Rationale and prod evidence on `SOCKET_PING_TIMEOUT_MS` in config/index.ts.
+    // The ~45 s hard-kill linger quoted above is now ~85 s worst case.
     pingInterval: 25_000,
-    pingTimeout: 20_000,
+    pingTimeout: config.SOCKET_PING_TIMEOUT_MS,
     // platform-security 04: bound inbound messages. Socket.IO's default is
     // 1 MB per message — roughly 250x anything legitimate sends, and nobody
     // chose it. Derived, not guessed: the largest real payload is

@@ -57,4 +57,12 @@ export interface AuthSocketData {
    * ambient identifier for every invocation on this socket.
    */
   correlationId?: string;
+
+  /**
+   * Number of `gift:send` events accepted on this socket. Emitted with the
+   * disconnect log so a "ping timeout" can be tied to a gift combo directly
+   * (gift-burst-ping-timeout, 2026-08-22) — MSAB logs no per-gift line, so
+   * this counter is the only correlation signal.
+   */
+  giftSendCount?: number;
 }

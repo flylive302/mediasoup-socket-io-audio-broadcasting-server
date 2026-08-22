@@ -187,6 +187,21 @@ const configSchema = z.object({
   // the largest real payload, is ~3-4 KB), so `.min()` refuses to start on a
   // value below it rather than letting a tuning mistake sever live clients:
   // an over-limit message closes the CONNECTION, it is not merely dropped.
+  // gift-burst-ping-timeout (2026-08-22): how long the server waits for a
+  // client's pong before killing the socket. Socket.IO's default is 20 s. Prod
+  // CloudWatch (7 days to 2026-08-22) showed 2,275 "ping timeout" disconnects —
+  // 18% of all drops — clustered on low-end phones whose main thread is jammed
+  // rendering a rapid gift combo (~2.7 s spike per gift, android-client-
+  // performance 06b). A jammed WebView cannot answer the heartbeat, the server
+  // closes the socket, and the user loses the seat mid-combo. 60 s lets a
+  // render stall clear. Kept at or below SEAT_RETENTION_GRACE_MS's order so a
+  // genuinely-gone client still tears down in ~85 s worst case
+  // (pingInterval 25 s + this).
+  SOCKET_PING_TIMEOUT_MS: z.preprocess(
+    (v) => (v === "" || v === undefined ? undefined : v),
+    z.coerce.number().int().min(20_000).max(120_000).default(60_000),
+  ),
+
   SOCKET_MAX_HTTP_BUFFER_BYTES: z.coerce
     .number()
     .int()

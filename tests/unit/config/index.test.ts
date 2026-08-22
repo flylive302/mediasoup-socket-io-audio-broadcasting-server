@@ -342,3 +342,33 @@ describe("config assertions", () => {
     });
   });
 });
+
+describe("SOCKET_PING_TIMEOUT_MS (gift-burst-ping-timeout)", () => {
+  const original = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...REQUIRED_ENV, NODE_ENV: "development", INSTANCE_ID_OVERRIDE: "dev-host" } as NodeJS.ProcessEnv;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...original };
+    vi.resetModules();
+  });
+
+  it("defaults to 60 s when unset", async () => {
+    const { config } = await import("@src/config/index.js");
+    expect(config.SOCKET_PING_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("defaults to 60 s when empty", async () => {
+    process.env.SOCKET_PING_TIMEOUT_MS = "";
+    const { config } = await import("@src/config/index.js");
+    expect(config.SOCKET_PING_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("rejects a value below the 20 s Socket.IO default so a typo cannot sever live clients", async () => {
+    process.env.SOCKET_PING_TIMEOUT_MS = "5000";
+    await expect(import("@src/config/index.js")).rejects.toThrow();
+  });
+});
