@@ -35,6 +35,18 @@ output "parameter_names" {
     var.broadcast_hls_enabled ? {
       hls_r2_access_key_id     = aws_ssm_parameter.hls_r2_access_key_id[0].name
       hls_r2_secret_access_key = aws_ssm_parameter.hls_r2_secret_access_key[0].name
+    } : {},
+    var.manage_instance_dns ? {
+      cloudflare_api_token = aws_ssm_parameter.cloudflare_api_token[0].name
+    } : {},
+    length(aws_ssm_parameter.tls_certificate) > 0 ? {
+      tls_certificate = aws_ssm_parameter.tls_certificate[0].name
+    } : {},
+    length(aws_ssm_parameter.tls_private_key) > 0 ? {
+      tls_private_key = aws_ssm_parameter.tls_private_key[0].name
+    } : {},
+    length(aws_ssm_parameter.tls_chain) > 0 ? {
+      tls_chain = aws_ssm_parameter.tls_chain[0].name
     } : {}
   )
 }
@@ -55,6 +67,18 @@ output "parameter_arns" {
     var.broadcast_hls_enabled ? {
       hls_r2_access_key_id     = aws_ssm_parameter.hls_r2_access_key_id[0].arn
       hls_r2_secret_access_key = aws_ssm_parameter.hls_r2_secret_access_key[0].arn
+    } : {},
+    var.manage_instance_dns ? {
+      cloudflare_api_token = aws_ssm_parameter.cloudflare_api_token[0].arn
+    } : {},
+    length(aws_ssm_parameter.tls_certificate) > 0 ? {
+      tls_certificate = aws_ssm_parameter.tls_certificate[0].arn
+    } : {},
+    length(aws_ssm_parameter.tls_private_key) > 0 ? {
+      tls_private_key = aws_ssm_parameter.tls_private_key[0].arn
+    } : {},
+    length(aws_ssm_parameter.tls_chain) > 0 ? {
+      tls_chain = aws_ssm_parameter.tls_chain[0].arn
     } : {}
   )
 }

@@ -489,5 +489,10 @@ locals {
     hls_r2_endpoint               = var.hls_r2_endpoint
     hls_r2_bucket                 = var.hls_r2_bucket
     hls_public_base_url           = var.hls_public_base_url
+
+    # ticket 39 — per-instance DNS + TLS.
+    manage_instance_dns = var.manage_instance_dns
+    audio_domain        = var.audio_domain
+    cloudflare_zone_id  = var.cloudflare_zone_id
   })
 }

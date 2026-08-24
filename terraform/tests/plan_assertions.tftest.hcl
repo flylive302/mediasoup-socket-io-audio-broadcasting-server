@@ -375,6 +375,66 @@ run "networking_cascade_rule_absent_when_closed" {
 }
 
 # -----------------------------------------------------------------------------
+# ticket 39 (AWS port of MSAB issue 36) — per-instance TLS termination's
+# security-group half. manage_instance_dns unset (default false) must open
+# NO 443 ingress rule at all — a true no-op, not merely "not flipped yet".
+# -----------------------------------------------------------------------------
+run "networking_443_absent_when_manage_instance_dns_unset" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    project_name       = "flylive-audio"
+    vpc_cidr           = "10.20.0.0/16"
+    app_port           = 3030
+    rtc_min_port       = 10000
+    rtc_max_port       = 10063
+    cascade_ports_open = false
+  }
+
+  assert {
+    condition     = var.manage_instance_dns == false
+    error_message = "manage_instance_dns must default to false (ticket 39 AC #1, ship-inert)"
+  }
+
+  assert {
+    condition     = !anytrue([for i in aws_security_group.msab.ingress : i.from_port == 443])
+    error_message = "No 443 ingress rule may exist while manage_instance_dns is unset — a plan with it unset must show zero 443 changes (ticket 39 AC #1)"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ticket 39 AC #3 — flipping the SAME var that gates the DNS record also opens
+# 443, world-open like the app rule (explicit scope call — Cloudflare-only
+# tightening is a noted follow-up, not silently inherited).
+# -----------------------------------------------------------------------------
+run "networking_443_opens_world_wide_when_flipped" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    project_name        = "flylive-audio"
+    vpc_cidr            = "10.20.0.0/16"
+    app_port            = 3030
+    rtc_min_port        = 10000
+    rtc_max_port        = 10063
+    cascade_ports_open  = false
+    manage_instance_dns = true
+  }
+
+  assert {
+    condition     = anytrue([for i in aws_security_group.msab.ingress : i.from_port == 443 && i.to_port == 443 && i.protocol == "tcp" && contains(i.cidr_blocks, "0.0.0.0/0")])
+    error_message = "manage_instance_dns=true must open a world-open 443/tcp ingress rule (same scope as app_tcp), mirroring Vultr's vultr_firewall_rule.tls_tcp (ticket 39 AC #3)"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # environment variable only allows staging|production — variables.tf
 # `environment` validation block: contains(["staging", "production"], var.environment).
 # A test run with an invalid value must fail plan with that validation error.

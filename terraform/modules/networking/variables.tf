@@ -74,3 +74,9 @@ variable "loadgen_security_group_id" {
   type        = string
   default     = ""
 }
+
+variable "manage_instance_dns" {
+  description = "Gates the msab security group's 443 ingress rule (per-instance TLS terminator, ticket 39) — same var that gates the per-instance DNS record itself, so the record and the port that answers it ship/flip together. Default false = no 443 rule at all."
+  type        = bool
+  default     = false
+}

@@ -34,6 +34,9 @@ module "networking" {
   # two variables instead of one.
   loadgen_ingress_enabled   = var.loadgen_ingress_enabled
   loadgen_security_group_id = var.loadgen_security_group_id
+
+  # ticket 39 — same gate as the per-instance DNS record + SSM token below.
+  manage_instance_dns = var.manage_instance_dns
 }
 
 # CACHE store (aws-platform-build/21): evict-freely, no backups — rate limits,
@@ -174,6 +177,15 @@ module "ssm" {
   hls_r2_access_key_id     = var.hls_r2_access_key_id
   hls_r2_secret_access_key = var.hls_r2_secret_access_key
 
+  # ticket 39 — per-instance DNS + TLS. All three are only ever WRITTEN to SSM
+  # (and only when manage_instance_dns / a non-empty cert is actually set); see
+  # modules/ssm/main.tf for the exact gating conditions.
+  manage_instance_dns      = var.manage_instance_dns
+  cloudflare_api_token     = var.cloudflare_api_token
+  instance_tls_certificate = var.instance_tls_certificate
+  instance_tls_private_key = var.instance_tls_private_key
+  instance_tls_chain       = var.instance_tls_chain
+
   iam_role_name = var.iam_role_name
   aws_region    = var.aws_region
 }
@@ -246,6 +258,13 @@ module "autoscaling" {
   hls_r2_endpoint       = var.hls_r2_endpoint
   hls_r2_bucket         = var.hls_r2_bucket
   hls_public_base_url   = var.hls_public_base_url
+
+  # ticket 39 — per-instance DNS. Non-sensitive: hostname suffix + zone id only;
+  # the actual Cloudflare API token is fetched at boot from SSM (never passed
+  # here). false/"" (defaults) render NO dns code at all — see user-data.sh.
+  manage_instance_dns = var.manage_instance_dns
+  audio_domain        = var.audio_domain
+  cloudflare_zone_id  = var.cloudflare_zone_id
 
   # Fixed-size fleet: ONE number drives min = max = desired (ticket 18 AC #2).
   fleet_size = var.fleet_size

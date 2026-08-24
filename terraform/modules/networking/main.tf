@@ -112,6 +112,27 @@ resource "aws_security_group" "msab" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Per-instance TLS termination (ticket 39 — AWS port of MSAB issue 36). The
+  # instance's local nginx terminator (modules/autoscaling/user-data.sh) listens
+  # :443 with the Cloudflare Origin CA cert fetched from SSM, so a per-instance
+  # DNS record (ticket 39's DNS half, same manage_instance_dns gate) can
+  # complete a Full(strict) handshake straight to the instance. Same
+  # permissiveness as the app rule above — world-open, matching the Vultr
+  # analogue (vultr_firewall_rule.tls_tcp) exactly. Cloudflare-only tightening
+  # (source = Cloudflare's published edge IP ranges) is a noted follow-up, not
+  # a blocker — deliberately NOT inherited silently, called out explicitly here
+  # per ticket 39 AC.
+  dynamic "ingress" {
+    for_each = var.manage_instance_dns ? [1] : []
+    content {
+      description = "Per-instance TLS termination (ticket 39)"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  }
+
   # WebRTC — deliberately NARROW (ticket 11). The app binds one shared port per
   # mediasoup worker (WebRtcServer: rtc_min_port + worker index, same number on
   # UDP and TCP); it does NOT allocate a port per user. 64 ports covers a

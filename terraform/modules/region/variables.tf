@@ -218,3 +218,38 @@ variable "manage_audio_dns" {
   type        = bool
   default     = true
 }
+
+# --- Per-instance DNS + TLS (ticket 39) — see root variables.tf for the full design note ---
+variable "manage_instance_dns" {
+  description = "Gates per-instance DNS self-registration (user-data), the security-group 443 ingress rule, and the instance's Cloudflare API token SSM parameter. Default false = inert."
+  type        = bool
+  default     = false
+}
+
+variable "instance_tls_certificate" {
+  description = "PEM certificate (Cloudflare Origin CA) for the per-instance TLS terminator. Empty (default) = terminator skipped, fails OPEN."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_private_key" {
+  description = "PEM private key matching instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_chain" {
+  description = "Optional PEM certificate chain for instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token — reused (ticket 39) to seed the instance's SSM cloudflare-api-token parameter, only when manage_instance_dns = true. Same token already used by the root cloudflare provider for ACM validation / the regional CNAME."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

@@ -220,6 +220,13 @@ SECRET_JWT_PREVIOUS=$(fetch_ssm "jwt-secret-previous")
 # intentionally NOT in the critical-secrets gate so a host boots fine with HLS disabled.
 SECRET_HLS_R2_ACCESS_KEY_ID=$(fetch_ssm "hls-r2-access-key-id")
 SECRET_HLS_R2_SECRET_ACCESS_KEY=$(fetch_ssm "hls-r2-secret-access-key")
+# ticket 39 — per-instance TLS terminator. Deliberately NOT in the
+# critical-secrets gate below: absent/empty is the normal steady state
+# (no cert provisioned for this environment yet), and the terminator block
+# further down fails OPEN on exactly that condition — never aborts boot.
+SECRET_TLS_CERT=$(fetch_ssm "tls-certificate")
+SECRET_TLS_KEY=$(fetch_ssm "tls-private-key")
+SECRET_TLS_CHAIN=$(fetch_ssm "tls-chain")
 
 # --- Validate critical secrets (fail fast instead of silent empty values) ---
 MISSING_SECRETS=0
@@ -498,6 +505,30 @@ while true; do
   if [ "$LIFECYCLE_STATE" = "Terminating:Wait" ]; then
     log "Termination detected! Lifecycle state: $LIFECYCLE_STATE"
 
+%{ if manage_instance_dns ~}
+    # --- Per-instance DNS cleanup (ticket 39) — best-effort, never blocks drain ---
+    # Files written by the boot-time registration block above, only present
+    # when that registration actually succeeded. Their absence (never
+    # registered, or the create call failed) is the normal "nothing to clean
+    # up" case, not an error.
+    if [ -f /opt/msab/.dns-hostname ] && [ -f /opt/msab/.cf-token ]; then
+      DNS_HOSTNAME=$(cat /opt/msab/.dns-hostname 2>/dev/null || echo "")
+      CF_TOKEN=$(cat /opt/msab/.cf-token 2>/dev/null || echo "")
+      if [ -n "$DNS_HOSTNAME" ] && [ -n "$CF_TOKEN" ]; then
+        log "Removing DNS record $DNS_HOSTNAME"
+        RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records?type=A&name=$DNS_HOSTNAME" \
+          -H "Authorization: Bearer $CF_TOKEN" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [ -n "$RECORD_ID" ]; then
+          curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records/$RECORD_ID" \
+            -H "Authorization: Bearer $CF_TOKEN" >/dev/null 2>&1 || true
+          log "DNS record $DNS_HOSTNAME removed (id=$RECORD_ID)"
+        else
+          log "WARNING: could not resolve record id for $DNS_HOSTNAME — leaving it, next boot's create will just re-point it"
+        fi
+      fi
+    fi
+%{ endif ~}
+
     ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
       --instance-ids "$INSTANCE_ID" --region "$REGION" \
       --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text 2>/dev/null)
@@ -638,6 +669,119 @@ if [ "$HEALTH_OK" -ne 1 ]; then
   echo "❌ FATAL: /health did not pass within $${HEALTH_MAX_WAIT}s — failing closed (container will be removed)."
   exit 1
 fi
+
+# --- Per-instance TLS termination (ticket 39 — AWS port of MSAB issue 36) ---
+# nginx sidecar on :443 -> 127.0.0.1:${app_port}, WebSocket upgrade passthrough
+# (Socket.IO/WSS is the whole workload — same shape as the Vultr terminator).
+# Cert/key/chain are fetched from SSM SecureString above, NEVER rendered
+# directly into this template (ticket 39 decision — see the ticket's
+# "Implementation notes" for why SSM was chosen over the Vultr render pattern).
+#
+# FAILS OPEN, deliberately AFTER the health gate and the launch hook is still
+# open at this point: a broken nginx config here must never abort the
+# instance's release to the fleet, so this block never uses `exit 1` and
+# every docker/nginx failure is swallowed with `|| true` / a log line. The
+# NLB/:${app_port} path is completely unaffected either way — this is a pure
+# addition, not a replacement.
+if [ -n "$SECRET_TLS_CERT" ] && [ -n "$SECRET_TLS_KEY" ]; then
+  echo "=== Configuring per-instance TLS terminator (nginx :443 -> 127.0.0.1:${app_port}) ==="
+  TLS_DIR="$APP_DIR/tls"
+  mkdir -p "$TLS_DIR"
+
+  printf '%s\n%s\n' "$SECRET_TLS_CERT" "$SECRET_TLS_CHAIN" > "$TLS_DIR/fullchain.pem"
+  printf '%s\n' "$SECRET_TLS_KEY" > "$TLS_DIR/privkey.pem"
+  chmod 600 "$TLS_DIR/privkey.pem"
+  chmod 644 "$TLS_DIR/fullchain.pem"
+
+  cat > "$APP_DIR/nginx-tls.conf" << 'NGINXEOF'
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:${app_port};
+        proxy_http_version 1.1;
+
+        # WebSocket upgrade (Socket.IO/WSS) — must pass through unchanged.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    3600s;
+        proxy_send_timeout    3600s;
+    }
+}
+NGINXEOF
+
+  if docker run -d \
+    --name msab-tls \
+    --restart unless-stopped \
+    --network host \
+    --log-driver=json-file \
+    --log-opt max-size=20m \
+    --log-opt max-file=3 \
+    -v "$TLS_DIR:/etc/nginx/tls:ro" \
+    -v "$APP_DIR/nginx-tls.conf:/etc/nginx/conf.d/default.conf:ro" \
+    nginx:1.27-alpine >/dev/null; then
+    echo "✅ Per-instance TLS terminator started (msab-tls container)."
+  else
+    echo "⚠️ Per-instance TLS terminator FAILED to start (non-fatal — :${app_port}/NLB path unaffected)."
+  fi
+else
+  echo "Per-instance TLS terminator SKIPPED — tls-certificate/tls-private-key not set in SSM for this environment (fails OPEN)."
+fi
+
+%{ if manage_instance_dns ~}
+# --- Per-instance DNS (ticket 39 — AWS port of MSAB issue 16) ---
+# ASG instances have no static per-instance terraform resource to hang a DNS
+# record off of (instance ids aren't known until launch) — unlike Vultr's
+# `cloudflare_dns_record.instance` for_each over module.compute, this record
+# is SELF-REGISTERED from user-data at boot. Rendered into the script at all
+# ONLY when manage_instance_dns = true (this whole block disappears from the
+# script otherwise — not merely skipped at runtime).
+#
+# Hostname = <ec2-instance-id>.${audio_domain} — reuses the SAME identity
+# already fetched above as $INSTANCE_ID (also INSTANCE_ID_OVERRIDE), not a
+# new one, at the same `*.audio.<domain>` label depth the Origin CA
+# certificate's wildcard covers (mirrors issue 16's Vultr decision exactly).
+#
+# Non-fatal by construction, same reasoning as the TLS block: DNS
+# registration must never gate the launch hook. The record and the
+# terminator that answers it are independently fail-open — a DNS create
+# failure just means this instance is unreachable by its pinned name until
+# the next boot/replace, not that it drops out of the fleet.
+echo "=== Registering per-instance DNS record ($INSTANCE_ID.${audio_domain}) ==="
+CF_API_TOKEN=$(fetch_ssm "cloudflare-api-token")
+if [ -n "$CF_API_TOKEN" ]; then
+  DNS_HOSTNAME="$INSTANCE_ID.${audio_domain}"
+  CF_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records" \
+    -H "Authorization: Bearer $CF_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data "{\"type\":\"A\",\"name\":\"$DNS_HOSTNAME\",\"content\":\"$PUBLIC_IP\",\"proxied\":true,\"ttl\":1}" 2>/dev/null || echo '{"success":false}')
+  if echo "$CF_RESPONSE" | grep -q '"success":true'; then
+    echo "✅ DNS record created: $DNS_HOSTNAME -> $PUBLIC_IP"
+    # Handed to the terminate-hook drain script below so it can delete the
+    # SAME record on scale-in without a second Cloudflare lookup-by-name call.
+    echo "$DNS_HOSTNAME" > /opt/msab/.dns-hostname
+    printf '%s' "$CF_API_TOKEN" > /opt/msab/.cf-token
+    chmod 600 /opt/msab/.dns-hostname /opt/msab/.cf-token
+  else
+    echo "⚠️ DNS record creation FAILED (non-fatal — instance still serves fine via the NLB/regional path): $CF_RESPONSE"
+  fi
+else
+  echo "⚠️ cloudflare-api-token not set in SSM — per-instance DNS registration SKIPPED (non-fatal)."
+fi
+%{ endif ~}
 
 # --- Complete the ASG launch lifecycle hook — THE LAST ACT (aws-production 02) ---
 # Strictly after the health gate: CONTINUE is the release of this instance to the

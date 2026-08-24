@@ -239,3 +239,62 @@ run "kms_decrypt_grant_is_scoped_to_this_key_and_region_qualified" {
     error_message = "kms:Decrypt must be scoped to the specific key ARN, not a wildcard"
   }
 }
+
+# -----------------------------------------------------------------------------
+# ticket 39 — per-instance DNS + TLS SSM parameters. Default (every new var
+# unset/empty) must create NOTHING: not the cloudflare-api-token parameter,
+# not any of the three TLS parameters — the true no-op the ship-inert rule
+# requires (AC #1/#4), not merely "unused until flipped".
+# -----------------------------------------------------------------------------
+run "ticket_39_creates_no_dns_or_tls_parameters_when_unset" {
+  command = plan
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.cloudflare_api_token) == 0
+    error_message = "cloudflare-api-token SSM parameter must not exist while manage_instance_dns is unset (default false)"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.tls_certificate) == 0 && length(aws_ssm_parameter.tls_private_key) == 0 && length(aws_ssm_parameter.tls_chain) == 0
+    error_message = "No TLS SSM parameter may exist while the cert/key/chain vars are unset — proves the terminator fails OPEN with zero SSM footprint, not just a runtime skip"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ticket 39 — flipping manage_instance_dns / supplying a cert creates exactly
+# the parameters that gate implies, on the SAME customer-managed key as every
+# other MSAB secret, and the optional chain stays independently gated.
+# -----------------------------------------------------------------------------
+run "ticket_39_creates_dns_and_tls_parameters_when_set" {
+  command = plan
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  variables {
+    manage_instance_dns      = true
+    cloudflare_api_token     = "test-cloudflare-api-token"
+    instance_tls_certificate = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
+    instance_tls_private_key = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.cloudflare_api_token) == 1 && aws_ssm_parameter.cloudflare_api_token[0].key_id == aws_kms_key.ssm.key_id
+    error_message = "cloudflare-api-token must be created, encrypted with this region's customer-managed key, when manage_instance_dns = true"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.tls_certificate) == 1 && aws_ssm_parameter.tls_certificate[0].key_id == aws_kms_key.ssm.key_id && length(aws_ssm_parameter.tls_private_key) == 1
+    error_message = "tls-certificate and tls-private-key SSM parameters must be created (on the CMK) once a cert/key is actually supplied"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.tls_chain) == 0
+    error_message = "tls-chain must stay absent when no chain value was supplied — it is independently optional, not bundled with the cert"
+  }
+}

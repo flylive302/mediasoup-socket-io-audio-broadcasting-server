@@ -84,3 +84,67 @@ run "no_dsn_renders_no_sentry_keys_at_all" {
     error_message = "With no DSN configured the env file must carry no SENTRY_* key at all"
   }
 }
+
+# -----------------------------------------------------------------------------
+# ticket 39 (AWS port of MSAB issues 16/36) — per-instance DNS + TLS rendered
+# into user-data.sh. Asserted on the RENDERED SCRIPT, same reasoning as the
+# Sentry runs above: a plan alone can't distinguish "wired but inert" from
+# "never wired", and AC #1/#2 require the DNS code not even exist in the
+# script when manage_instance_dns is unset — not merely skip at runtime.
+# -----------------------------------------------------------------------------
+run "instance_dns_renders_no_code_when_unset" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = var.manage_instance_dns == false
+    error_message = "manage_instance_dns must default to false (ticket 39 AC #1, ship-inert)"
+  }
+
+  assert {
+    condition     = !strcontains(output.user_data_rendered, "Registering per-instance DNS record")
+    error_message = "manage_instance_dns=false must render ZERO per-instance DNS code into user-data.sh — not merely skip it at runtime (ticket 39 AC #1)"
+  }
+
+  assert {
+    condition     = !strcontains(output.user_data_rendered, "Removing DNS record")
+    error_message = "The terminate-hook DNS cleanup block must also be absent from the rendered script when manage_instance_dns is unset"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "Per-instance TLS terminator SKIPPED")
+    error_message = "The TLS terminator branch is runtime-gated on the SSM cert (not on manage_instance_dns) and must resolve to SKIPPED with no cert configured — proves it fails OPEN (ticket 39 AC #2)"
+  }
+}
+
+run "instance_dns_renders_registration_and_cleanup_when_enabled" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  variables {
+    manage_instance_dns = true
+    audio_domain        = "audio.flyliveapp.com"
+    cloudflare_zone_id  = "mock-zone-id"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "Registering per-instance DNS record ($INSTANCE_ID.audio.flyliveapp.com)")
+    error_message = "manage_instance_dns=true must render the DNS registration block, hostname derived from the SAME $INSTANCE_ID already used for INSTANCE_ID_OVERRIDE (mirrors issue 16's Vultr decision)"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "zones/mock-zone-id/dns_records")
+    error_message = "The rendered Cloudflare API calls must target the configured zone id"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "Removing DNS record")
+    error_message = "The terminate-hook drain script must carry the best-effort DNS cleanup block once manage_instance_dns = true"
+  }
+}

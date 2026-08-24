@@ -502,3 +502,54 @@ variable "manage_audio_dns" {
   type        = bool
   default     = true
 }
+
+# --- Per-instance DNS + TLS (aws-production ticket 39 — AWS port of MSAB issues 16/36) ---
+# ASG instances have no static per-instance terraform resource (ids aren't known until
+# launch), so — unlike the audio_domain CNAME above, and unlike Vultr's per-instance
+# cloudflare_dns_record.instance for_each over module.compute — the record is
+# self-registered from user-data at BOOT, gated by this single var, and best-effort
+# de-registered from the ASG terminate lifecycle hook at scale-in. See
+# docs/issues/aws-production/39-port-per-instance-dns-and-tls-to-aws.md
+# "Implementation notes" for the full design + why.
+#
+# This SAME var also gates the security-group 443 ingress rule (modules/networking)
+# and whether the instance's SSM cloudflare-api-token parameter is created
+# (modules/ssm) — one gate, ship-inert by default, per AC #1.
+variable "manage_instance_dns" {
+  description = "Register (at boot, via Cloudflare API from user-data) a per-instance DNS record `<instance-id>.audio_domain`, open the 443 security-group rule, and provision the instance's Cloudflare API token in SSM. Default false = fully inert: zero DNS records, zero 443 ingress, zero extra SSM parameter, zero API calls, even if apply somehow ran."
+  type        = bool
+  default     = false
+}
+
+# --- Per-instance TLS termination (aws-production ticket 39 — AWS port of MSAB issue 36) ---
+# Cloudflare Origin CA cert/key for the instance-local nginx terminator
+# (modules/autoscaling/user-data.sh). Delivered via SSM SecureString, fetched at
+# boot — NOT rendered directly into user-data (reconsidered per ticket 39; unlike
+# Vultr, SSM is available here and keeps the PEM out of the EC2
+# DescribeInstanceAttribute user-data surface, behind the SAME KMS-scoped
+# kms:Decrypt grant every other MSAB secret already uses). Empty (default) means
+# no SSM parameter is created at all — the terminator is skipped, FAILS OPEN, and
+# the NLB/:app_port path is completely unaffected. Reuse the SAME cert the
+# regional NLB/ACM setup does NOT use (that's ACM-issued) — this is the
+# Cloudflare Origin CA material, same as Vultr's lb_ssl_* / SAN already verified
+# to cover `*.audio.flyliveapp.com`.
+variable "instance_tls_certificate" {
+  description = "PEM certificate (Cloudflare Origin CA) for the per-instance TLS terminator. Empty (default) = terminator skipped, fails OPEN."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_private_key" {
+  description = "PEM private key matching instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_chain" {
+  description = "Optional PEM certificate chain for instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

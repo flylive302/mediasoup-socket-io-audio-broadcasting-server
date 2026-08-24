@@ -174,6 +174,11 @@ module "region_mumbai" {
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
   manage_audio_dns                      = var.manage_audio_dns
+  manage_instance_dns                   = var.manage_instance_dns
+  instance_tls_certificate              = var.instance_tls_certificate
+  instance_tls_private_key              = var.instance_tls_private_key
+  instance_tls_chain                    = var.instance_tls_chain
+  cloudflare_api_token                  = var.cloudflare_api_token
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture
@@ -268,6 +273,11 @@ module "region_frankfurt" {
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
   manage_audio_dns                      = var.manage_audio_dns
+  manage_instance_dns                   = var.manage_instance_dns
+  instance_tls_certificate              = var.instance_tls_certificate
+  instance_tls_private_key              = var.instance_tls_private_key
+  instance_tls_chain                    = var.instance_tls_chain
+  cloudflare_api_token                  = var.cloudflare_api_token
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture
@@ -342,6 +352,11 @@ module "region_singapore" {
   audio_domain                          = var.audio_domain
   cloudflare_zone_id                    = var.cloudflare_zone_id
   manage_audio_dns                      = var.manage_audio_dns
+  manage_instance_dns                   = var.manage_instance_dns
+  instance_tls_certificate              = var.instance_tls_certificate
+  instance_tls_private_key              = var.instance_tls_private_key
+  instance_tls_chain                    = var.instance_tls_chain
+  cloudflare_api_token                  = var.cloudflare_api_token
   caa_records_override                  = var.caa_records_override
   instance_type                         = var.instance_type
   instance_architecture                 = var.instance_architecture

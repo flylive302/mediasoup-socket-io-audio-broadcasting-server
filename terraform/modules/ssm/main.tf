@@ -188,6 +188,70 @@ resource "aws_ssm_parameter" "hls_r2_secret_access_key" {
   }
 }
 
+# --- Per-instance DNS: Cloudflare API token (ticket 39) ---
+# Created ONLY when manage_instance_dns = true — the whole point of the gate.
+# Fetched at boot by user-data.sh's fetch_ssm("cloudflare-api-token") and used
+# to self-register/de-register the instance's own DNS record. An unset/absent
+# parameter (the default) makes fetch_ssm() return "", which the DNS block
+# treats as "skip — non-fatal" (see modules/autoscaling/user-data.sh).
+resource "aws_ssm_parameter" "cloudflare_api_token" {
+  count       = var.manage_instance_dns ? 1 : 0
+  name        = "/${local.env_prefix}/cloudflare-api-token"
+  description = "Cloudflare API token instances use to self-register their per-instance DNS record (ticket 39)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.cloudflare_api_token
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- Per-instance TLS: Cloudflare Origin CA cert/key (ticket 39) ---
+# Created ONLY when a cert is actually supplied — SSM rejects an empty
+# SecureString value, and "no parameter" is exactly the state
+# modules/autoscaling/user-data.sh's TLS block already treats as "skip,
+# fail OPEN". The chain is optional and created independently: some
+# environments' Origin CA cert needs no separate chain file.
+resource "aws_ssm_parameter" "tls_certificate" {
+  count       = var.instance_tls_certificate == "" ? 0 : 1
+  name        = "/${local.env_prefix}/tls-certificate"
+  description = "Cloudflare Origin CA certificate (PEM) for the per-instance TLS terminator (ticket 39)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.instance_tls_certificate
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+resource "aws_ssm_parameter" "tls_private_key" {
+  count       = var.instance_tls_private_key == "" ? 0 : 1
+  name        = "/${local.env_prefix}/tls-private-key"
+  description = "Private key (PEM) matching tls_certificate"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.instance_tls_private_key
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+resource "aws_ssm_parameter" "tls_chain" {
+  count       = var.instance_tls_chain == "" ? 0 : 1
+  name        = "/${local.env_prefix}/tls-chain"
+  description = "Optional certificate chain (PEM) for tls_certificate"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.instance_tls_chain
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 # --- Redis AUTH Token ---
 resource "aws_ssm_parameter" "redis_auth_token" {
   name        = "/${local.env_prefix}/redis-auth-token"

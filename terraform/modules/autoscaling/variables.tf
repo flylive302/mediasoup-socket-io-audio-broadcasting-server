@@ -572,3 +572,30 @@ variable "ice_stun_urls" {
   type        = string
   default     = "stun:stun.cloudflare.com:3478,stun:stun.cloudflare.com:53"
 }
+
+# --- Per-instance DNS + TLS (ticket 39) ---
+
+variable "manage_instance_dns" {
+  description = <<-EOT
+    Renders the per-instance DNS self-registration block into user-data.sh
+    (`%%{ if manage_instance_dns ~}` — false means the DNS code does not even
+    exist in the rendered script, not just that it's skipped at runtime).
+    Default false. The TLS terminator is independently gated at RUNTIME by
+    whether the tls-certificate/tls-private-key SSM parameters are actually
+    set (fails OPEN), so it needs no separate terraform-level flag here.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "audio_domain" {
+  description = "Base domain the per-instance DNS record is created under: `<ec2-instance-id>.audio_domain`. Only read when manage_instance_dns = true."
+  type        = string
+  default     = ""
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone id hosting audio_domain — used by the instance's own boot-time Cloudflare API calls (create) and terminate-time calls (delete). Only read when manage_instance_dns = true."
+  type        = string
+  default     = ""
+}

@@ -80,3 +80,39 @@ variable "hls_r2_secret_access_key" {
   sensitive   = true
   default     = ""
 }
+
+# --- Per-instance DNS + TLS (ticket 39) ---
+
+variable "manage_instance_dns" {
+  description = "Whether to create the cloudflare-api-token SSM parameter instances use to self-register their DNS record at boot. Default false — no parameter, no API-callable token stored anywhere."
+  type        = bool
+  default     = false
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token, stored to SSM only when manage_instance_dns = true (see main.tf gating)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_certificate" {
+  description = "PEM certificate (Cloudflare Origin CA) for the per-instance TLS terminator. Empty (default) = no SSM parameter created, terminator fails OPEN."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_private_key" {
+  description = "PEM private key matching instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "instance_tls_chain" {
+  description = "Optional PEM certificate chain for instance_tls_certificate."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
