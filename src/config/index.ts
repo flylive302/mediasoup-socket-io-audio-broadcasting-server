@@ -295,7 +295,7 @@ const configSchema = z.object({
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),
   GIFT_MAX_RETRIES: z.coerce.number().default(5),
-  GIFT_RATE_LIMIT: z.coerce.number().default(330),
+  GIFT_RATE_LIMIT: z.coerce.number().default(600),
   GIFT_RATE_WINDOW: z.coerce.number().default(60),
 
   // gift-authority-tick-fanout 03: runtime flag source (Redis hash → env →
