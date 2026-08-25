@@ -3,6 +3,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { getRedisClient } from "@src/infrastructure/redis.js";
 import { config } from "@src/config/index.js";
 import { verifyJwt } from "./jwtValidator.js";
+import { overlayUserXp } from "@src/shared/user-xp.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import type { AuthSocketData } from "./types.js";
 import { Errors } from "@src/shared/errors.js";
@@ -47,9 +48,9 @@ export async function authMiddleware(
   const redis = getRedisClient();
 
   try {
-    const user = await verifyJwt(cleanToken, redis, logger);
+    const jwtUser = await verifyJwt(cleanToken, redis, logger);
 
-    if (!user) {
+    if (!jwtUser) {
       logger.warn(
         { socketId: socket.id, tokenLength: cleanToken.length },
         "Invalid token provided — verifyJwt returned null (check preceding warn logs for reason)",
@@ -67,6 +68,10 @@ export async function authMiddleware(
     const correlationId = resolveCorrelationId(
       typeof rawCorrelationId === "string" ? rawCorrelationId : undefined,
     );
+
+    // JWT XP claims are a mint-time snapshot; overlay the latest persisted
+    // XP so reconnects don't show stale (usually level-1) badges. Fail-open.
+    const user = await overlayUserXp(redis, logger, jwtUser);
 
     // Attach user to socket (no token stored — AUTH-004)
     socket.data = { user, correlationId } as AuthSocketData;

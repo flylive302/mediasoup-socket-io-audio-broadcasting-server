@@ -174,6 +174,49 @@ describe("EventRouter", () => {
     router = new EventRouter(io, repo, clientManager, logger);
   });
 
+  // ─── XP freshness: balance.updated patches sockets + persists ────
+
+  describe("balance.updated XP sync", () => {
+    it("patches live sockets, broadcasts, and persists XP", async () => {
+      const sock = { data: { user: { id: 42, wealth_xp: "1", charm_xp: "1" } } };
+      io.sockets.sockets = new Map([["s42", sock]]);
+      repo.getSocketIds.mockResolvedValue(["s42"]);
+      clientManager.updateUserProfile.mockReturnValue(new Set(["room-9"]));
+      const exec = vi.fn().mockResolvedValue([]);
+      const expire = vi.fn().mockReturnValue({ exec });
+      const hset = vi.fn().mockReturnValue({ expire });
+      const redis = {
+        set: vi.fn().mockResolvedValue("OK"),
+        get: vi.fn().mockResolvedValue(null),
+        multi: () => ({ hset }),
+      } as any;
+      router = new EventRouter(io, repo, clientManager, logger, redis);
+
+      await router.route(
+        createEvent({
+          user_id: 42,
+          payload: { coins: "10", diamonds: "0", wealth_xp: "5000", charm_xp: "700" },
+        }),
+      );
+      await flushPromises();
+
+      expect(sock.data.user.wealth_xp).toBe("5000");
+      expect(sock.data.user.charm_xp).toBe("700");
+      expect(hset).toHaveBeenCalledWith("user:42:xp", { wealth_xp: "5000", charm_xp: "700" });
+      expect(io.to).toHaveBeenCalledWith("room-9");
+      expect(io._emitFn).toHaveBeenCalledWith("user:profile_updated", {
+        user_id: 42,
+        profile: { wealth_xp: "5000", charm_xp: "700" },
+      });
+    });
+
+    it("ignores balance pushes without xp fields", async () => {
+      await router.route(createEvent({ user_id: 42, payload: { coins: "10" } }));
+      await flushPromises();
+      expect(clientManager.updateUserProfile).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── RL-011: Multi-instance room emit ──────────────────────────
 
   describe("emitToRoom (RL-011)", () => {

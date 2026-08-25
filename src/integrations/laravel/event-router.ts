@@ -20,6 +20,7 @@ import type { ClientManager } from "@src/client/clientManager.js";
 import type { User } from "@src/auth/types.js";
 import type { RoomStateRepository } from "@src/domains/room/roomState.js";
 import { syncUserProfileInMemory } from "@src/shared/profile-sync.js";
+import { extractXp, persistUserXp } from "@src/shared/user-xp.js";
 import { reactError } from "@src/shared/react-error.js";
 import {
   acceptIfNotOlder,
@@ -271,6 +272,17 @@ export class EventRouter {
         }
       }
 
+      // REACT: wealth/charm XP ride on balance.updated (the only XP write
+      // path). Patch live sockets + broadcast so seat/chat badges update for
+      // everyone, and persist so a reconnect doesn't revert to the stale JWT
+      // snapshot (see src/shared/user-xp.ts).
+      if (
+        event.event === RELAY_EVENTS.economy.BALANCE_UPDATED &&
+        event.user_id !== null
+      ) {
+        this.syncUserXp(event.user_id, event.payload);
+      }
+
       // Post-relay side-effect: update in-memory user data on profile change
       if (
         event.event === RELAY_EVENTS.user.PROFILE_UPDATED &&
@@ -487,6 +499,27 @@ export class EventRouter {
     return { delivered: true, targetCount: localCount };
   }
 
+
+  /**
+   * Persist + fan out fresh XP from a balance.updated push. Fire-and-forget.
+   */
+  private syncUserXp(userId: number, payload: Record<string, unknown>): void {
+    const xp = extractXp(payload);
+    if (!xp) return;
+
+    if (this.redis) void persistUserXp(this.redis, this.logger, userId, xp);
+    syncUserProfileInMemory(
+      this.io,
+      this.clientManager,
+      userId,
+      xp,
+      this.userSocketRepo,
+    ).catch((err) => {
+      reactError(err, { userId }, "Failed to sync user XP", {
+        logger: this.logger,
+      });
+    });
+  }
 
   /**
    * Sync user profile data across all in-memory stores and broadcast to rooms.

@@ -29,6 +29,7 @@ vi.mock("@src/infrastructure/logger.js", () => ({
 vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: {
     authAttempts: { inc: vi.fn() },
+    redisDegradations: { inc: vi.fn() },
   },
 }));
 
@@ -81,6 +82,23 @@ describe("authMiddleware", () => {
     mockRedis = {};
     mockGetRedisClient.mockReturnValue(mockRedis);
     mockVerifyJwt.mockResolvedValue(validUser);
+  });
+
+  it("overlays persisted XP on the JWT snapshot (stale-token reconnect)", async () => {
+    mockRedis = { hgetall: vi.fn().mockResolvedValue({ wealth_xp: "9000", charm_xp: "400" }) };
+    mockGetRedisClient.mockReturnValue(mockRedis);
+    const socket = createMockSocket();
+    const next = vi.fn();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await authMiddleware(socket as any, next);
+
+    expect(next).toHaveBeenCalledWith();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const user = (socket as any).data.user;
+    expect(user.wealth_xp).toBe("9000");
+    expect(user.charm_xp).toBe("400");
+    expect(user.name).toBe("Test User");
   });
 
   it("rejects connection without token", async () => {
