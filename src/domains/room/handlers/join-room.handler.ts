@@ -20,6 +20,7 @@ import { performRoomLeave } from "@src/domains/room/room-leave.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js";
 import { Errors } from "@src/shared/errors.js";
+import { ensureWarm } from "@src/domains/gift/balanceSync.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
@@ -630,6 +631,10 @@ function afterJoin(
       hosting_port: config.PORT,
     });
   }
+
+  // gift-authority-tick-fanout 11: warm the joiner's ledger key when cold so
+  // the first tap is not judged `cold`. Fire-and-forget; no-op when off.
+  void ensureWarm(socket.data.user.id);
 
   // Broadcast to room (cascade-aware)
   const u = socket.data.user;

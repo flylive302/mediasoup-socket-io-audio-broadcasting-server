@@ -15,6 +15,8 @@ import { reactError } from "@src/shared/react-error.js";
 import { giftLegacyShape, giftRoomTickMs } from "./flags.js";
 import { enqueueGift, flushAllRooms } from "./roomTicker.js";
 import { getGift, hasCatalog } from "./catalogCache.js";
+import { debitForTap } from "./balanceSync.js";
+import { metrics } from "@src/infrastructure/metrics.js";
 
 interface BurstFields {
   roomId: string;
@@ -153,19 +155,12 @@ export class GiftHandler {
       batch_id: payload.batchId,
     };
 
-    // ── REACT ────────────────────────────────────────────────
-
-    // Disconnect-log correlation counter (see AuthSocketData.giftSendCount).
-    sock.data.giftSendCount = (sock.data.giftSendCount ?? 0) + 1;
-    // gift-authority-tick-fanout 01: rate counterpart, see giftActivityWindow.
-    sock.data.giftActivityWindow?.record(Date.now());
-
-    // gift-authority-tick-fanout 09: shadow-only cost/policy-input logging —
-    // no behaviour change. `cost` is null when the catalog hasn't loaded yet
-    // or the gift id is unknown; the money path (later tickets) must fail
-    // CLOSED on `hasCatalog() === false`, this line only observes.
+    // gift-authority-tick-fanout 09: `cost` is null when the catalog hasn't
+    // loaded yet or the gift id is unknown; the money path must fail CLOSED
+    // on `hasCatalog() === false` (ticket 12) — here it is only observed.
     const quantity = payload.quantity ?? 1;
-    const cachedGift = hasCatalog() ? getGift(payload.giftId) : undefined;
+    const catalogLoaded = hasCatalog();
+    const cachedGift = catalogLoaded ? getGift(payload.giftId) : undefined;
     const cost =
       cachedGift !== undefined
         ? cachedGift.price * quantity * acceptedRecipientIds.length
@@ -181,6 +176,43 @@ export class GiftHandler {
       "gift cost (shadow)",
     );
 
+    // gift-authority-tick-fanout 11: reserved-debit ledger, shadow mode —
+    // computes whether this tap WOULD be rejected, changes nothing the
+    // client can see. On `ok` the script itself enqueued the transaction
+    // (same list, same JSON), so the buffer enqueue below is skipped; any
+    // other verdict falls through to today's path. `off` never gets here.
+    const verdict = await debitForTap({
+      userId: user.id,
+      txId: transaction.transaction_id,
+      cost,
+      costCode: catalogLoaded ? "unknown_gift" : "no_catalog",
+      giftJson: JSON.stringify(transaction),
+      pendingListKey: this.buffer.queueKeyFor(user.id),
+    });
+    if (verdict.kind === "would_reject" || verdict.kind === "no_cost") {
+      metrics.giftWouldRejectTotal.inc({ code: verdict.code });
+      logger.info(
+        {
+          would_reject: true,
+          code: verdict.code,
+          spendable: verdict.kind === "would_reject" ? verdict.spendable : null,
+          cost,
+          transactionId: transaction.transaction_id,
+          userId: user.id,
+          giftId: payload.giftId,
+        },
+        "gift ledger would reject (shadow)",
+      );
+    }
+    const enqueuedByLedger = verdict.kind === "ok";
+
+    // ── REACT ────────────────────────────────────────────────
+
+    // Disconnect-log correlation counter (see AuthSocketData.giftSendCount).
+    sock.data.giftSendCount = (sock.data.giftSendCount ?? 0) + 1;
+    // gift-authority-tick-fanout 01: rate counterpart, see giftActivityWindow.
+    sock.data.giftActivityWindow?.record(Date.now());
+
     this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context, transaction.transaction_id);
 
     // BL-001 FIX: Record room activity to prevent auto-close during active gifting
@@ -189,8 +221,9 @@ export class GiftHandler {
       reactError(err, { roomId: payload.roomId }, "auto-close activity recording failed", { level: "debug" });
     });
 
-    // Queue for persistence — exactly ONE row per burst.
-    await this.buffer.enqueue(transaction);
+    // Queue for persistence — exactly ONE row per burst (the ledger's debit
+    // script already did it when it returned `ok`, see above).
+    if (!enqueuedByLedger) await this.buffer.enqueue(transaction);
 
     // `transaction_id` is returned so the sender can join its own gift to the
     // eventual `lucky:result` (echoed there as `reference_id`). It is the only

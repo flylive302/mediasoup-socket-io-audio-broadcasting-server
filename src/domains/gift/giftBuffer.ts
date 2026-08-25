@@ -10,6 +10,7 @@ import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import { giftFlushPartitions, giftPendingTtlMs } from "./flags.js";
+import { reconcileBalance, type ReconcileSource } from "./balanceSync.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -503,6 +504,9 @@ export class GiftBuffer {
       // the moment the batch commits instead of waiting on Laravel's queued
       // realtime bridge. Same payload shape as the bridge's `balance.updated`.
       this.emitSenderBalances(result, transactions);
+      // gift-authority-tick-fanout 11: settle every id in this batch on the
+      // ledger (booked or failed — both are terminal) with the snapshot.
+      this.reconcileSenders(result, transactions, "batch");
 
     } catch (error) {
       this.lastBookingOk = false;
@@ -550,6 +554,7 @@ export class GiftBuffer {
             metrics.giftsProcessed.inc({ status: "success" }, 1);
             this.emitSenderBalances(result, [gift]);
           }
+          this.reconcileSenders(result, [gift], "fallback");
           continue; // Item handled, don't re-queue
         } catch {
           // Individual item also failed — fall through to retry/dead-letter logic
@@ -741,6 +746,40 @@ export class GiftBuffer {
    * senders back to sockets via the buffered transactions' sender_socket_id.
    * Absent `processed` (older Laravel) is a silent no-op.
    */
+  /**
+   * REACT (fire-and-forget): ticket 11 — per sender, release every
+   * reservation this response settled (booked AND failed ids are terminal;
+   * re-queued/dead-lettered ones are not in `transactions` here) and apply
+   * the newest `processed[].balance` snapshot for that sender. No-op while
+   * GIFT_BALANCE_AUTHORITY=off (balanceSync gates it).
+   */
+  private reconcileSenders(
+    result: BatchProcessingResult,
+    transactions: BufferedGift[],
+    source: ReconcileSource,
+  ): void {
+    try {
+      const settledBySender = new Map<number, string[]>();
+      for (const t of transactions) {
+        const ids = settledBySender.get(t.sender_id) ?? [];
+        ids.push(t.transaction_id);
+        settledBySender.set(t.sender_id, ids);
+      }
+      const snapshotBySender = new Map<number, { coins: string; version?: number }>();
+      for (const entry of result.processed ?? []) {
+        const prev = snapshotBySender.get(entry.sender_id);
+        if (!prev || (entry.balance.version ?? -1) > (prev.version ?? -1)) {
+          snapshotBySender.set(entry.sender_id, entry.balance);
+        }
+      }
+      for (const [senderId, ids] of settledBySender) {
+        void reconcileBalance(senderId, snapshotBySender.get(senderId) ?? null, ids, source);
+      }
+    } catch (error) {
+      this.logger.warn({ error }, "Failed to reconcile sender ledgers from batch response");
+    }
+  }
+
   private emitSenderBalances(
     result: BatchProcessingResult,
     transactions: BufferedGift[],

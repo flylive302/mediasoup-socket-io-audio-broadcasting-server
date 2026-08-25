@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // applied ONLY by the room-establishing first join (state source "default");
 // afterwards room state is authoritative and a stale joiner is a logged no-op.
 
+// gift-authority-tick-fanout 11: join-room warms the ledger key via balanceSync.
+vi.mock("@src/domains/gift/balanceSync.js", () => ({
+  ensureWarm: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@src/shared/crypto.js", () => ({
   generateCorrelationId: () => "test-id",
 }));

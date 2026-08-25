@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockEnsureWarm = vi.fn().mockResolvedValue(undefined);
+vi.mock("@src/domains/gift/balanceSync.js", () => ({
+  ensureWarm: (...a: unknown[]) => mockEnsureWarm(...a),
+}));
+
 vi.mock("@src/shared/crypto.js", () => ({
   generateCorrelationId: () => "test-id",
 }));

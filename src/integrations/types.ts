@@ -44,7 +44,11 @@ export interface BatchProcessingResult {
       diamonds: string;
       wealth_xp: string;
       charm_xp: string;
+      /** gift-authority-tick-fanout 06: backend `balance_version` for this snapshot. */
+      version?: number;
     };
+    /** 06: true when every id in the group was a replay of an earlier booking. */
+    already_booked?: boolean;
   }>;
 }
 

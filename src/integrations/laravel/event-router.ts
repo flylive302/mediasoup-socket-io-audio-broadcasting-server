@@ -42,6 +42,7 @@ import {
   releaseClaim,
 } from "@src/infrastructure/event-dedup.js";
 import { giftRoomTickMs } from "@src/domains/gift/flags.js";
+import { reconcileBalance } from "@src/domains/gift/balanceSync.js";
 import { enqueueLucky } from "@src/domains/gift/roomTicker.js";
 import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
@@ -144,6 +145,19 @@ export class EventRouter {
     }
     if (!shouldEmit) {
       metrics.laravelEventsFanoutSuppressed.inc({ event_type: event.event });
+    }
+
+    // gift-authority-tick-fanout 11: apply the backend's versioned snapshot
+    // to the ledger BEFORE the client sees it, so a tap that races this push
+    // is judged on the newer balance. Ordering across pushes is the script's
+    // job (older versions are ignored). Never blocks delivery.
+    if (event.event === RELAY_EVENTS.economy.BALANCE_UPDATED && event.user_id !== null) {
+      await reconcileBalance(
+        event.user_id,
+        event.payload as { coins?: unknown; version?: unknown },
+        [],
+        "push",
+      );
     }
 
     try {

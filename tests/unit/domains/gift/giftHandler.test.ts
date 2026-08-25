@@ -31,6 +31,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     // F-3: createHandler now records per-event throughput/latency.
     eventsTotal: { inc: vi.fn() },
     eventLatency: { observe: vi.fn() },
+    giftWouldRejectTotal: { inc: vi.fn() },
   },
 }));
 
@@ -45,6 +46,13 @@ vi.mock("@src/domains/gift/flags.js", () => ({
   giftRoomTickMs: () => mockRoomTickMs,
   giftPendingTtlMs: () => 30_000,
   giftFlushPartitions: () => 1,
+}));
+
+// gift-authority-tick-fanout 11: the ledger seam is mocked; the verdict is
+// scripted per test. Default `skipped` = GIFT_BALANCE_AUTHORITY=off.
+const mockDebitForTap = vi.fn();
+vi.mock("@src/domains/gift/balanceSync.js", () => ({
+  debitForTap: (...a: unknown[]) => mockDebitForTap(...a),
 }));
 
 const mockEnqueueGift = vi.fn();
@@ -206,6 +214,7 @@ describe("GiftHandler", () => {
     mockLegacyShape = true;
     mockRoomTickMs = 0;
     mockHasCatalog = true;
+    mockDebitForTap.mockResolvedValue({ kind: "skipped" });
     mockCatalog = new Map();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
@@ -755,6 +764,73 @@ describe("GiftHandler", () => {
   });
 
   // ─── gift-authority-tick-fanout 09: shadow cost logging ────────────
+  describe("ledger debit in shadow mode (gift-authority-tick-fanout 11)", () => {
+    const send = async (verdict: unknown) => {
+      mockDebitForTap.mockResolvedValue(verdict);
+      mockCatalog.set(100, { id: 100, price: 50, isActive: true, isLucky: false, minLevel: 0, vipOnly: false });
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+      const result = await extractHandler(socket, "gift:send")({
+        roomId: "room-1", giftId: 100, recipientIds: [2, 3], quantity: 2,
+      });
+      return { socket, result: result as { success: boolean; acceptedRecipientIds?: number[]; transaction_id?: string } };
+    };
+
+    it("off (`skipped`): buffer enqueue exactly as today", async () => {
+      const { result } = await send({ kind: "skipped" });
+      expect(result.success).toBe(true);
+      expect(vi.mocked(mockRedis.rpush)).toHaveBeenCalledTimes(1);
+    });
+
+    it("calls the debit with cost = price × qty × recipients, the tx id, the row JSON and the sender's queue key", async () => {
+      const { result } = await send({ kind: "ok", spendable: 1, seq: 1 });
+      const args = mockDebitForTap.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args).toMatchObject({
+        userId: 1, txId: result.transaction_id, cost: 200, costCode: "unknown_gift", pendingListKey: "gifts:pending",
+      });
+      expect(JSON.parse(args.giftJson as string)).toMatchObject({
+        transaction_id: result.transaction_id, sender_id: 1, recipient_ids: [2, 3], gift_id: 100, quantity: 2,
+      });
+    });
+
+    it("`ok`: the script enqueued the row — the handler must NOT enqueue it again; ack unchanged", async () => {
+      const { socket, result } = await send({ kind: "ok", spendable: 1, seq: 1 });
+      expect(result).toMatchObject({ success: true, acceptedRecipientIds: [2, 3] });
+      expect(vi.mocked(mockRedis.rpush)).not.toHaveBeenCalled();
+      expect(vi.mocked(socket.to)).toHaveBeenCalled(); // gift:received still emitted
+    });
+
+    it("`would_reject`: counts the code, logs, then proceeds byte-identically (enqueue + ack + emits)", async () => {
+      const { socket, result } = await send({ kind: "would_reject", code: "insufficient", spendable: 3 });
+      expect(result).toMatchObject({ success: true, acceptedRecipientIds: [2, 3] });
+      expect(vi.mocked(mockRedis.rpush)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(socket.to)).toHaveBeenCalled();
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).toHaveBeenCalledWith({ code: "insufficient" });
+      const { logger } = await import("@src/infrastructure/logger.js");
+      const log = vi.mocked(logger.info).mock.calls.find(([, m]) => m === "gift ledger would reject (shadow)");
+      expect(log?.[0]).toMatchObject({ would_reject: true, code: "insufficient", spendable: 3, cost: 200, transactionId: result.transaction_id });
+    });
+
+    it("catalog not loaded: reports code no_catalog without touching the script args' cost", async () => {
+      mockHasCatalog = false;
+      const { result } = await send({ kind: "no_cost", code: "no_catalog" });
+      expect(result.success).toBe(true);
+      expect(mockDebitForTap.mock.calls[0]![0]).toMatchObject({ cost: null, costCode: "no_catalog" });
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).toHaveBeenCalledWith({ code: "no_catalog" });
+    });
+
+    it("Redis unreachable (`error`): proceeds as today", async () => {
+      const { result } = await send({ kind: "error" });
+      expect(result.success).toBe(true);
+      expect(vi.mocked(mockRedis.rpush)).toHaveBeenCalledTimes(1);
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).not.toHaveBeenCalled();
+    });
+  });
+
   describe("shadow cost computation", () => {
     it("logs cost = price × quantity × acceptedRecipients for a multi-recipient burst", async () => {
       mockCatalog.set(100, { id: 100, price: 50, isActive: true, isLucky: false, minLevel: 0, vipOnly: false });

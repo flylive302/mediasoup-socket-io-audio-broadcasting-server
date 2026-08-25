@@ -10,6 +10,7 @@ import { ClientManager } from "@src/client/clientManager.js";
 
 // Handlers
 import { GiftHandler } from "@src/domains/gift/giftHandler.js";
+import { initBalanceSync } from "@src/domains/gift/balanceSync.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { registerDrainRepinClient } from "@src/infrastructure/drain.js";
 import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
@@ -96,6 +97,9 @@ export async function initializeSocket(
   const seatRepository = new SeatRepository(redis);
 
   const roomManager = new RoomManager(workerManager, redis, io, laravelClient, statusCoalescer, seatRepository);
+  // gift-authority-tick-fanout 11: ledger wiring (durable Redis — the one
+  // holding gifts:pending). Inert while GIFT_BALANCE_AUTHORITY=off.
+  initBalanceSync(redis, laravelClient, logger);
   const giftHandler = new GiftHandler(redis, io, laravelClient);
   const rateLimiter = new RateLimiter(redisCache);
 

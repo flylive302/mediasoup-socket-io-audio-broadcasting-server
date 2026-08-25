@@ -472,6 +472,33 @@ export class LaravelClient {
   }
 
   /**
+   * gift-authority-tick-fanout 11: one user's authoritative balance + version
+   * (ticket 07 endpoint) — used to warm a cold ledger key and to force a
+   * refresh before a would-reject. `null` on 404 (unknown user); throws on
+   * any other failure so balanceSync can count it.
+   */
+  async getUserBalance(userId: number): Promise<{
+    coins: string;
+    diamonds: string;
+    wealth_xp: string;
+    charm_xp: string;
+    version: number;
+  } | null> {
+    const response = await this.get(`/api/v1/internal/users/${userId}/balance`);
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`Failed to fetch user balance: ${response.status} ${response.statusText}`);
+    }
+    return (await response.json()) as {
+      coins: string;
+      diamonds: string;
+      wealth_xp: string;
+      charm_xp: string;
+      version: number;
+    };
+  }
+
+  /**
    * Check if a user is a room admin/owner
    * Returns the user's role in the room or null if not a member
    */
@@ -603,6 +630,8 @@ function normalizeEndpoint(endpoint: string): string {
  */
 const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
   [/^\/api\/v1\/internal\/gifts\/batch$/, "/api/v1/internal/gifts/batch"],
+  [/^\/api\/v1\/internal\/gifts\/catalog$/, "/api/v1/internal/gifts/catalog"],
+  [/^\/api\/v1\/internal\/users\/[^/]+\/balance$/, "/api/v1/internal/users/:id/balance"],
   [
     /^\/api\/v1\/internal\/rooms\/[^/]+\/status$/,
     "/api/v1/internal/rooms/:id/status",

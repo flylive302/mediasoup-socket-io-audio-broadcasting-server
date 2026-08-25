@@ -147,6 +147,32 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-authority-tick-fanout 11: reserved-debit ledger wiring. Pushed from
+  // balanceSync.ts / giftHandler.ts — same import-direction rule as above.
+  giftWouldRejectTotal: new Counter({
+    name: "flylive_gift_would_reject_total",
+    help: "Taps the ledger WOULD have rejected (shadow mode) — compare with backend 4002 count",
+    labelNames: ["code"] as const,
+    registers: [metricsRegistry],
+  }),
+  giftReconcileTotal: new Counter({
+    name: "flylive_gift_reconcile_total",
+    help: "Ledger reconcile script runs by trigger",
+    labelNames: ["source"] as const,
+    registers: [metricsRegistry],
+  }),
+  giftPendingExpiredTotal: new Counter({
+    name: "flylive_gift_pending_expired_total",
+    help: "Ledger reservations refunded by TTL expiry (should stay ≈ 0)",
+    registers: [metricsRegistry],
+  }),
+  giftBalanceWarmTotal: new Counter({
+    name: "flylive_gift_balance_warm_total",
+    help: "Read-endpoint warm/refresh attempts by outcome",
+    labelNames: ["outcome"] as const,
+    registers: [metricsRegistry],
+  }),
+
   // gift-path-latency 11: the two hops of the result path that this service owns
   // outright. Both are measured on THIS process's clock only — a gift's enqueue
   // stamp and the flush that picks it up are both Date.now() here, so no

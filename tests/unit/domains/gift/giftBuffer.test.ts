@@ -24,6 +24,11 @@ vi.mock("@src/config/index.js", () => ({
 const PENDING_TTL_MS = 30_000;
 // ticket 05: mutable so partition tests can flip it at runtime.
 let flushPartitions = 1;
+const mockReconcileBalance = vi.fn().mockResolvedValue(null);
+vi.mock("@src/domains/gift/balanceSync.js", () => ({
+  reconcileBalance: (...a: unknown[]) => mockReconcileBalance(...a),
+}));
+
 vi.mock("@src/domains/gift/flags.js", () => ({
   giftPendingTtlMs: () => PENDING_TTL_MS,
   giftFlushPartitions: () => flushPartitions,
@@ -396,6 +401,69 @@ describe("GiftBuffer", () => {
       "balance.updated",
       expect.anything(),
     );
+  });
+
+  // ─── gift-authority-tick-fanout 11: ledger reconcile per sender ──
+
+  describe("ledger reconcile after booking (ticket 11)", () => {
+    it("batch success: one reconcile per sender with ALL that sender's ids (booked + failed) and the newest snapshot", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 1 }),
+        makeGiftJSON({ transaction_id: "tx-3", sender_id: 2, sender_socket_id: "sock-2" }),
+      ];
+      const b1old = { coins: "900", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 4 };
+      const b1new = { coins: "800", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 5 };
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-3", code: 4002, reason: "insufficient" }],
+        processed: [
+          { transaction_ids: ["tx-1"], sender_id: 1, balance: b1old },
+          { transaction_ids: ["tx-2"], sender_id: 1, balance: b1new },
+        ],
+      });
+
+      await buffer.stop();
+
+      expect(mockReconcileBalance).toHaveBeenCalledTimes(2);
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, b1new, ["tx-1", "tx-2"], "batch");
+      expect(mockReconcileBalance).toHaveBeenCalledWith(2, null, ["tx-3"], "batch");
+    });
+
+    it("older Laravel (no processed[]): ids are still settled, snapshot null", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue({ failed: [] });
+      await buffer.stop();
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, null, ["tx-1"], "batch");
+    });
+
+    it("per-item fallback: settles each individually booked item; a re-queued item is NOT settled", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 2 }),
+      ];
+      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      mockLaravel.processGiftBatch
+        .mockRejectedValueOnce(new Error("batch down"))
+        .mockResolvedValueOnce({ failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }] })
+        .mockRejectedValueOnce(new Error("still down"));
+
+      await buffer.stop();
+
+      expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, balance, ["tx-1"], "fallback");
+    });
+
+    it("a throwing reconcile never breaks the flush or the balance emit", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockReconcileBalance.mockImplementation(() => { throw new Error("boom"); });
+      const balance = { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+      });
+      await buffer.stop();
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", balance);
+      expect(mockRedis._pipeline.rpush).not.toHaveBeenCalled();
+    });
   });
 
   // ─── flush: Laravel failures ──────────────────────────────────────
