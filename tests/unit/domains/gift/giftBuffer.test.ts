@@ -22,8 +22,11 @@ vi.mock("@src/config/index.js", () => ({
 
 // ticket 04: dead-letter consumer reads the runtime TTL flag.
 const PENDING_TTL_MS = 30_000;
+// ticket 05: mutable so partition tests can flip it at runtime.
+let flushPartitions = 1;
 vi.mock("@src/domains/gift/flags.js", () => ({
   giftPendingTtlMs: () => PENDING_TTL_MS,
+  giftFlushPartitions: () => flushPartitions,
 }));
 
 vi.mock("@src/infrastructure/metrics.js", () => ({
@@ -80,7 +83,11 @@ function createMockRedis() {
   };
   redis.eval.mockImplementation(async (_lua: string, numKeys: number, k1: string, k2?: string) => {
     if (numKeys === 2 && k1 === "gifts:pending") return redis._claimItems;
-    if (numKeys === 2 && k1.startsWith("gifts:inflight:") && k2 === "gifts:pending") return redis._moved;
+    // ticket 05: only partition 0's in-flight list carries `_moved`; the
+    // other 15 partition keys (also swept at boot) are empty.
+    if (numKeys === 2 && k1 === "gifts:inflight:i-test" && k2 === "gifts:pending") return redis._moved;
+    if (numKeys === 2 && k1.startsWith("gifts:inflight:")) return 0;
+    if (numKeys === 2 && k1.startsWith("gifts:pending:") && k2 === "gifts:pending") return 0;
     if (numKeys === 1 && k1 === "gifts:dead_letter") return redis._dlqItems;
     return [];
   });
@@ -213,7 +220,7 @@ describe("GiftBuffer", () => {
     expect(mockLaravel.processGiftBatch).toHaveBeenCalledWith([
       JSON.parse(giftJson),
     ]);
-    expect(metrics.giftBatchSize.observe).toHaveBeenCalledWith(1);
+    expect(metrics.giftBatchSize.observe).toHaveBeenCalledWith({ partition: "0" }, 1);
     expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith(
       { status: "success" },
       1,
@@ -233,8 +240,8 @@ describe("GiftBuffer", () => {
     await buffer.stop();
 
     expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(2);
-    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(1, { attempt: "first" }, 1);
-    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(2, { attempt: "first" }, 0.5);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(1, { attempt: "first", partition: "0" }, 1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenNthCalledWith(2, { attempt: "first", partition: "0" }, 0.5);
   });
 
   it("skips observing wait time for a transaction with a future timestamp (negative wait)", async () => {
@@ -250,7 +257,7 @@ describe("GiftBuffer", () => {
 
     // Only the past-timestamp transaction is observed — count matters, not just sign.
     expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(1);
-    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first" }, 1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first", partition: "0" }, 1);
   });
 
   it("labels giftBufferWaitSeconds by attempt: \"first\" for a fresh gift, \"retried\" for one with retryCount >= 1, discriminated within the same flush", async () => {
@@ -272,8 +279,8 @@ describe("GiftBuffer", () => {
     await buffer.stop();
 
     expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledTimes(2);
-    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first" }, 1);
-    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "retried" }, 2);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "first", partition: "0" }, 1);
+    expect(metrics.giftBufferWaitSeconds.observe).toHaveBeenCalledWith({ attempt: "retried", partition: "0" }, 2);
   });
 
   it("observes exactly one giftBatchPostSeconds sample under outcome=success on a successful batch POST", async () => {
@@ -285,11 +292,11 @@ describe("GiftBuffer", () => {
 
     expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledTimes(1);
     expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledWith(
-      { outcome: "success" },
+      { outcome: "success", partition: "0" },
       expect.any(Number),
     );
     expect(metrics.giftBatchPostSeconds.observe).not.toHaveBeenCalledWith(
-      { outcome: "failure" },
+      { outcome: "failure", partition: "0" },
       expect.anything(),
     );
   });
@@ -309,11 +316,11 @@ describe("GiftBuffer", () => {
 
     expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledTimes(1);
     expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledWith(
-      { outcome: "failure" },
+      { outcome: "failure", partition: "0" },
       expect.any(Number),
     );
     expect(metrics.giftBatchPostSeconds.observe).not.toHaveBeenCalledWith(
-      { outcome: "success" },
+      { outcome: "success", partition: "0" },
       expect.anything(),
     );
   });
@@ -329,8 +336,8 @@ describe("GiftBuffer", () => {
       "@src/infrastructure/metrics.js",
     );
 
-    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "first" }, 0.2);
-    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "retried" }, 0.3);
+    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "first", partition: "0" }, 0.2);
+    actual.metrics.giftBufferWaitSeconds.observe({ attempt: "retried", partition: "0" }, 0.3);
     const waitText = await actual.metricsRegistry.getSingleMetricAsString(
       "flylive_gift_buffer_wait_seconds",
     );
@@ -341,8 +348,8 @@ describe("GiftBuffer", () => {
       expect(waitText).toContain(`le="${bucket}"`);
     }
 
-    actual.metrics.giftBatchPostSeconds.observe({ outcome: "success" }, 0.3);
-    actual.metrics.giftBatchPostSeconds.observe({ outcome: "failure" }, 0.4);
+    actual.metrics.giftBatchPostSeconds.observe({ outcome: "success", partition: "0" }, 0.3);
+    actual.metrics.giftBatchPostSeconds.observe({ outcome: "failure", partition: "0" }, 0.4);
     const postText = await actual.metricsRegistry.getSingleMetricAsString(
       "flylive_gift_batch_post_seconds",
     );
@@ -657,6 +664,7 @@ describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () =
     const order: string[] = [];
     mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) => {
       if (n === 2 && k1 === INFLIGHT) { order.push("reclaim"); return 7; }
+      if (n === 2 && k1.startsWith("gifts:inflight:")) return 0;
       if (n === 2 && k1 === "gifts:pending") { order.push("claim"); return []; }
       return [];
     });
@@ -678,6 +686,7 @@ describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () =
   it("boot reclaim failure is logged and the flush timer still starts", async () => {
     mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) => {
       if (n === 2 && k1 === INFLIGHT) throw new Error("redis down");
+      if (n === 2 && k1.startsWith("gifts:inflight:")) return 0;
       return [];
     });
     buffer.start();
@@ -743,7 +752,7 @@ describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () =
       mockRedis._claimItems = [];
       vi.clearAllMocks();
       mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) =>
-        n === 1 && k1 === "gifts:dead_letter" ? [] : n === 2 && k1 === INFLIGHT ? 0 : []);
+        n === 1 && k1 === "gifts:dead_letter" ? [] : n === 2 && k1.startsWith("gifts:inflight:") ? 0 : []);
 
       await vi.advanceTimersByTimeAsync(DEAD_LETTER_CONSUMER_INTERVAL_MS);
 
@@ -786,6 +795,109 @@ describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () =
     it("cap constant is 50 000", () => {
       expect(DEAD_LETTER_MAX_LENGTH).toBe(50_000);
     });
+  });
+});
+
+
+// ─── gift-authority-tick-fanout 05: sender-partitioned parallel flush ──────
+
+describe("GiftBuffer — ticket 05 partitions", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockRedis: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockLaravel: any;
+  let mockLogger: Logger;
+  let buffer: GiftBuffer;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    flushPartitions = 1;
+    mockRedis = createMockRedis();
+    mockLaravel = createMockLaravelClient();
+    mockLogger = createMockLogger();
+    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, createMockIo(), mockLogger);
+  });
+
+  it("partitions=1 (default) uses exactly today's keys — gifts:pending and the unsuffixed in-flight list", async () => {
+    await buffer.enqueue(JSON.parse(makeGiftJSON({ sender_id: 7 })));
+    expect(mockRedis.rpush).toHaveBeenCalledWith("gifts:pending", expect.any(String));
+    mockRedis._claimItems = [makeGiftJSON()];
+    await buffer.stop();
+    expect(mockRedis.eval).toHaveBeenCalledWith(expect.any(String), 2, "gifts:pending", "gifts:inflight:i-test", 50);
+    expect(mockRedis.eval).not.toHaveBeenCalledWith(expect.any(String), 2, "gifts:pending:1", expect.anything(), 50);
+  });
+
+  it("routes enqueue by sender_id mod partitions", async () => {
+    flushPartitions = 4;
+    await buffer.enqueue(JSON.parse(makeGiftJSON({ sender_id: 5 })));
+    await buffer.enqueue(JSON.parse(makeGiftJSON({ sender_id: 8 })));
+    expect(mockRedis.rpush).toHaveBeenCalledWith("gifts:pending:1", expect.any(String));
+    expect(mockRedis.rpush).toHaveBeenCalledWith("gifts:pending", expect.any(String));
+  });
+
+  it("claims every active partition on a tick, each into its own in-flight list", async () => {
+    flushPartitions = 3;
+    await buffer.stop(); // one flushAll
+    for (const [q, i] of [["gifts:pending", "gifts:inflight:i-test"], ["gifts:pending:1", "gifts:inflight:i-test:1"], ["gifts:pending:2", "gifts:inflight:i-test:2"]]) {
+      expect(mockRedis.eval).toHaveBeenCalledWith(expect.any(String), 2, q, i, 50);
+    }
+    expect(mockLogger.info).toHaveBeenCalledWith({ from: 1, to: 3 }, "Gift flush partitions changed");
+  });
+
+  it("a hung backend call on one partition does not delay the others", async () => {
+    flushPartitions = 2;
+    let releaseP0!: () => void;
+    const hang = new Promise<{ failed: never[] }>((r) => { releaseP0 = () => r({ failed: [] }); });
+    mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) => {
+      if (n === 2 && k1 === "gifts:pending") return [makeGiftJSON({ transaction_id: "p0", sender_id: 0 })];
+      if (n === 2 && k1 === "gifts:pending:1") return [makeGiftJSON({ transaction_id: "p1", sender_id: 1 })];
+      return n === 2 ? 0 : [];
+    });
+    mockLaravel.processGiftBatch.mockImplementation(async (txs: Array<{ transaction_id: string }>) =>
+      txs[0]!.transaction_id === "p0" ? hang : { failed: [] });
+
+    buffer.start();
+    await buffer.started;
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // p1 booked while p0 is still hung
+    expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({ status: "success" }, 1);
+    expect(metrics.giftBatchPostSeconds.observe).toHaveBeenCalledWith({ outcome: "success", partition: "1" }, expect.any(Number));
+    expect(metrics.giftBatchPostSeconds.observe).not.toHaveBeenCalledWith({ outcome: "success", partition: "0" }, expect.any(Number));
+
+    // next tick: p1 flushes again, p0 still guarded (no second claim on p0)
+    const p0Claims = () => mockRedis.eval.mock.calls.filter((c: unknown[]) => c[2] === "gifts:pending").length;
+    const before = p0Claims();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(p0Claims()).toBe(before);
+
+    releaseP0();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+    await buffer.stop();
+  });
+
+  it("shrinking the partition count drains orphaned partitions into partition 0", async () => {
+    flushPartitions = 3;
+    await buffer.stop();
+    vi.clearAllMocks();
+    flushPartitions = 1;
+    mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string, k2?: string) => {
+      if (n === 2 && k1 === "gifts:pending:2" && k2 === "gifts:pending") return 4;
+      return n === 2 && !k1.startsWith("gifts:pending") ? 0 : n === 2 && k1.startsWith("gifts:pending:") ? 0 : [];
+    });
+    await buffer.stop();
+    expect(mockRedis.eval).toHaveBeenCalledWith(expect.stringContaining("moved"), 2, "gifts:pending:1", "gifts:pending");
+    expect(mockRedis.eval).toHaveBeenCalledWith(expect.stringContaining("moved"), 2, "gifts:pending:2", "gifts:pending");
+    expect(mockLogger.warn).toHaveBeenCalledWith({ partition: 2, moved: 4 }, "Orphaned partition drained into partition 0");
+  });
+
+  it("pendingCount sums every active partition", async () => {
+    flushPartitions = 2;
+    await buffer.stop(); // syncs partitions
+    mockRedis.llen.mockImplementation(async (k: string) => (k === "gifts:pending" ? 3 : k === "gifts:pending:1" ? 4 : 0));
+    expect(await buffer.pendingCount()).toBe(7);
   });
 });
 

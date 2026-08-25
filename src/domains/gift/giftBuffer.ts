@@ -9,7 +9,7 @@ import type {
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
-import { giftPendingTtlMs } from "./flags.js";
+import { giftFlushPartitions, giftPendingTtlMs } from "./flags.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -81,6 +81,22 @@ export const DEAD_LETTER_CONSUMER_INTERVAL_MS = 30_000;
 /** Max parked gifts replayed per consumer tick — same bound as a flush. */
 const DEAD_LETTER_REPLAY_BATCH = MAX_BATCH_SIZE;
 
+/** Hard cap on partitions — matches the Zod max so boot reclaim can enumerate. */
+export const MAX_FLUSH_PARTITIONS = 16;
+
+/**
+ * ticket 05: per-partition flush state. Partition 0 keeps today's key names
+ * (`gifts:pending`, `gifts:inflight:{instance}`) so partitions=1 is
+ * byte-identical to the pre-partition buffer; p ≥ 1 gets a `:{p}` suffix.
+ */
+interface Partition {
+  readonly index: number;
+  readonly queueKey: string;
+  readonly inflightKey: string;
+  isFlushing: boolean;
+  flushCount: number;
+}
+
 export class GiftBuffer {
   private readonly QUEUE_KEY = "gifts:pending";
   private readonly DEAD_LETTER_KEY = "gifts:dead_letter";
@@ -88,8 +104,8 @@ export class GiftBuffer {
   private readonly INFLIGHT_KEY = `gifts:inflight:${config.INSTANCE_ID}`;
   private timer: NodeJS.Timeout | null = null;
   private deadLetterTimer: NodeJS.Timeout | null = null;
-  private flushCount = 0;
-  private isFlushing = false;
+  /** ticket 05: partitions currently flushed; grows/shrinks with the flag. */
+  private activePartitions = 1;
   private isReplaying = false;
   /**
    * ticket 04: the dead-letter consumer only replays while the backend is
@@ -125,7 +141,7 @@ export class GiftBuffer {
       .then(() => {
         if (this.timer) return;
         this.timer = setInterval(
-          () => this.flush(),
+          () => this.flushAll(),
           config.GIFT_BUFFER_FLUSH_INTERVAL_MS,
         );
         this.deadLetterTimer = setInterval(
@@ -155,12 +171,17 @@ export class GiftBuffer {
    * Returns the count (logged either way so a rollout can prove the path ran).
    */
   async reclaimInflight(): Promise<number> {
-    const moved = (await this.redis.eval(
-      ATOMIC_MOVE_ALL_LUA,
-      2,
-      this.INFLIGHT_KEY,
-      this.QUEUE_KEY,
-    )) as number;
+    // ticket 05: every partition this instance could have used in a previous
+    // life (the flag may have been higher then) — cheap: one EVAL per key.
+    let moved = 0;
+    for (let p = 0; p < MAX_FLUSH_PARTITIONS; p++) {
+      moved += (await this.redis.eval(
+        ATOMIC_MOVE_ALL_LUA,
+        2,
+        this.inflightKey(p),
+        this.queueKey(p),
+      )) as number;
+    }
     if (moved > 0) {
       metrics.giftInflightReclaimed.inc(moved);
     }
@@ -191,18 +212,21 @@ export class GiftBuffer {
     // popped-but-undelivered gifts. Wait (bounded) for the in-flight flush to
     // finish, THEN do one final flush to drain anything still queued.
     await this.waitForIdle();
-    await this.flush();
+    await this.flushAll();
 
     // ticket 04: anything still claimed (a flush that hit the idle deadline,
     // or a Redis error after the claim) goes back to pending so the NEXT
     // instance books it, instead of waiting for this instance's next boot.
     try {
-      const returned = (await this.redis.eval(
-        ATOMIC_MOVE_ALL_LUA,
-        2,
-        this.INFLIGHT_KEY,
-        this.QUEUE_KEY,
-      )) as number;
+      let returned = 0;
+      for (let p = 0; p < this.activePartitions; p++) {
+        returned += (await this.redis.eval(
+          ATOMIC_MOVE_ALL_LUA,
+          2,
+          this.inflightKey(p),
+          this.queueKey(p),
+        )) as number;
+      }
       if (returned > 0) {
         this.logger.warn(
           { returned, key: this.INFLIGHT_KEY },
@@ -225,10 +249,11 @@ export class GiftBuffer {
    */
   private async waitForIdle(maxWaitMs = 10_000): Promise<void> {
     const deadline = Date.now() + maxWaitMs;
-    while (this.isFlushing && Date.now() < deadline) {
+    const anyFlushing = () => this.partitions.some((p) => p.isFlushing);
+    while (anyFlushing() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    if (this.isFlushing) {
+    if (anyFlushing()) {
       this.logger.warn(
         { maxWaitMs },
         "Gift buffer still flushing at shutdown deadline — proceeding with final flush attempt",
@@ -244,7 +269,11 @@ export class GiftBuffer {
    */
   async pendingCount(): Promise<number> {
     try {
-      return await this.redis.llen(this.QUEUE_KEY);
+      let total = 0;
+      for (let p = 0; p < this.activePartitions; p++) {
+        total += await this.redis.llen(this.queueKey(p));
+      }
+      return total;
     } catch (err) {
       recordRedisDegradation("gift-buffer", "pending-count");
       this.logger.warn({ err }, "Failed to get gift buffer pending count");
@@ -252,18 +281,88 @@ export class GiftBuffer {
     }
   }
 
-  /** Add gift to buffer (called on each gift event) */
+  /**
+   * Add gift to buffer (called on each gift event). ticket 05: routed to the
+   * sender's partition so every burst of one sender lands in one worker.
+   */
   async enqueue(gift: GiftTransaction): Promise<void> {
-    await this.redis.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+    await this.redis.rpush(this.queueKeyFor(gift.sender_id), JSON.stringify(gift));
   }
 
-  /** Flush buffer to Laravel */
-  private async flush(): Promise<void> {
+  // ── ticket 05: partition plumbing ─────────────────────────────────────
+
+  /** `gifts:pending` for partition 0, `gifts:pending:{p}` otherwise. */
+  private queueKey(p: number): string {
+    return p === 0 ? this.QUEUE_KEY : `${this.QUEUE_KEY}:${p}`;
+  }
+
+  private inflightKey(p: number): string {
+    return p === 0 ? this.INFLIGHT_KEY : `${this.INFLIGHT_KEY}:${p}`;
+  }
+
+  /** Partition for a sender: `sender_id mod partitions` (flag read per call). */
+  queueKeyFor(senderId: number): string {
+    const n = giftFlushPartitions();
+    return this.queueKey(n <= 1 ? 0 : Math.abs(senderId) % n);
+  }
+
+  private readonly partitions: Partition[] = Array.from(
+    { length: MAX_FLUSH_PARTITIONS },
+    (_, index) => ({ index, queueKey: "", inflightKey: "", isFlushing: false, flushCount: 0 }),
+  ).map((p) => ({
+    ...p,
+    queueKey: this.queueKey(p.index),
+    inflightKey: this.inflightKey(p.index),
+  }));
+
+  /**
+   * Apply the current partition flag. Shrinking moves every orphaned
+   * partition's pending list into partition 0 so nothing strands; growing
+   * needs no migration (new senders simply route to the new keys).
+   */
+  private async syncPartitions(): Promise<void> {
+    const wanted = Math.min(MAX_FLUSH_PARTITIONS, Math.max(1, giftFlushPartitions()));
+    if (wanted === this.activePartitions) return;
+    const previous = this.activePartitions;
+    this.activePartitions = wanted;
+    this.logger.info({ from: previous, to: wanted }, "Gift flush partitions changed");
+    for (let p = wanted; p < previous; p++) {
+      const moved = (await this.redis.eval(
+        ATOMIC_MOVE_ALL_LUA,
+        2,
+        this.queueKey(p),
+        this.QUEUE_KEY,
+      )) as number;
+      if (moved > 0) {
+        this.logger.warn({ partition: p, moved }, "Orphaned partition drained into partition 0");
+      }
+    }
+  }
+
+  /** Every partition flushes concurrently; each has its own `isFlushing`. */
+  private async flushAll(): Promise<void> {
+    try {
+      await this.syncPartitions();
+    } catch (err) {
+      recordRedisDegradation("gift-buffer", "partition-sync");
+      this.logger.warn({ err }, "Gift flush partition sync failed — keeping current layout");
+    }
+    await Promise.all(
+      Array.from({ length: this.activePartitions }, (_, p) => this.flush(this.partitions[p]!)),
+    );
+  }
+
+  /**
+   * Flush one partition to Laravel. ticket 05: each partition has its own
+   * guard, so a hung backend call on one partition never stalls the others.
+   */
+  private async flush(part: Partition = this.partitions[0]!): Promise<void> {
     // Prevent concurrent flushes — if a previous batch is still processing
     // (e.g., slow Laravel response), skip this interval tick instead of
     // creating parallel HTTP requests that compound DB contention
-    if (this.isFlushing) return;
-    this.isFlushing = true;
+    if (part.isFlushing) return;
+    part.isFlushing = true;
+    const partition = String(part.index);
 
     // ticket 04: raw claimed strings, kept so in-flight entries can be removed
     // by exact value (LREM) once the backend confirmed, or returned to pending
@@ -271,7 +370,7 @@ export class GiftBuffer {
     let claimed: string[] = [];
 
     try {
-    this.flushCount++;
+    part.flushCount++;
 
     // gift-authority-tick-fanout 01: sample queue depth once per flush tick —
     // never more often, per the ticket's cap. Wrapped so a Redis hiccup here
@@ -293,8 +392,8 @@ export class GiftBuffer {
     const items = await this.redis.eval(
       ATOMIC_CLAIM_N_LUA,
       2,
-      this.QUEUE_KEY,
-      this.INFLIGHT_KEY,
+      part.queueKey,
+      part.inflightKey,
       MAX_BATCH_SIZE,
     ) as string[];
 
@@ -316,7 +415,7 @@ export class GiftBuffer {
           "Corrupted gift entry, moving to dead letter",
         );
         await this.redis.rpush(this.DEAD_LETTER_KEY, item);
-        await this.redis.lrem(this.INFLIGHT_KEY, 1, item);
+        await this.redis.lrem(part.inflightKey, 1, item);
         metrics.giftsProcessed.inc({ status: "dead_letter" });
       }
     }
@@ -325,8 +424,8 @@ export class GiftBuffer {
       return;
     }
 
-    this.logger.info({ count: transactions.length }, "Flushing gift batch");
-    metrics.giftBatchSize.observe(transactions.length);
+    this.logger.info({ count: transactions.length, partition }, "Flushing gift batch");
+    metrics.giftBatchSize.observe({ partition }, transactions.length);
 
     // gift-path-latency 11: how long each gift sat between the sender's emit and
     // this flush picking it up — the first of the three waits on the result path.
@@ -342,7 +441,7 @@ export class GiftBuffer {
         // only bumps retryCount), so its wait spans every failed Laravel round
         // trip too. Label it so the clean batching cost stays readable.
         metrics.giftBufferWaitSeconds.observe(
-          { attempt: (gift.retryCount ?? 0) === 0 ? "first" : "retried" },
+          { attempt: (gift.retryCount ?? 0) === 0 ? "first" : "retried", partition },
           waitMs / 1000,
         );
       }
@@ -350,7 +449,7 @@ export class GiftBuffer {
 
     // GF-006 FIX: Report dead-letter queue size for alerting
     // GF-014 FIX: Sample every 10th flush to reduce Redis RTT
-    if (this.flushCount % 10 === 0) {
+    if (part.flushCount % 10 === 0) {
       await this.sampleDeadLetterSize();
     }
 
@@ -365,7 +464,7 @@ export class GiftBuffer {
       this.lastBookingOk = true;
 
       metrics.giftBatchPostSeconds.observe(
-        { outcome: "success" },
+        { outcome: "success", partition },
         (Date.now() - postStartedAt) / 1000,
       );
 
@@ -408,7 +507,7 @@ export class GiftBuffer {
     } catch (error) {
       this.lastBookingOk = false;
       metrics.giftBatchPostSeconds.observe(
-        { outcome: "failure" },
+        { outcome: "failure", partition },
         (Date.now() - postStartedAt) / 1000,
       );
 
@@ -428,7 +527,7 @@ export class GiftBuffer {
         // re-queues this gift — all three release its claim in the same
         // pipeline so the in-flight list never carries a settled item.
         const raw = rawByTransaction.get(gift.transaction_id);
-        if (raw !== undefined) pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+        if (raw !== undefined) pipeline.lrem(part.inflightKey, 1, raw);
 
         // Try sending as individual 1-item batch
         try {
@@ -480,9 +579,9 @@ export class GiftBuffer {
           continue;
         }
 
-        // Re-queue with incremented retry count
+        // Re-queue with incremented retry count (same partition)
         gift.retryCount = retryCount;
-        pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+        pipeline.rpush(part.queueKey, JSON.stringify(gift));
       }
 
       await pipeline.exec();
@@ -496,6 +595,7 @@ export class GiftBuffer {
 
     if (batchConfirmed) {
       await this.releaseInflight(
+        part,
         transactions.map((t) => rawByTransaction.get(t.transaction_id)),
       );
     }
@@ -507,41 +607,41 @@ export class GiftBuffer {
       // are still safe in in-flight.
       recordRedisDegradation("gift-buffer", "flush");
       this.logger.error(
-        { err, batchSize: claimed.length },
+        { err, batchSize: claimed.length, partition },
         "Gift flush hit a Redis error — returning claimed batch to pending",
       );
       if (claimed.length > 0) {
-        await this.returnToPending(claimed);
+        await this.returnToPending(part, claimed);
       }
     } finally {
-      this.isFlushing = false;
+      part.isFlushing = false;
     }
   }
 
   /** ticket 04: LREM each confirmed raw entry from the in-flight list. */
-  private async releaseInflight(raws: Array<string | undefined>): Promise<void> {
+  private async releaseInflight(part: Partition, raws: Array<string | undefined>): Promise<void> {
     const pipeline = this.redis.pipeline();
     let any = false;
     for (const raw of raws) {
       if (raw === undefined) continue;
-      pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+      pipeline.lrem(part.inflightKey, 1, raw);
       any = true;
     }
     if (any) await pipeline.exec();
   }
 
   /** ticket 04: put claimed raws back on pending and drop their claims. */
-  private async returnToPending(raws: string[]): Promise<void> {
+  private async returnToPending(part: Partition, raws: string[]): Promise<void> {
     try {
       const pipeline = this.redis.pipeline();
       for (const raw of raws) {
-        pipeline.rpush(this.QUEUE_KEY, raw);
-        pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+        pipeline.rpush(part.queueKey, raw);
+        pipeline.lrem(part.inflightKey, 1, raw);
       }
       await pipeline.exec();
     } catch (err) {
       this.logger.error(
-        { err, count: raws.length, key: this.INFLIGHT_KEY },
+        { err, count: raws.length, key: part.inflightKey },
         "Gift buffer: could not return claimed batch to pending — items stay in in-flight for boot reclaim",
       );
     }
@@ -618,7 +718,7 @@ export class GiftBuffer {
           continue;
         }
         gift.retryCount = 0;
-        pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+        pipeline.rpush(this.queueKeyFor(gift.sender_id), JSON.stringify(gift));
         replayed++;
       }
 

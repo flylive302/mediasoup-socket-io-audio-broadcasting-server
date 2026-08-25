@@ -1,0 +1,28 @@
+{
+  "_comment": "gift-authority-tick-fanout/06 — shared backend<->room-server contract. Backend: tests/Feature/Gift/GiftBalanceContractTest.php asserts live output matches. Room server: copied in by ticket 10 and asserted there. Balance fields are decimal STRINGS; version is an integer that only increases per user.",
+  "batch_response": {
+    "processed_count": 1,
+    "failed": [],
+    "processed": [
+      {
+        "transaction_ids": ["tx-1"],
+        "sender_id": 1,
+        "already_booked": false,
+        "balance": {
+          "coins": "49000.0000",
+          "diamonds": "0.0000",
+          "wealth_xp": "1000.0000",
+          "charm_xp": "0.0000"
+        },
+        "version": 1
+      }
+    ]
+  },
+  "balance_updated_payload": {
+    "coins": "49000.0000",
+    "diamonds": "0.0000",
+    "wealth_xp": "1000.0000",
+    "charm_xp": "0.0000",
+    "version": 1
+  }
+}

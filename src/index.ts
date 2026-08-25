@@ -11,6 +11,7 @@ import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
 import { createRejectionBreaker } from "./infrastructure/rejection-breaker.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
 import { startGiftFlags, stopGiftFlags } from "./domains/gift/flags.js";
+import { startGiftCatalog, stopGiftCatalog } from "./domains/gift/catalogCache.js";
 
 // ─── Module-Level Shutdown Reference ─────────────────────────────
 // msab-load-stability 07: crash paths (uncaughtException, rejection breaker)
@@ -80,8 +81,12 @@ const start = async () => {
     // reads getGiftFlags()/the typed getters yet.
     startGiftFlags(durableRedisClient, logger);
 
-    const { server, io, subClient, queueConsumer, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer, presenceService } =
+    const { server, io, subClient, queueConsumer, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer, presenceService, laravelClient } =
       await bootstrapServer();
+
+    // gift-authority-tick-fanout 09: boot fetch + TTL refresh for the room
+    // server's gift catalog cache. Never blocks start — see catalogCache.ts.
+    startGiftCatalog(laravelClient, logger);
 
     const address = await server.listen({
       port: config.PORT,
@@ -203,6 +208,7 @@ const start = async () => {
           await giftHandler.stop();
         }
         stopGiftFlags();
+        stopGiftCatalog();
 
         // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
@@ -263,6 +269,7 @@ const start = async () => {
         stopQualitySampler();
         stopRtpStatisticsSweeper();
         stopGiftFlags();
+        stopGiftCatalog();
       },
       flushStatus: () => statusCoalescer.stop(),
       statusPendingCount: () => statusCoalescer.pendingCount(),

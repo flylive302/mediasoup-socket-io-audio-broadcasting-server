@@ -10,6 +10,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # gift-authority-tick-fanout 10: the reserved-debit ledger suite
+    # (tests/integration/gift/ledger.redis.test.ts) proves money invariants
+    # against a REAL Redis and skips loudly without one — CI must provide it.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     strategy:
       matrix:
         node-version: [24.x]
@@ -49,3 +62,5 @@ jobs:
       
     - name: Test
       run: npm test
+      env:
+        MSAB_TEST_REDIS_URL: redis://127.0.0.1:6379/15

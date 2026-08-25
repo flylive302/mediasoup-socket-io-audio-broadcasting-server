@@ -43,6 +43,7 @@ import {
 } from "@src/infrastructure/event-dedup.js";
 import { giftRoomTickMs } from "@src/domains/gift/flags.js";
 import { enqueueLucky } from "@src/domains/gift/roomTicker.js";
+import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
 /** Payload for auth.force_disconnect relay event */
 interface ForceDisconnectPayload {
@@ -338,6 +339,14 @@ export class EventRouter {
       // succeeds immediately with no residual friction.
       if (event.event === RELAY_EVENTS.room.ROOM_USER_UNBLOCKED) {
         this.mirrorRoomUnblock(event.payload, eventVersionMs(event.timestamp));
+      }
+
+      // REACT: gift-authority-tick-fanout 09 — catalog changed, refresh this
+      // instance's cache immediately instead of waiting for the next TTL
+      // tick. No user/room to relay to (payload is `{updated_at}` only), so
+      // this is the entire handling of the event on this instance.
+      if (event.event === RELAY_EVENTS.gift.CATALOG_UPDATED) {
+        refreshGiftCatalogNow();
       }
 
       return result;

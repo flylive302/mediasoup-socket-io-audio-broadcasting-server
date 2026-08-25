@@ -82,6 +82,7 @@ export const metrics = {
   giftBatchSize: new Histogram({
     name: "flylive_gift_batch_size",
     help: "Size of gift batches sent to Laravel",
+    labelNames: ["partition"] as const, // ticket 05
     buckets: [1, 5, 10, 25, 50, 100],
     registers: [metricsRegistry],
   }),
@@ -130,6 +131,22 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-authority-tick-fanout 09: catalog cache health. Pushed FROM
+  // catalogCache.ts on every successful boot/refresh (never pulled via
+  // collect()) — metrics.ts must not import the gift domain, or every test
+  // that imports metrics.ts for real (most of them do, unmocked) would drag
+  // in flags.ts's module-load-time read of config.giftFlagShapes.
+  giftCatalogSize: new Gauge({
+    name: "flylive_gift_catalog_size",
+    help: "Number of gifts currently held in the room-server catalog cache",
+    registers: [metricsRegistry],
+  }),
+  giftCatalogRefreshAgeSeconds: new Gauge({
+    name: "flylive_gift_catalog_refresh_age_seconds",
+    help: "Seconds since the gift catalog cache last refreshed successfully (set to 0 on each successful refresh)",
+    registers: [metricsRegistry],
+  }),
+
   // gift-path-latency 11: the two hops of the result path that this service owns
   // outright. Both are measured on THIS process's clock only — a gift's enqueue
   // stamp and the flush that picks it up are both Date.now() here, so no
@@ -143,7 +160,7 @@ export const metrics = {
     // to Laravel. Without this label those samples would silently inflate the
     // buffer's p95 and make ticket 12 indict the buffer for an API failure.
     // ⚠️ Read `attempt="first"` when asking "how long does batching cost?".
-    labelNames: ["attempt"] as const, // first, retried
+    labelNames: ["attempt", "partition"] as const, // first, retried · ticket 05 partition
     // Straddles GIFT_BUFFER_FLUSH_INTERVAL_MS (500ms default): anything far above
     // it means flushes are backing up behind a slow Laravel, not idling.
     buckets: [0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5],
@@ -182,7 +199,7 @@ export const metrics = {
   giftBatchPostSeconds: new Histogram({
     name: "flylive_gift_batch_post_seconds",
     help: "Wall time of the batch POST to the Laravel gift endpoint",
-    labelNames: ["outcome"] as const, // success, failure
+    labelNames: ["outcome", "partition"] as const, // success, failure · ticket 05 partition
     // Centred on the observed 593ms avg / 1,572ms p95 so the tail is legible
     // rather than piling into a single overflow bucket.
     buckets: [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 10],

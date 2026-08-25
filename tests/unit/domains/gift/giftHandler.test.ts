@@ -43,6 +43,8 @@ let mockRoomTickMs = 0;
 vi.mock("@src/domains/gift/flags.js", () => ({
   giftLegacyShape: () => mockLegacyShape,
   giftRoomTickMs: () => mockRoomTickMs,
+  giftPendingTtlMs: () => 30_000,
+  giftFlushPartitions: () => 1,
 }));
 
 const mockEnqueueGift = vi.fn();
@@ -50,6 +52,15 @@ const mockFlushAllRooms = vi.fn();
 vi.mock("@src/domains/gift/roomTicker.js", () => ({
   enqueueGift: (...args: unknown[]) => mockEnqueueGift(...args),
   flushAllRooms: (...args: unknown[]) => mockFlushAllRooms(...args),
+}));
+
+// gift-authority-tick-fanout 09: catalog cache is mocked so cost-arithmetic
+// tests control catalog contents/hasCatalog() without a real boot fetch.
+let mockHasCatalog = true;
+let mockCatalog: Map<number, { id: number; price: number; isActive: boolean; isLucky: boolean; minLevel: number; vipOnly: boolean }> = new Map();
+vi.mock("@src/domains/gift/catalogCache.js", () => ({
+  hasCatalog: () => mockHasCatalog,
+  getGift: (id: number) => mockCatalog.get(id),
 }));
 
 // Mock crypto for deterministic UUIDs
@@ -143,6 +154,8 @@ function createMockSocket(
         charm_xp: "1200",
         is_blocked: false,
         isSpeaker: false,
+        level: 0,
+        is_vip: false,
       },
     },
     rooms,
@@ -192,6 +205,8 @@ describe("GiftHandler", () => {
     // Default: today's shipped-inert behaviour (legacy on, tick off).
     mockLegacyShape = true;
     mockRoomTickMs = 0;
+    mockHasCatalog = true;
+    mockCatalog = new Map();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
   });
@@ -385,6 +400,7 @@ describe("GiftHandler", () => {
 
       const sendGift = extractHandler(socket, "gift:send");
       const result = await sendGift(payload);
+      // eslint-disable-next-line no-console
 
       expect(result).toEqual({ success: true, acceptedRecipientIds: [2], transaction_id: expect.any(String) });
       expect(
@@ -735,6 +751,73 @@ describe("GiftHandler", () => {
     it("flushes the room ticker on stop()", async () => {
       await handler.stop();
       expect(mockFlushAllRooms).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── gift-authority-tick-fanout 09: shadow cost logging ────────────
+  describe("shadow cost computation", () => {
+    it("logs cost = price × quantity × acceptedRecipients for a multi-recipient burst", async () => {
+      mockCatalog.set(100, { id: 100, price: 50, isActive: true, isLucky: false, minLevel: 0, vipOnly: false });
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      await sendBurst({
+        roomId: "room-1",
+        giftId: 100,
+        recipientIds: [2, 3, 4],
+        quantity: 2,
+      });
+
+      const { logger } = await import("@src/infrastructure/logger.js");
+      const debugCalls = vi.mocked(logger.debug).mock.calls;
+      const costLog = debugCalls.find(([, msg]) => msg === "gift cost (shadow)");
+      expect(costLog).toBeDefined();
+      // price 50 × quantity 2 × 3 accepted recipients = 300
+      expect((costLog?.[0] as { cost: number }).cost).toBe(300);
+    });
+
+    it("logs cost = null for an unknown gift id", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      await sendBurst({ roomId: "room-1", giftId: 999, recipientIds: [2], quantity: 1 });
+
+      const { logger } = await import("@src/infrastructure/logger.js");
+      const debugCalls = vi.mocked(logger.debug).mock.calls;
+      const costLog = debugCalls.find(([, msg]) => msg === "gift cost (shadow)");
+      expect(costLog).toBeDefined();
+      expect((costLog?.[0] as { cost: number | null }).cost).toBeNull();
+    });
+
+    it("logs cost = null when the catalog has not loaded yet, even for a known id", async () => {
+      mockCatalog.set(100, { id: 100, price: 50, isActive: true, isLucky: false, minLevel: 0, vipOnly: false });
+      mockHasCatalog = false;
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      await sendBurst({ roomId: "room-1", giftId: 100, recipientIds: [2], quantity: 1 });
+
+      const { logger } = await import("@src/infrastructure/logger.js");
+      const debugCalls = vi.mocked(logger.debug).mock.calls;
+      const costLog = debugCalls.find(([, msg]) => msg === "gift cost (shadow)");
+      expect((costLog?.[0] as { cost: number | null }).cost).toBeNull();
+    });
+
+    it("has no effect on acceptance/behaviour when the catalog is empty (behaviour unchanged)", async () => {
+      const socket = createMockSocket("room-1", 1);
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst({ roomId: "room-1", giftId: 100, recipientIds: [2], quantity: 1 });
+
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2], transaction_id: expect.any(String) });
     });
   });
 });

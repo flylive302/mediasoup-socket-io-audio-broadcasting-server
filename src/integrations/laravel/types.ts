@@ -134,6 +134,16 @@ export const RELAY_EVENTS = {
     VIP_GIFTED: "vip.gifted",
   },
 
+  /**
+   * Gift: catalog change signal. Payload is `{updated_at}` only — no
+   * user_id/room_id — so `determineTarget()` falls through to the generic
+   * `broadcast` case. EventRouter intercepts it (NOT pure pass-through) to
+   * trigger an immediate room-server catalog cache refresh (catalogCache.ts).
+   */
+  gift: {
+    CATALOG_UPDATED: "gift.catalog.updated",
+  },
+
   /** System: cache invalidation signals */
   system: {
     CONFIG_INVALIDATE: "config:invalidate",

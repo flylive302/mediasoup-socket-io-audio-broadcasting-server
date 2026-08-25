@@ -33,6 +33,14 @@ export const UserSchema = z.object({
   vip_level: z.number().default(0),
   isSpeaker: z.boolean().default(false),
   badge_slot_limit: z.number().default(6),
+  /**
+   * gift-authority-tick-fanout 09: additive policy claims minted by the
+   * backend (MsabJwtService). Absent on older tokens (pre-rollout, or during
+   * a rolling deploy) — default to level 0 / not VIP so an old token still
+   * passes validation and simply carries the safest policy inputs.
+   */
+  level: z.number().default(0),
+  is_vip: z.boolean().default(false),
   equipped_badges: z
     .array(
       z.object({

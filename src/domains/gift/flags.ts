@@ -21,6 +21,7 @@ export interface GiftFlags {
   GIFT_ROOM_TICK_MS: number;
   GIFT_PENDING_TTL_MS: number;
   GIFT_CATALOG_TTL_MS: number;
+  GIFT_FLUSH_PARTITIONS: number;
 }
 
 type GiftFlagField = keyof GiftFlags;
@@ -34,6 +35,7 @@ function envFlags(): GiftFlags {
     GIFT_ROOM_TICK_MS: config.GIFT_ROOM_TICK_MS,
     GIFT_PENDING_TTL_MS: config.GIFT_PENDING_TTL_MS,
     GIFT_CATALOG_TTL_MS: config.GIFT_CATALOG_TTL_MS,
+    GIFT_FLUSH_PARTITIONS: config.GIFT_FLUSH_PARTITIONS,
   };
 }
 
@@ -178,4 +180,9 @@ export function giftPendingTtlMs(): number {
 
 export function giftCatalogTtlMs(): number {
   return current.GIFT_CATALOG_TTL_MS;
+}
+
+/** ticket 05: number of sender-partitioned flush workers (1 = single flush). */
+export function giftFlushPartitions(): number {
+  return current.GIFT_FLUSH_PARTITIONS;
 }

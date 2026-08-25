@@ -167,6 +167,29 @@ describe("JwtValidator", () => {
     expect(user!.isSpeaker).toBe(false);
   });
 
+  it("gift-authority-tick-fanout 09: an older token without level/is_vip claims still verifies, defaulting to level 0 / not VIP", async () => {
+    const payload = validUserPayload();
+    delete payload.level;
+    delete payload.is_vip;
+    const token = createJwt(payload);
+
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
+
+    expect(user).not.toBeNull();
+    expect(user!.level).toBe(0);
+    expect(user!.is_vip).toBe(false);
+  });
+
+  it("gift-authority-tick-fanout 09: a token WITH level/is_vip claims passes them through", async () => {
+    const token = createJwt(validUserPayload({ level: 12, is_vip: true }));
+
+    const user = await verifyJwt(token, mockRedis as Redis, (await import("@src/infrastructure/logger.js")).logger);
+
+    expect(user).not.toBeNull();
+    expect(user!.level).toBe(12);
+    expect(user!.is_vip).toBe(true);
+  });
+
   it("returns null for revoked token", async () => {
     // Token-hash revocation is set — second pipeline result returns EXISTS=1
     mockRedis.pipeline.mockReturnValue(

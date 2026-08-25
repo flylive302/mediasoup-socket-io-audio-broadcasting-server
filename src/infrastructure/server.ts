@@ -29,6 +29,7 @@ import { PipeManager } from "@src/domains/media/pipe-manager.js";
 import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { initRoomTicker } from "@src/domains/gift/roomTicker.js";
+import type { LaravelClient } from "@src/integrations/laravelClient.js";
 
 
 export interface BootstrapResult {
@@ -46,6 +47,8 @@ export interface BootstrapResult {
   revocationPoller: RevocationBackfillPoller;
   statusCoalescer: StatusCoalescer;
   presenceService: PresenceService;
+  /** gift-authority-tick-fanout 09: for starting the gift catalog cache. */
+  laravelClient: LaravelClient;
 }
 
 export async function bootstrapServer(): Promise<BootstrapResult> {
@@ -253,6 +256,9 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     revocationPoller,
     statusCoalescer,
     presenceService: appContext.presenceService,
+    // gift-authority-tick-fanout 09: so index.ts can start the gift catalog
+    // cache alongside startGiftFlags.
+    laravelClient: appContext.laravelClient,
   };
 }
 

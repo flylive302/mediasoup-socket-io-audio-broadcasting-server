@@ -43,6 +43,7 @@ const baseEnv: GiftFlags = {
   GIFT_ROOM_TICK_MS: 0,
   GIFT_PENDING_TTL_MS: 30_000,
   GIFT_CATALOG_TTL_MS: 300_000,
+  GIFT_FLUSH_PARTITIONS: 1,
 };
 
 function fakeRedis(hgetallImpl: () => Promise<Record<string, string>> | never) {
@@ -97,6 +98,7 @@ describe("startGiftFlags / getGiftFlags (interval-driven)", () => {
       GIFT_ROOM_TICK_MS: 0,
       GIFT_PENDING_TTL_MS: 30_000,
       GIFT_CATALOG_TTL_MS: 300_000,
+      GIFT_FLUSH_PARTITIONS: 1,
       GIFT_FLAGS_REFRESH_MS: 5_000,
       GIFT_FLAGS_REDIS_HASH: "gift:flags",
       INSTANCE_ID: "test-instance",
@@ -119,6 +121,7 @@ describe("startGiftFlags / getGiftFlags (interval-driven)", () => {
       GIFT_ROOM_TICK_MS: 0,
       GIFT_PENDING_TTL_MS: 30_000,
       GIFT_CATALOG_TTL_MS: 300_000,
+      GIFT_FLUSH_PARTITIONS: 1,
     });
     expect(redis.hgetall).not.toHaveBeenCalled();
   });

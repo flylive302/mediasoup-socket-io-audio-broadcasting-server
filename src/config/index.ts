@@ -66,6 +66,9 @@ export const giftFlagShapes = {
   GIFT_ROOM_TICK_MS: z.coerce.number().int().min(0),
   GIFT_PENDING_TTL_MS: z.coerce.number().int().min(1_000),
   GIFT_CATALOG_TTL_MS: z.coerce.number().int().min(1_000),
+  // ticket 05: sender-partitioned flush workers. 1 = today's single flush.
+  // Capped so boot reclaim can enumerate every partition's in-flight list.
+  GIFT_FLUSH_PARTITIONS: z.coerce.number().int().min(1).max(16),
 } as const;
 
 const configSchema = z.object({
@@ -306,6 +309,7 @@ const configSchema = z.object({
   GIFT_ROOM_TICK_MS: giftFlagShapes.GIFT_ROOM_TICK_MS.default(0), // 0 = ticker off
   GIFT_PENDING_TTL_MS: giftFlagShapes.GIFT_PENDING_TTL_MS.default(30_000),
   GIFT_CATALOG_TTL_MS: giftFlagShapes.GIFT_CATALOG_TTL_MS.default(300_000),
+  GIFT_FLUSH_PARTITIONS: giftFlagShapes.GIFT_FLUSH_PARTITIONS.default(1),
   // How often the flags module re-reads GIFT_FLAGS_REDIS_HASH from the
   // durable Redis client. Not itself flippable via the hash (chicken/egg).
   GIFT_FLAGS_REFRESH_MS: z.coerce.number().int().min(1_000).default(5_000),

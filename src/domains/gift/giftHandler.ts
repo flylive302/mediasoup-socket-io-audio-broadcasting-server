@@ -14,6 +14,7 @@ import { config } from "@src/config/index.js";
 import { reactError } from "@src/shared/react-error.js";
 import { giftLegacyShape, giftRoomTickMs } from "./flags.js";
 import { enqueueGift, flushAllRooms } from "./roomTicker.js";
+import { getGift, hasCatalog } from "./catalogCache.js";
 
 interface BurstFields {
   roomId: string;
@@ -158,6 +159,27 @@ export class GiftHandler {
     sock.data.giftSendCount = (sock.data.giftSendCount ?? 0) + 1;
     // gift-authority-tick-fanout 01: rate counterpart, see giftActivityWindow.
     sock.data.giftActivityWindow?.record(Date.now());
+
+    // gift-authority-tick-fanout 09: shadow-only cost/policy-input logging —
+    // no behaviour change. `cost` is null when the catalog hasn't loaded yet
+    // or the gift id is unknown; the money path (later tickets) must fail
+    // CLOSED on `hasCatalog() === false`, this line only observes.
+    const quantity = payload.quantity ?? 1;
+    const cachedGift = hasCatalog() ? getGift(payload.giftId) : undefined;
+    const cost =
+      cachedGift !== undefined
+        ? cachedGift.price * quantity * acceptedRecipientIds.length
+        : null;
+    logger.debug(
+      {
+        transactionId: transaction.transaction_id,
+        giftId: payload.giftId,
+        cost,
+        level: sock.data.user.level ?? 0,
+        isVip: sock.data.user.is_vip ?? false,
+      },
+      "gift cost (shadow)",
+    );
 
     this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context, transaction.transaction_id);
 

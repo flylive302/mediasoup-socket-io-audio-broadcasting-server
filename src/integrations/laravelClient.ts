@@ -419,6 +419,59 @@ export class LaravelClient {
   }
 
   /**
+   * gift-authority-tick-fanout/09: full gift catalog snapshot for the room
+   * server's boot fetch / TTL refresh / `gift.catalog.updated` refresh.
+   * Throws on a non-ok response or network error so the caller
+   * (catalogCache) can apply its own boot-backoff / keep-last-good policy —
+   * unlike most other GET wrappers here, this one does not swallow failures.
+   */
+  async getGiftCatalog(): Promise<{
+    lucky_enabled: boolean;
+    gifts: Array<{
+      id: number;
+      price: number;
+      is_active: boolean;
+      is_lucky: boolean;
+      min_level: number;
+      vip_only: boolean;
+    }>;
+  }> {
+    const response = await this.get("/api/v1/internal/gifts/catalog");
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch gift catalog: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    const parsed = (await response.json()) as {
+      lucky_enabled?: unknown;
+      gifts?: unknown;
+    };
+
+    const gifts = Array.isArray(parsed.gifts)
+      ? parsed.gifts.filter(
+          (g): g is {
+            id: number;
+            price: number;
+            is_active: boolean;
+            is_lucky: boolean;
+            min_level: number;
+            vip_only: boolean;
+          } =>
+            typeof g === "object" &&
+            g !== null &&
+            typeof (g as Record<string, unknown>).id === "number",
+        )
+      : [];
+
+    return {
+      lucky_enabled: parsed.lucky_enabled === true,
+      gifts,
+    };
+  }
+
+  /**
    * Check if a user is a room admin/owner
    * Returns the user's role in the room or null if not a member
    */
