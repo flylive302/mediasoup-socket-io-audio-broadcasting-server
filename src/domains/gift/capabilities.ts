@@ -6,13 +6,19 @@
  * booting the whole socket composition root. Read fresh on every call
  * (never cached) so a runtime flip is reflected on the very next connect.
  */
-import { giftRoomTickMs } from "./flags.js";
+import { giftBalanceAuthority, giftRoomTickMs } from "./flags.js";
 
 export interface ServerCapabilities {
   /** Advertised only when GIFT_ROOM_TICK_MS > 0 — see roomTicker.ts. */
   giftBatch: boolean;
+  /**
+   * ticket 12: advertised only in `redis` mode — the gift:send ack then
+   * carries `balance`/`seq` and balance pushes are spendable-rewritten.
+   * Old bundles ignore it and keep today's behaviour.
+   */
+  ackBalance: boolean;
 }
 
 export function getServerCapabilities(): ServerCapabilities {
-  return { giftBatch: giftRoomTickMs() > 0 };
+  return { giftBatch: giftRoomTickMs() > 0, ackBalance: giftBalanceAuthority() === "redis" };
 }

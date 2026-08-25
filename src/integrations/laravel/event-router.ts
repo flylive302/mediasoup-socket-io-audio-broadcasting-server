@@ -42,7 +42,7 @@ import {
   releaseClaim,
 } from "@src/infrastructure/event-dedup.js";
 import { giftRoomTickMs } from "@src/domains/gift/flags.js";
-import { reconcileBalance } from "@src/domains/gift/balanceSync.js";
+import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush } from "@src/domains/gift/balanceSync.js";
 import { enqueueLucky } from "@src/domains/gift/roomTicker.js";
 import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
@@ -101,7 +101,8 @@ export class EventRouter {
   /**
    * Route an event to appropriate Socket.IO targets
    */
-  async route(event: LaravelEvent): Promise<EventRoutingResult> {
+  async route(eventIn: LaravelEvent): Promise<EventRoutingResult> {
+    let event: LaravelEvent = eventIn;
     // Allowlist gate — only registered events pass through
     if (!KNOWN_EVENT_SET.has(event.event)) {
       this.logger.error(
@@ -152,12 +153,17 @@ export class EventRouter {
     // is judged on the newer balance. Ordering across pushes is the script's
     // job (older versions are ignored). Never blocks delivery.
     if (event.event === RELAY_EVENTS.economy.BALANCE_UPDATED && event.user_id !== null) {
-      await reconcileBalance(
+      const ledger = await reconcileBalance(
         event.user_id,
         event.payload as { coins?: unknown; version?: unknown },
         [],
         "push",
       );
+      // ticket 12 (redis mode): the user sees SPENDABLE coins + seq, never
+      // the raw db balance that a pending reservation would bounce above.
+      if (balanceAuthorityEnforcing() && ledger !== null) {
+        event = { ...event, payload: rewriteBalancePush(event.payload as Record<string, unknown>, ledger) };
+      }
     }
 
     try {

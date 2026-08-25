@@ -10,7 +10,7 @@ import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import { giftFlushPartitions, giftPendingTtlMs } from "./flags.js";
-import { reconcileBalance, type ReconcileSource } from "./balanceSync.js";
+import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush, type ReconcileSource } from "./balanceSync.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -503,10 +503,10 @@ export class GiftBuffer {
       // balance straight from the batch response, so a lucky cashback shows
       // the moment the batch commits instead of waiting on Laravel's queued
       // realtime bridge. Same payload shape as the bridge's `balance.updated`.
-      this.emitSenderBalances(result, transactions);
-      // gift-authority-tick-fanout 11: settle every id in this batch on the
-      // ledger (booked or failed — both are terminal) with the snapshot.
-      this.reconcileSenders(result, transactions, "batch");
+      // gift-authority-tick-fanout 11/12: settle every id in this batch on
+      // the ledger (booked or failed — both are terminal) with the snapshot;
+      // in redis mode the balance push waits for that so it is spendable.
+      this.settleAndEmit(result, transactions, "batch");
 
     } catch (error) {
       this.lastBookingOk = false;
@@ -552,9 +552,8 @@ export class GiftBuffer {
             metrics.giftsProcessed.inc({ status: "failed" });
           } else {
             metrics.giftsProcessed.inc({ status: "success" }, 1);
-            this.emitSenderBalances(result, [gift]);
           }
-          this.reconcileSenders(result, [gift], "fallback");
+          this.settleAndEmit(result, [gift], "fallback");
           continue; // Item handled, don't re-queue
         } catch {
           // Individual item also failed — fall through to retry/dead-letter logic
@@ -753,7 +752,7 @@ export class GiftBuffer {
    * the newest `processed[].balance` snapshot for that sender. No-op while
    * GIFT_BALANCE_AUTHORITY=off (balanceSync gates it).
    */
-  private reconcileSenders(
+  private settleAndEmit(
     result: BatchProcessingResult,
     transactions: BufferedGift[],
     source: ReconcileSource,
@@ -772,8 +771,18 @@ export class GiftBuffer {
           snapshotBySender.set(entry.sender_id, entry.balance);
         }
       }
+      const enforcing = balanceAuthorityEnforcing();
+      if (!enforcing) this.emitSenderBalances(result, transactions);
+      if (enforcing) {
+        // ticket 12: a tap the ledger accepted but the backend refused was
+        // shown to the room unpaid — count it; the reconcile above refunds.
+        for (const f of result.failed) metrics.giftShownUnpaidTotal.inc({ code: String(f.code) });
+      }
       for (const [senderId, ids] of settledBySender) {
-        void reconcileBalance(senderId, snapshotBySender.get(senderId) ?? null, ids, source);
+        const p = reconcileBalance(senderId, snapshotBySender.get(senderId) ?? null, ids, source);
+        if (enforcing) {
+          void p.then((ledger) => this.emitSenderBalances(result, transactions, senderId, ledger));
+        }
       }
     } catch (error) {
       this.logger.warn({ error }, "Failed to reconcile sender ledgers from batch response");
@@ -783,15 +792,19 @@ export class GiftBuffer {
   private emitSenderBalances(
     result: BatchProcessingResult,
     transactions: BufferedGift[],
+    onlySenderId: number | null = null,
+    ledger: { spendable: number; seq: number } | null = null,
   ): void {
     try {
       for (const entry of result.processed ?? []) {
+        if (onlySenderId !== null && entry.sender_id !== onlySenderId) continue;
         const source = transactions.find((t) =>
           entry.transaction_ids.includes(t.transaction_id),
         );
         if (!source?.sender_socket_id) continue;
 
-        this.io.to(source.sender_socket_id).emit("balance.updated", entry.balance);
+        // ticket 12: redis mode rewrites coins → spendable (+ seq).
+        this.io.to(source.sender_socket_id).emit("balance.updated", rewriteBalancePush(entry.balance, ledger));
       }
     } catch (error) {
       this.logger.warn(

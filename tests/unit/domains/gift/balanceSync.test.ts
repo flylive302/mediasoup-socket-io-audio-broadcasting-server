@@ -50,13 +50,16 @@ import {
   ensureWarm,
   forceRefresh,
   debitForTap,
+  readSpendable,
+  rewriteBalancePush,
+  balanceAuthorityEnforcing,
   FORCE_REFRESH_MIN_INTERVAL_MS,
 } from "@src/domains/gift/balanceSync.js";
 
 const okReconcile = { db: 100, pend: 0, spendable: 100, seq: 1, expiredCount: 0 };
 
 function wire() {
-  const redis = { exists: vi.fn().mockResolvedValue(1) };
+  const redis = { exists: vi.fn().mockResolvedValue(1), hmget: vi.fn().mockResolvedValue(["100", "30", "4"]) };
   const source = { getUserBalance: vi.fn().mockResolvedValue({ coins: "100", version: 3 }) };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -270,6 +273,33 @@ describe("balanceSync (ticket 11)", () => {
       expect(await debitForTap(tap)).toEqual({ kind: "error" });
       expect(degradation).toHaveBeenCalledWith("gift-ledger", "debit");
       expect(logger.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe("ticket 12 helpers", () => {
+    it("readSpendable = db − pend with seq; null when cold or on error", async () => {
+      const { redis } = wire();
+      expect(await readSpendable(7)).toEqual({ spendable: 70, seq: 4 });
+      expect(redis.hmget).toHaveBeenCalledWith("bal:7", "db", "pend", "seq");
+      redis.hmget.mockResolvedValue([null, null, null]);
+      expect(await readSpendable(7)).toBeNull();
+      redis.hmget.mockRejectedValue(new Error("down"));
+      expect(await readSpendable(7)).toBeNull();
+    });
+
+    it("rewriteBalancePush replaces coins with spendable and appends seq, leaving the rest", () => {
+      const payload = { coins: "100", diamonds: "9", wealth_xp: "1", charm_xp: "2", version: 3 };
+      expect(rewriteBalancePush(payload, { spendable: 70, seq: 4 })).toEqual({ ...payload, coins: "70", seq: 4 });
+      expect(rewriteBalancePush(payload, null)).toBe(payload);
+    });
+
+    it("balanceAuthorityEnforcing is true only in redis mode and only when wired", () => {
+      mockAuthority = "redis";
+      expect(balanceAuthorityEnforcing()).toBe(false); // not wired
+      wire();
+      expect(balanceAuthorityEnforcing()).toBe(true);
+      mockAuthority = "shadow";
+      expect(balanceAuthorityEnforcing()).toBe(false);
     });
   });
 });

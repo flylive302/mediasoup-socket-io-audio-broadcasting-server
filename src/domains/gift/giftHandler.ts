@@ -14,8 +14,9 @@ import { config } from "@src/config/index.js";
 import { reactError } from "@src/shared/react-error.js";
 import { giftLegacyShape, giftRoomTickMs } from "./flags.js";
 import { enqueueGift, flushAllRooms } from "./roomTicker.js";
-import { getGift, hasCatalog } from "./catalogCache.js";
-import { debitForTap } from "./balanceSync.js";
+import { getGift, hasCatalog, isLuckyEnabled } from "./catalogCache.js";
+import { balanceAuthorityEnforcing, debitForTap, readSpendable } from "./balanceSync.js";
+import { evaluateGiftPolicy, GiftRefusal, REFUSAL_REASON, type GiftRefusalCode } from "./policy.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 interface BurstFields {
@@ -155,9 +156,10 @@ export class GiftHandler {
       batch_id: payload.batchId,
     };
 
-    // gift-authority-tick-fanout 09: `cost` is null when the catalog hasn't
-    // loaded yet or the gift id is unknown; the money path must fail CLOSED
-    // on `hasCatalog() === false` (ticket 12) — here it is only observed.
+    // gift-authority-tick-fanout 09/12: catalog + policy mirror. `cost` is
+    // null when the catalog hasn't loaded or the gift is unknown. In `redis`
+    // mode (12) a policy hit REFUSES the tap before the room sees it; in
+    // `shadow` (11) it is only counted.
     const quantity = payload.quantity ?? 1;
     const catalogLoaded = hasCatalog();
     const cachedGift = catalogLoaded ? getGift(payload.giftId) : undefined;
@@ -175,12 +177,23 @@ export class GiftHandler {
       },
       "gift cost (shadow)",
     );
+    const enforcing = balanceAuthorityEnforcing();
+    const policyCode = evaluateGiftPolicy({
+      catalogLoaded,
+      gift: cachedGift,
+      luckyEnabled: isLuckyEnabled(),
+      level: sock.data.user.level ?? 0,
+      isVip: sock.data.user.is_vip ?? false,
+    });
+    if (policyCode !== null && enforcing) {
+      return this.refuse(policyCode, user.id, transaction.transaction_id, cost);
+    }
 
-    // gift-authority-tick-fanout 11: reserved-debit ledger, shadow mode —
-    // computes whether this tap WOULD be rejected, changes nothing the
-    // client can see. On `ok` the script itself enqueued the transaction
-    // (same list, same JSON), so the buffer enqueue below is skipped; any
-    // other verdict falls through to today's path. `off` never gets here.
+    // gift-authority-tick-fanout 11/12: reserved-debit ledger. On `ok` the
+    // script itself enqueued the transaction (same list, same JSON), so the
+    // buffer enqueue below is skipped. Shadow: any other verdict is logged
+    // and the tap proceeds as today. Redis mode: insufficient → refused;
+    // cold-after-warm / Redis error → fail CLOSED (MONEY_UNAVAILABLE).
     const verdict = await debitForTap({
       userId: user.id,
       txId: transaction.transaction_id,
@@ -189,12 +202,28 @@ export class GiftHandler {
       giftJson: JSON.stringify(transaction),
       pendingListKey: this.buffer.queueKeyFor(user.id),
     });
-    if (verdict.kind === "would_reject" || verdict.kind === "no_cost") {
-      metrics.giftWouldRejectTotal.inc({ code: verdict.code });
+    if (enforcing) {
+      if (verdict.kind === "error" || (verdict.kind === "would_reject" && verdict.code === "cold")) {
+        return this.refuse(GiftRefusal.MONEY_UNAVAILABLE, user.id, transaction.transaction_id, cost);
+      }
+      if (verdict.kind === "would_reject") {
+        return this.refuse(GiftRefusal.INSUFFICIENT, user.id, transaction.transaction_id, cost, {
+          spendable: verdict.spendable ?? 0,
+        });
+      }
+      if (verdict.kind === "no_cost") {
+        // Unreachable after the policy gate above (catalog/unknown already refused).
+        return this.refuse(GiftRefusal.MONEY_UNAVAILABLE, user.id, transaction.transaction_id, cost);
+      }
+    }
+    const shadowCode: string | null =
+      policyCode ?? (verdict.kind === "would_reject" || verdict.kind === "no_cost" ? verdict.code : null);
+    if (shadowCode !== null) {
+      metrics.giftWouldRejectTotal.inc({ code: shadowCode });
       logger.info(
         {
           would_reject: true,
-          code: verdict.code,
+          code: shadowCode,
           spendable: verdict.kind === "would_reject" ? verdict.spendable : null,
           cost,
           transactionId: transaction.transaction_id,
@@ -231,7 +260,49 @@ export class GiftHandler {
     // POSTs up to MAX_BATCH_SIZE transactions from many sockets), so a
     // per-request correlation header structurally cannot attribute a result to
     // one sender. Purely additive; older clients ignore the field.
+    // ticket 12 (redis mode): the ack carries truth — spendable balance +
+    // ledger seq — so the client never does optimistic arithmetic. `ok`
+    // mirrors `success` for the new client contract; both stay.
+    if (enforcing && verdict.kind === "ok") {
+      return {
+        ok: true,
+        success: true,
+        acceptedRecipientIds,
+        transaction_id: transaction.transaction_id,
+        transactionId: transaction.transaction_id,
+        balance: String(verdict.spendable),
+        seq: verdict.seq,
+      };
+    }
     return { success: true, acceptedRecipientIds, transaction_id: transaction.transaction_id };
+  }
+
+  /**
+   * ticket 12: refusal ack — sender only, the room never saw the tap. The
+   * balance is the ledger's current spendable when readable (a refusal
+   * must not leave the client guessing), omitted when the key is cold.
+   */
+  private async refuse(
+    code: GiftRefusalCode,
+    userId: number,
+    transactionId: string,
+    cost: number | null,
+    known: { spendable: number } | null = null,
+  ) {
+    metrics.giftRejectedTotal.inc({ code });
+    const state = await readSpendable(userId);
+    const spendable = state?.spendable ?? known?.spendable;
+    logger.info({ code, userId, transactionId, cost, spendable }, "gift refused (redis authority)");
+    return {
+      ok: false,
+      success: false,
+      code,
+      reason: REFUSAL_REASON[code],
+      error: REFUSAL_REASON[code],
+      transactionId,
+      ...(spendable !== undefined ? { balance: String(spendable) } : {}),
+      ...(state ? { seq: state.seq } : {}),
+    };
   }
 
   /**

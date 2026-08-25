@@ -32,6 +32,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     eventsTotal: { inc: vi.fn() },
     eventLatency: { observe: vi.fn() },
     giftWouldRejectTotal: { inc: vi.fn() },
+    giftRejectedTotal: { inc: vi.fn() },
   },
 }));
 
@@ -51,8 +52,12 @@ vi.mock("@src/domains/gift/flags.js", () => ({
 // gift-authority-tick-fanout 11: the ledger seam is mocked; the verdict is
 // scripted per test. Default `skipped` = GIFT_BALANCE_AUTHORITY=off.
 const mockDebitForTap = vi.fn();
+let mockEnforcing = false;
+const mockReadSpendable = vi.fn().mockResolvedValue(null);
 vi.mock("@src/domains/gift/balanceSync.js", () => ({
   debitForTap: (...a: unknown[]) => mockDebitForTap(...a),
+  balanceAuthorityEnforcing: () => mockEnforcing,
+  readSpendable: (...a: unknown[]) => mockReadSpendable(...a),
 }));
 
 const mockEnqueueGift = vi.fn();
@@ -66,9 +71,11 @@ vi.mock("@src/domains/gift/roomTicker.js", () => ({
 // tests control catalog contents/hasCatalog() without a real boot fetch.
 let mockHasCatalog = true;
 let mockCatalog: Map<number, { id: number; price: number; isActive: boolean; isLucky: boolean; minLevel: number; vipOnly: boolean }> = new Map();
+let mockLuckyEnabled = true;
 vi.mock("@src/domains/gift/catalogCache.js", () => ({
   hasCatalog: () => mockHasCatalog,
   getGift: (id: number) => mockCatalog.get(id),
+  isLuckyEnabled: () => mockLuckyEnabled,
 }));
 
 // Mock crypto for deterministic UUIDs
@@ -215,6 +222,9 @@ describe("GiftHandler", () => {
     mockRoomTickMs = 0;
     mockHasCatalog = true;
     mockDebitForTap.mockResolvedValue({ kind: "skipped" });
+    mockEnforcing = false;
+    mockLuckyEnabled = true;
+    mockReadSpendable.mockResolvedValue(null);
     mockCatalog = new Map();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
@@ -813,13 +823,13 @@ describe("GiftHandler", () => {
       expect(log?.[0]).toMatchObject({ would_reject: true, code: "insufficient", spendable: 3, cost: 200, transactionId: result.transaction_id });
     });
 
-    it("catalog not loaded: reports code no_catalog without touching the script args' cost", async () => {
+    it("catalog not loaded: shadow counts MONEY_UNAVAILABLE (the code redis mode would refuse with); script args carry cost null", async () => {
       mockHasCatalog = false;
       const { result } = await send({ kind: "no_cost", code: "no_catalog" });
       expect(result.success).toBe(true);
       expect(mockDebitForTap.mock.calls[0]![0]).toMatchObject({ cost: null, costCode: "no_catalog" });
       const { metrics } = await import("@src/infrastructure/metrics.js");
-      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).toHaveBeenCalledWith({ code: "no_catalog" });
+      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).toHaveBeenCalledWith({ code: "MONEY_UNAVAILABLE" });
     });
 
     it("Redis unreachable (`error`): proceeds as today", async () => {
@@ -828,6 +838,112 @@ describe("GiftHandler", () => {
       expect(vi.mocked(mockRedis.rpush)).toHaveBeenCalledTimes(1);
       const { metrics } = await import("@src/infrastructure/metrics.js");
       expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("redis authority mode: reject before show (gift-authority-tick-fanout 12)", () => {
+    const gift = { id: 100, price: 50, isActive: true, isLucky: false, minLevel: 0, vipOnly: false };
+    const tapIn = async (opts: { verdict?: unknown; giftId?: number; level?: number; isVip?: boolean } = {}) => {
+      mockEnforcing = true;
+      mockDebitForTap.mockResolvedValue(opts.verdict ?? { kind: "ok", spendable: 700, seq: 3 });
+      const socket = createMockSocket("room-1", 1);
+      socket.data.user.level = opts.level ?? 0;
+      socket.data.user.is_vip = opts.isVip ?? false;
+      const context = createMockContext();
+      handler.handle(socket, context);
+      const result = (await extractHandler(socket, "gift:send")({
+        roomId: "room-1", giftId: opts.giftId ?? 100, recipientIds: [2, 3], quantity: 2,
+      })) as Record<string, unknown>;
+      return { socket, context, result };
+    };
+    const expectNothingShown = (socket: Socket, context: ReturnType<typeof createMockContext>) => {
+      expect(vi.mocked(socket.to)).not.toHaveBeenCalled();
+      expect(mockEnqueueGift).not.toHaveBeenCalled();
+      expect(vi.mocked(mockRedis.rpush)).not.toHaveBeenCalled();
+      expect(context.autoCloseService.recordActivity).not.toHaveBeenCalled();
+    };
+
+    it("accepted: ack carries ok/success, balance = spendable, seq, transactionId, acceptedRecipientIds; room sees it; no double enqueue", async () => {
+      mockCatalog.set(100, gift);
+      const { socket, result } = await tapIn();
+      expect(result).toMatchObject({ ok: true, success: true, balance: "700", seq: 3, acceptedRecipientIds: [2, 3] });
+      expect(result.transactionId).toBe(result.transaction_id);
+      expect(vi.mocked(socket.to)).toHaveBeenCalled();
+      expect(vi.mocked(mockRedis.rpush)).not.toHaveBeenCalled();
+    });
+
+    it("INSUFFICIENT: refused to the sender only with balance/seq from the ledger; nothing broadcast, nothing enqueued", async () => {
+      mockCatalog.set(100, gift);
+      mockReadSpendable.mockResolvedValue({ spendable: 120, seq: 9 });
+      const { socket, context, result } = await tapIn({ verdict: { kind: "would_reject", code: "insufficient", spendable: 120 } });
+      expect(result).toMatchObject({ ok: false, success: false, code: "INSUFFICIENT", balance: "120", seq: 9 });
+      expect(typeof result.reason).toBe("string");
+      expectNothingShown(socket, context);
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftRejectedTotal.inc)).toHaveBeenCalledWith({ code: "INSUFFICIENT" });
+    });
+
+    it("INSUFFICIENT with a cold read: balance falls back to the verdict's spendable, seq omitted", async () => {
+      mockCatalog.set(100, gift);
+      const { result } = await tapIn({ verdict: { kind: "would_reject", code: "insufficient", spendable: 5 } });
+      expect(result).toMatchObject({ ok: false, code: "INSUFFICIENT", balance: "5" });
+      expect(result).not.toHaveProperty("seq");
+    });
+
+    it("GIFT_UNKNOWN: unknown id refused before the debit script runs", async () => {
+      const { socket, context, result } = await tapIn({ giftId: 999 });
+      expect(result).toMatchObject({ ok: false, code: "GIFT_UNKNOWN" });
+      expect(mockDebitForTap).not.toHaveBeenCalled();
+      expectNothingShown(socket, context);
+    });
+
+    it("GIFT_NOT_SENDABLE: inactive / below min level / VIP-only", async () => {
+      mockCatalog.set(100, { ...gift, isActive: false });
+      expect((await tapIn()).result.code).toBe("GIFT_NOT_SENDABLE");
+      mockCatalog.set(100, { ...gift, minLevel: 10 });
+      expect((await tapIn({ level: 3 })).result.code).toBe("GIFT_NOT_SENDABLE");
+      expect((await tapIn({ level: 10 })).result.success).toBe(true);
+      mockCatalog.set(100, { ...gift, vipOnly: true });
+      expect((await tapIn({ isVip: false })).result.code).toBe("GIFT_NOT_SENDABLE");
+      expect((await tapIn({ isVip: true })).result.success).toBe(true);
+    });
+
+    it("LUCKY_DISABLED: lucky gift while lucky is off", async () => {
+      mockCatalog.set(100, { ...gift, isLucky: true });
+      mockLuckyEnabled = false;
+      expect((await tapIn()).result.code).toBe("LUCKY_DISABLED");
+      mockLuckyEnabled = true;
+      expect((await tapIn()).result.success).toBe(true);
+    });
+
+    it("MONEY_UNAVAILABLE (fail closed): catalog not loaded, Redis error, or still cold after warm", async () => {
+      mockHasCatalog = false;
+      let r = await tapIn();
+      expect(r.result.code).toBe("MONEY_UNAVAILABLE");
+      expectNothingShown(r.socket, r.context);
+      mockHasCatalog = true;
+      mockCatalog.set(100, gift);
+      vi.clearAllMocks();
+      r = await tapIn({ verdict: { kind: "error" } });
+      expect(r.result.code).toBe("MONEY_UNAVAILABLE");
+      expectNothingShown(r.socket, r.context);
+      vi.clearAllMocks();
+      r = await tapIn({ verdict: { kind: "would_reject", code: "cold", spendable: null } });
+      expect(r.result.code).toBe("MONEY_UNAVAILABLE");
+      expectNothingShown(r.socket, r.context);
+    });
+
+    it("shadow mode: the same policy hit is only counted, the tap proceeds", async () => {
+      mockCatalog.set(100, { ...gift, isActive: false });
+      mockEnforcing = false;
+      mockDebitForTap.mockResolvedValue({ kind: "ok", spendable: 1, seq: 1 });
+      const socket = createMockSocket("room-1", 1);
+      handler.handle(socket, createMockContext());
+      const result = await extractHandler(socket, "gift:send")({ roomId: "room-1", giftId: 100, recipientIds: [2], quantity: 1 });
+      expect(result.success).toBe(true);
+      expect(vi.mocked(socket.to)).toHaveBeenCalled();
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftWouldRejectTotal.inc)).toHaveBeenCalledWith({ code: "GIFT_NOT_SENDABLE" });
     });
   });
 

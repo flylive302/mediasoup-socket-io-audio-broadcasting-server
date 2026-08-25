@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 
@@ -25,8 +25,12 @@ const PENDING_TTL_MS = 30_000;
 // ticket 05: mutable so partition tests can flip it at runtime.
 let flushPartitions = 1;
 const mockReconcileBalance = vi.fn().mockResolvedValue(null);
+let mockEnforcing = false;
 vi.mock("@src/domains/gift/balanceSync.js", () => ({
   reconcileBalance: (...a: unknown[]) => mockReconcileBalance(...a),
+  balanceAuthorityEnforcing: () => mockEnforcing,
+  rewriteBalancePush: (payload: Record<string, unknown>, l: { spendable: number; seq: number } | null) =>
+    l ? { ...payload, coins: String(l.spendable), seq: l.seq } : payload,
 }));
 
 vi.mock("@src/domains/gift/flags.js", () => ({
@@ -38,6 +42,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: {
     giftBatchSize: { observe: vi.fn() },
     giftsProcessed: { inc: vi.fn() },
+    giftShownUnpaidTotal: { inc: vi.fn() },
     giftDeadLetterSize: { set: vi.fn() },
     giftQueueDepth: { set: vi.fn() },
     giftBufferWaitSeconds: { observe: vi.fn() },
@@ -404,6 +409,36 @@ describe("GiftBuffer", () => {
   });
 
   // ─── gift-authority-tick-fanout 11: ledger reconcile per sender ──
+
+  describe("redis authority mode: spendable-rewritten pushes + shown-unpaid (ticket 12)", () => {
+    beforeEach(() => { mockEnforcing = true; });
+    afterEach(() => { mockEnforcing = false; });
+
+    it("waits for the reconcile, then emits balance.updated with coins = spendable and seq", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      const balance = { coins: "49500", diamonds: "10", wealth_xp: "1", charm_xp: "0", version: 7 };
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+      });
+      mockReconcileBalance.mockResolvedValue({ db: 49500, pend: 500, spendable: 49000, seq: 12, expiredCount: 0 });
+
+      await buffer.stop();
+      await vi.runAllTicks();
+
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...balance, coins: "49000", seq: 12 });
+    });
+
+    it("counts gift_shown_unpaid_total{code} for each backend failure after acceptance", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4003, reason: "policy", sender_socket_id: "sock-1" }],
+      });
+      await buffer.stop();
+      const { metrics } = await import("@src/infrastructure/metrics.js");
+      expect(vi.mocked(metrics.giftShownUnpaidTotal.inc)).toHaveBeenCalledWith({ code: "4003" });
+      expect(mockIo._emit).toHaveBeenCalledWith("gift:error", expect.objectContaining({ transactionId: "tx-1", code: 4003 }));
+    });
+  });
 
   describe("ledger reconcile after booking (ticket 11)", () => {
     it("batch success: one reconcile per sender with ALL that sender's ids (booked + failed) and the newest snapshot", async () => {

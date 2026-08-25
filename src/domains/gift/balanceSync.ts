@@ -23,7 +23,7 @@ import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
-import { giftBalanceAuthority, giftPendingTtlMs } from "./flags.js";
+import { giftBalanceAuthority, giftPendingTtlMs, type GiftFlags } from "./flags.js";
 import { GiftLedger, balKey, type DebitResult, type ReconcileResult } from "./ledger.js";
 
 /** Wire shape shared by `balance.updated`, `processed[].balance` and the read endpoint. */
@@ -61,6 +61,46 @@ export function __resetBalanceSyncForTests(): void {
   source = null;
   log = null;
   lastForcedRefreshAt.clear();
+}
+
+/** Current mode; `off` when not wired regardless of the flag. */
+export function balanceAuthorityMode(): GiftFlags["GIFT_BALANCE_AUTHORITY"] {
+  return ledger === null ? "off" : giftBalanceAuthority();
+}
+
+/** ticket 12: rejections are real only in `redis` mode. */
+export function balanceAuthorityEnforcing(): boolean {
+  return balanceAuthorityMode() === "redis";
+}
+
+/**
+ * ticket 12: current spendable + seq for a refusal ack. Null when cold or
+ * unreachable — the ack then omits the balance rather than guessing.
+ */
+export async function readSpendable(userId: number): Promise<{ spendable: number; seq: number } | null> {
+  if (!balanceAuthorityActive() || !redisClient) return null;
+  try {
+    const [db, pend, seq] = await redisClient.hmget(balKey(userId), "db", "pend", "seq");
+    if (db === null) return null;
+    return { spendable: Number(db) - Number(pend ?? 0), seq: Number(seq ?? 0) };
+  } catch (err) {
+    recordRedisDegradation("gift-ledger", "read-spendable");
+    log?.debug({ err, userId }, "gift ledger: readSpendable skipped");
+    return null;
+  }
+}
+
+/**
+ * ticket 12: rewrite a backend balance payload so the client sees SPENDABLE
+ * coins (db − pending) plus the ledger `seq`; diamonds/XP pass through.
+ * Only meaningful in redis mode — callers pass the reconcile result.
+ */
+export function rewriteBalancePush<T extends Record<string, unknown>>(
+  payload: T,
+  ledgerState: { spendable: number; seq: number } | null,
+): T & { seq?: number } {
+  if (!ledgerState) return payload;
+  return { ...payload, coins: String(ledgerState.spendable), seq: ledgerState.seq };
 }
 
 /** True when the ledger should be touched at all (mode ≠ off AND wired). */

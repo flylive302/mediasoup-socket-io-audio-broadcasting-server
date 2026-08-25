@@ -20,8 +20,12 @@ vi.mock("@src/config/index.js", () => ({
 // giftHandler.test.ts).
 let mockRoomTickMs = 0;
 const mockReconcileBalance = vi.fn().mockResolvedValue(null);
+let mockEnforcing = false;
 vi.mock("@src/domains/gift/balanceSync.js", () => ({
   reconcileBalance: (...a: unknown[]) => mockReconcileBalance(...a),
+  balanceAuthorityEnforcing: () => mockEnforcing,
+  rewriteBalancePush: (payload: Record<string, unknown>, l: { spendable: number; seq: number } | null) =>
+    l ? { ...payload, coins: String(l.spendable), seq: l.seq } : payload,
 }));
 
 vi.mock("@src/domains/gift/flags.js", () => ({
@@ -315,6 +319,31 @@ describe("EventRouter", () => {
 
       expect(mockReconcileBalance).toHaveBeenCalledWith(42, payload, [], "push");
       expect(order).toEqual(["reconcile", "emit"]);
+    });
+
+    it("redis mode: the emitted payload carries spendable coins + seq, diamonds/XP untouched (ticket 12)", async () => {
+      mockEnforcing = true;
+      try {
+        repo.getSocketIds.mockResolvedValue(["socket-a"]);
+        const emit = vi.fn();
+        io.to.mockImplementation(() => ({ emit, to: vi.fn().mockReturnThis() }));
+        mockReconcileBalance.mockResolvedValue({ db: 100, pend: 30, spendable: 70, seq: 5, expiredCount: 0 });
+        const payload = { coins: "100", diamonds: "9", wealth_xp: "1", charm_xp: "2", version: 9 };
+        await router.route(createEvent({ event: "balance.updated", user_id: 42, payload }));
+        expect(emit).toHaveBeenCalledWith("balance.updated", { ...payload, coins: "70", seq: 5 });
+      } finally {
+        mockEnforcing = false;
+      }
+    });
+
+    it("shadow/off: the payload is passed through untouched even when the ledger answers", async () => {
+      repo.getSocketIds.mockResolvedValue(["socket-a"]);
+      const emit = vi.fn();
+      io.to.mockImplementation(() => ({ emit, to: vi.fn().mockReturnThis() }));
+      mockReconcileBalance.mockResolvedValue({ db: 100, pend: 30, spendable: 70, seq: 5, expiredCount: 0 });
+      const payload = { coins: "100", diamonds: "9", wealth_xp: "1", charm_xp: "2", version: 9 };
+      await router.route(createEvent({ event: "balance.updated", user_id: 42, payload }));
+      expect(emit).toHaveBeenCalledWith("balance.updated", payload);
     });
 
     it("does not touch the ledger for other user events", async () => {

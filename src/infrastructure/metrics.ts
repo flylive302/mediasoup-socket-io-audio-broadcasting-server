@@ -166,6 +166,19 @@ export const metrics = {
     help: "Ledger reservations refunded by TTL expiry (should stay ≈ 0)",
     registers: [metricsRegistry],
   }),
+  // ticket 12: real refusals + accepted-then-unbooked (policy/outage only).
+  giftRejectedTotal: new Counter({
+    name: "flylive_gift_rejected_total",
+    help: "gift:send taps refused by the room server before the room saw them (redis mode)",
+    labelNames: ["code"] as const,
+    registers: [metricsRegistry],
+  }),
+  giftShownUnpaidTotal: new Counter({
+    name: "flylive_gift_shown_unpaid_total",
+    help: "Taps accepted by the ledger but later failed by the backend booking (redis mode) — refund is the reconcile",
+    labelNames: ["code"] as const,
+    registers: [metricsRegistry],
+  }),
   giftBalanceWarmTotal: new Counter({
     name: "flylive_gift_balance_warm_total",
     help: "Read-endpoint warm/refresh attempts by outcome",
