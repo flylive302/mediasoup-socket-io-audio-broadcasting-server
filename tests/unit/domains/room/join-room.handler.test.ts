@@ -26,7 +26,7 @@ vi.mock("@src/config/index.js", () => ({
     PORT: 3030,
     AWS_REGION: "us-east-1",
     MEDIASOUP_ANNOUNCED_IP: null,
-    SEAT_RETENTION_GRACE_MS: 45_000,
+    SEAT_RETENTION_GRACE_MS: 120_000,
   },
 }));
 

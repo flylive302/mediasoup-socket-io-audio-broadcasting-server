@@ -52,6 +52,22 @@ const booleanEnvSchemaDefaultTrue = z
   .default("true")
   .transform((v) => v !== "false" && v !== "0");
 
+/**
+ * gift-authority-tick-fanout 03: per-flag Zod shapes, defined standalone so
+ * `src/domains/gift/flags.ts` can reuse the EXACT same validation for a
+ * Redis-hash field value that `configSchema` uses for the env var — a value
+ * that fails env parsing must also fail Redis-hash parsing, and vice versa.
+ * `booleanEnvSchemaDefaultTrue` is reused as-is for `GIFT_LEGACY_SHAPE`
+ * because Redis hash fields arrive as strings just like env vars.
+ */
+export const giftFlagShapes = {
+  GIFT_BALANCE_AUTHORITY: z.enum(["off", "shadow", "redis"]),
+  GIFT_LEGACY_SHAPE: booleanEnvSchemaDefaultTrue,
+  GIFT_ROOM_TICK_MS: z.coerce.number().int().min(0),
+  GIFT_PENDING_TTL_MS: z.coerce.number().int().min(1_000),
+  GIFT_CATALOG_TTL_MS: z.coerce.number().int().min(1_000),
+} as const;
+
 const configSchema = z.object({
   // Server
   NODE_ENV: z
@@ -202,6 +218,16 @@ const configSchema = z.object({
     z.coerce.number().int().min(20_000).max(120_000).default(60_000),
   ),
 
+  // ticket 02 (seat-retention-outlives-heartbeat): how often Socket.IO pings a
+  // client to detect a dead connection. Paired with SOCKET_PING_TIMEOUT_MS —
+  // a genuinely-gone client is only noticed after pingInterval + pingTimeout.
+  // SEAT_RETENTION_GRACE_MS below must outlive that full window plus a
+  // reconnect budget, or a heartbeat-killed seat can never be reclaimed.
+  SOCKET_PING_INTERVAL_MS: z.preprocess(
+    (v) => (v === "" || v === undefined ? undefined : v),
+    z.coerce.number().int().min(5_000).max(60_000).default(25_000),
+  ),
+
   SOCKET_MAX_HTTP_BUFFER_BYTES: z.coerce
     .number()
     .int()
@@ -237,7 +263,13 @@ const configSchema = z.object({
   // fires only AFTER pingTimeout), and must span a client's reconnect/rebuild. It
   // is Redis-backed (a disconnectedAt marker on the seat), not an in-memory timer,
   // so the hold survives the reconnect landing on a different same-region instance.
-  SEAT_RETENTION_GRACE_MS: z.coerce.number().default(45_000), // 45 seconds
+  // ticket 02 (seat-retention-outlives-heartbeat): grace ≥ pingInterval +
+  // pingTimeout + 10 s reconnect budget — enforced by the .refine below —
+  // so a heartbeat-killed seat outlives the kill window it depends on.
+  SEAT_RETENTION_GRACE_MS: z.preprocess(
+    (v) => (v === "" || v === undefined ? undefined : v),
+    z.coerce.number().default(120_000), // 120 seconds
+  ),
   // realtime-02: collapse MSAB→Laravel Room status churn to ≤1 update per Room
   // per this window (trailing-edge). Bounds the internal status POST rate so a
   // join/leave storm can no longer flood (and 429-drop against) the backend.
@@ -262,6 +294,22 @@ const configSchema = z.object({
   GIFT_MAX_RETRIES: z.coerce.number().default(5),
   GIFT_RATE_LIMIT: z.coerce.number().default(330),
   GIFT_RATE_WINDOW: z.coerce.number().default(60),
+
+  // gift-authority-tick-fanout 03: runtime flag source (Redis hash → env →
+  // default). These five are the ONLY flags this epic's `flags` module
+  // resolves at runtime (src/domains/gift/flags.ts) — nothing reads them yet,
+  // this ticket only builds the resolver. Env stays the fallback and the
+  // authoritative value until an operator writes the matching Redis field, so
+  // shipping this changes nothing operationally (ship-inert).
+  GIFT_BALANCE_AUTHORITY: giftFlagShapes.GIFT_BALANCE_AUTHORITY.default("off"),
+  GIFT_LEGACY_SHAPE: giftFlagShapes.GIFT_LEGACY_SHAPE,
+  GIFT_ROOM_TICK_MS: giftFlagShapes.GIFT_ROOM_TICK_MS.default(0), // 0 = ticker off
+  GIFT_PENDING_TTL_MS: giftFlagShapes.GIFT_PENDING_TTL_MS.default(30_000),
+  GIFT_CATALOG_TTL_MS: giftFlagShapes.GIFT_CATALOG_TTL_MS.default(300_000),
+  // How often the flags module re-reads GIFT_FLAGS_REDIS_HASH from the
+  // durable Redis client. Not itself flippable via the hash (chicken/egg).
+  GIFT_FLAGS_REFRESH_MS: z.coerce.number().int().min(1_000).default(5_000),
+  GIFT_FLAGS_REDIS_HASH: z.string().default("gift:flags"),
 
   // Seats
   DEFAULT_SEAT_COUNT: z.coerce.number().default(15),
@@ -488,6 +536,15 @@ const configSchema = z.object({
         "PRESENCE_TTL_SECONDS must be greater than PRESENCE_SWEEP_INTERVAL_MS (in seconds) — otherwise a single sweep tick can't outrun expiry.",
       path: ["PRESENCE_TTL_SECONDS"],
     },
+  )
+  .refine(
+    (c) =>
+      c.SEAT_RETENTION_GRACE_MS >=
+      c.SOCKET_PING_INTERVAL_MS + c.SOCKET_PING_TIMEOUT_MS + 10_000,
+    (c) => ({
+      message: `SEAT_RETENTION_GRACE_MS (${c.SEAT_RETENTION_GRACE_MS}) must be >= SOCKET_PING_INTERVAL_MS (${c.SOCKET_PING_INTERVAL_MS}) + SOCKET_PING_TIMEOUT_MS (${c.SOCKET_PING_TIMEOUT_MS}) + 10000ms reconnect budget.`,
+      path: ["SEAT_RETENTION_GRACE_MS"],
+    }),
   );
 
 /**

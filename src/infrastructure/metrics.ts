@@ -93,6 +93,16 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-authority-tick-fanout 01: pending bookings in the Redis gift buffer
+  // (gifts:pending). Sampled once per flush tick from GiftBuffer's own
+  // pendingCount() — never more often — so booking backlog is visible in the
+  // metrics pipeline without adding extra Redis round trips.
+  giftQueueDepth: new Gauge({
+    name: "flylive_gift_queue_depth",
+    help: "Pending gift bookings in the Redis gift buffer (gifts:pending)",
+    registers: [metricsRegistry],
+  }),
+
   // gift-path-latency 11: the two hops of the result path that this service owns
   // outright. Both are measured on THIS process's clock only — a gift's enqueue
   // stamp and the flush that picks it up are both Date.now() here, so no

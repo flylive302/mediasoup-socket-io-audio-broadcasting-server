@@ -150,6 +150,8 @@ export class GiftHandler {
 
     // Disconnect-log correlation counter (see AuthSocketData.giftSendCount).
     sock.data.giftSendCount = (sock.data.giftSendCount ?? 0) + 1;
+    // gift-authority-tick-fanout 01: rate counterpart, see giftActivityWindow.
+    sock.data.giftActivityWindow?.record(Date.now());
 
     this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context);
 

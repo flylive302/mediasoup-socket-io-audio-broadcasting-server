@@ -84,6 +84,45 @@ describe("SeatRepository — retention (realtime-22)", () => {
         reclaimed: false,
       });
     });
+
+    // ticket 02 (seat-retention-outlives-heartbeat): with the 120s grace, a
+    // rejoin at 100s (< 120s) reclaims; at 130s (> 120s) it does not. The Lua
+    // itself isn't executed in these unit tests (see structural-invariant
+    // assertions below), so these confirm the repository forwards `graceMs`
+    // and `now` correctly and parses each outcome — the actual grace-window
+    // math is asserted structurally in RECLAIM_SEAT_SCRIPT below.
+    const GRACE_MS = 120_000;
+    const DISCONNECTED_AT = 1_700_000_000_000;
+
+    it("reclaims a rejoin at +100s, within the 120s grace window", async () => {
+      redis.seatReclaim.mockResolvedValue(
+        JSON.stringify({ reclaimed: true, seatIndex: 3, isMuted: false }),
+      );
+      const now = DISCONNECTED_AT + 100_000;
+      const result = await repo.reclaimSeat("r1", "100", now, GRACE_MS);
+      expect(result.reclaimed).toBe(true);
+      expect(redis.seatReclaim).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        "100",
+        now.toString(),
+        GRACE_MS.toString(),
+      );
+    });
+
+    it("does not reclaim a rejoin at +130s, past the 120s grace window (joins as listener)", async () => {
+      redis.seatReclaim.mockResolvedValue(JSON.stringify({ reclaimed: false }));
+      const now = DISCONNECTED_AT + 130_000;
+      const result = await repo.reclaimSeat("r1", "100", now, GRACE_MS);
+      expect(result.reclaimed).toBe(false);
+      expect(redis.seatReclaim).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        "100",
+        now.toString(),
+        GRACE_MS.toString(),
+      );
+    });
   });
 
   describe("sweepExpiredReservations", () => {

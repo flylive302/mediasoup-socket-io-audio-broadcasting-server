@@ -3,6 +3,7 @@
  * Zod schema is the source of truth; TypeScript type is derived from it
  */
 import { z } from "zod";
+import type { RollingWindow } from "@src/shared/rollingWindow.js";
 
 /**
  * Zod schema for validating user data from JWT payload or API responses.
@@ -65,4 +66,22 @@ export interface AuthSocketData {
    * this counter is the only correlation signal.
    */
   giftSendCount?: number;
+
+  /**
+   * gift-authority-tick-fanout 01: trailing 60 s bucketed count of gifts sent
+   * by (accepted `gift:send`) or delivered to (any `gift:*` outgoing event
+   * except `gift:error`) this socket. Read at disconnect as `giftsLast60s` —
+   * a rate rather than the cumulative `giftSendCount` above, so a "ping
+   * timeout" after a burst that ended minutes earlier doesn't look like a
+   * live storm.
+   */
+  giftActivityWindow?: RollingWindow;
+
+  /**
+   * gift-authority-tick-fanout 01: trailing 10 s bucketed count of every
+   * server→this-socket outgoing event (room broadcasts included). Read at
+   * disconnect as `inboundMsgsPerSec` (count / 10, 2dp) — the fan-out load
+   * this socket was under just before it dropped.
+   */
+  inboundActivityWindow?: RollingWindow;
 }

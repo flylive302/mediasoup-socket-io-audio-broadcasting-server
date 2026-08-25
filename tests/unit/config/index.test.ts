@@ -372,3 +372,70 @@ describe("SOCKET_PING_TIMEOUT_MS (gift-burst-ping-timeout)", () => {
     await expect(import("@src/config/index.js")).rejects.toThrow();
   });
 });
+
+describe("SOCKET_PING_INTERVAL_MS (seat-retention-outlives-heartbeat, ticket 02)", () => {
+  const original = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...REQUIRED_ENV, NODE_ENV: "development", INSTANCE_ID_OVERRIDE: "dev-host" } as NodeJS.ProcessEnv;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...original };
+    vi.resetModules();
+  });
+
+  it("defaults to 25 s when unset", async () => {
+    const { config } = await import("@src/config/index.js");
+    expect(config.SOCKET_PING_INTERVAL_MS).toBe(25_000);
+  });
+
+  it("defaults to 25 s when empty", async () => {
+    process.env.SOCKET_PING_INTERVAL_MS = "";
+    const { config } = await import("@src/config/index.js");
+    expect(config.SOCKET_PING_INTERVAL_MS).toBe(25_000);
+  });
+
+  it("accepts an explicit value within [5s, 60s]", async () => {
+    process.env.SOCKET_PING_INTERVAL_MS = "10000";
+    const { config } = await import("@src/config/index.js");
+    expect(config.SOCKET_PING_INTERVAL_MS).toBe(10_000);
+  });
+});
+
+describe("SEAT_RETENTION_GRACE_MS vs heartbeat window (ticket 02)", () => {
+  const original = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...REQUIRED_ENV, NODE_ENV: "development", INSTANCE_ID_OVERRIDE: "dev-host" } as NodeJS.ProcessEnv;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...original };
+    vi.resetModules();
+  });
+
+  it("defaults to 120 s", async () => {
+    const { config } = await import("@src/config/index.js");
+    expect(config.SEAT_RETENTION_GRACE_MS).toBe(120_000);
+  });
+
+  it("rejects a grace below pingInterval + pingTimeout + 10s, naming SEAT_RETENTION_GRACE_MS", async () => {
+    process.env.SOCKET_PING_INTERVAL_MS = "25000";
+    process.env.SOCKET_PING_TIMEOUT_MS = "60000";
+    process.env.SEAT_RETENTION_GRACE_MS = "94999"; // floor is 95000
+    await expect(import("@src/config/index.js")).rejects.toThrow(
+      /SEAT_RETENTION_GRACE_MS/,
+    );
+  });
+
+  it("accepts a grace exactly at the floor (pingInterval + pingTimeout + 10s)", async () => {
+    process.env.SOCKET_PING_INTERVAL_MS = "25000";
+    process.env.SOCKET_PING_TIMEOUT_MS = "60000";
+    process.env.SEAT_RETENTION_GRACE_MS = "95000";
+    const { config } = await import("@src/config/index.js");
+    expect(config.SEAT_RETENTION_GRACE_MS).toBe(95_000);
+  });
+});

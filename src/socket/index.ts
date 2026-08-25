@@ -42,6 +42,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { getLifecycleHooks, type DisconnectContext } from "@src/shared/lifecycle.js";
 import { reactError } from "@src/shared/react-error.js";
+import { RollingWindow } from "@src/shared/rollingWindow.js";
 
 // ─────────────────────────────────────────────────────────────────
 // F-7: track in-flight disconnect handlers so graceful shutdown can
@@ -214,6 +215,22 @@ export async function initializeSocket(
     // per-handler Redis rate limits, which are unaffected).
     installSocketEventBudget(socket);
 
+    // gift-authority-tick-fanout 01: burst-intensity rolling windows, read at
+    // disconnect as giftsLast60s / inboundMsgsPerSec (see AuthSocketData).
+    socket.data.giftActivityWindow = new RollingWindow(60);
+    socket.data.inboundActivityWindow = new RollingWindow(10);
+
+    // onAnyOutgoing fires for every server→this-socket emit, including room
+    // broadcasts — the only vantage point that captures gift deliveries this
+    // socket did not itself send. REACT: pure counting, never throws.
+    socket.onAnyOutgoing((event: string) => {
+      const now = Date.now();
+      socket.data.inboundActivityWindow?.record(now);
+      if (event.startsWith("gift:") && event !== "gift:error") {
+        socket.data.giftActivityWindow?.record(now);
+      }
+    });
+
     // Register Client in ClientManager (local instance tracking)
     clientManager.addClient(socket);
 
@@ -300,9 +317,23 @@ async function handleDisconnect(
   const { clientManager, userSocketRepository, userRoomRepository, logger: log, appContext, presenceService } = deps;
 
   // giftSendCount: lets a "ping timeout" be tied to a gift combo in CloudWatch
-  // (gift-burst-ping-timeout, 2026-08-22).
+  // (gift-burst-ping-timeout, 2026-08-22). giftsLast60s/inboundMsgsPerSec add a
+  // RATE alongside that cumulative counter, so a burst that ended minutes
+  // before a delayed ping-timeout disconnect doesn't look like a live storm
+  // (gift-authority-tick-fanout 01).
+  const now = Date.now();
+  const giftsLast60s = socket.data.giftActivityWindow?.countLast(60_000, now) ?? 0;
+  const inboundMsgsPerSec = Number(
+    ((socket.data.inboundActivityWindow?.countLast(10_000, now) ?? 0) / 10).toFixed(2),
+  );
   log.info(
-    { socketId: socket.id, reason, giftSendCount: socket.data.giftSendCount ?? 0 },
+    {
+      socketId: socket.id,
+      reason,
+      giftSendCount: socket.data.giftSendCount ?? 0,
+      giftsLast60s,
+      inboundMsgsPerSec,
+    },
     "Socket disconnected",
   );
 

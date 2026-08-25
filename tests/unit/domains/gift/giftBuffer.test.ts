@@ -24,6 +24,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftBatchSize: { observe: vi.fn() },
     giftsProcessed: { inc: vi.fn() },
     giftDeadLetterSize: { set: vi.fn() },
+    giftQueueDepth: { set: vi.fn() },
     giftBufferWaitSeconds: { observe: vi.fn() },
     giftBatchPostSeconds: { observe: vi.fn() },
     redisDegradations: { inc: vi.fn() },
@@ -143,6 +144,27 @@ describe("GiftBuffer", () => {
 
     expect(mockRedis.eval).toHaveBeenCalled();
     expect(mockLaravel.processGiftBatch).not.toHaveBeenCalled();
+  });
+
+  // ─── flush: gift-authority-tick-fanout 01 — queue depth gauge ──────
+
+  it("samples giftQueueDepth from pendingCount() once per flush tick, even when the queue is empty", async () => {
+    mockRedis.eval.mockResolvedValue([]);
+    mockRedis.llen.mockResolvedValue(7);
+
+    await buffer.stop(); // one flush tick (waitForIdle + final flush both no-op past the first)
+
+    expect(mockRedis.llen).toHaveBeenCalledWith("gifts:pending");
+    expect(metrics.giftQueueDepth.set).toHaveBeenCalledWith(7);
+  });
+
+  it("does not publish a bogus giftQueueDepth when pendingCount() falls back to the -1 sentinel", async () => {
+    mockRedis.eval.mockResolvedValue([]);
+    mockRedis.llen.mockRejectedValue(new Error("redis down"));
+
+    await buffer.stop();
+
+    expect(metrics.giftQueueDepth.set).not.toHaveBeenCalled();
   });
 
   // ─── flush: happy path ────────────────────────────────────────────

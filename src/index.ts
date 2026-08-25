@@ -10,6 +10,7 @@ import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain
 import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
 import { createRejectionBreaker } from "./infrastructure/rejection-breaker.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
+import { startGiftFlags, stopGiftFlags } from "./domains/gift/flags.js";
 
 // ─── Module-Level Shutdown Reference ─────────────────────────────
 // msab-load-stability 07: crash paths (uncaughtException, rejection breaker)
@@ -62,9 +63,22 @@ const start = async () => {
     // singletons read config.INSTANCE_ID in their constructors.
     await initializeConfig();
     logger.info({ instanceId: config.INSTANCE_ID }, "Instance identity resolved");
+    logger.info(
+      {
+        pingIntervalMs: config.SOCKET_PING_INTERVAL_MS,
+        pingTimeoutMs: config.SOCKET_PING_TIMEOUT_MS,
+        seatRetentionGraceMs: config.SEAT_RETENTION_GRACE_MS,
+      },
+      "Seat-retention grace vs heartbeat window (ticket 02)",
+    );
 
     // Validate config and connect to Redis early
-    getRedisClient();
+    const durableRedisClient = getRedisClient();
+
+    // gift-authority-tick-fanout 03: runtime flag source, refreshed from the
+    // durable Redis client every GIFT_FLAGS_REFRESH_MS. Ships inert — nothing
+    // reads getGiftFlags()/the typed getters yet.
+    startGiftFlags(durableRedisClient, logger);
 
     const { server, io, subClient, queueConsumer, roomManager, workerManager, giftHandler, autoCloseJob, revocationPoller, statusCoalescer, presenceService } =
       await bootstrapServer();
@@ -188,6 +202,7 @@ const start = async () => {
         if (giftHandler) {
           await giftHandler.stop();
         }
+        stopGiftFlags();
 
         // 4. Shutdown mediasoup workers
         await workerManager.shutdown();
@@ -247,6 +262,7 @@ const start = async () => {
         stopCloudWatchPublisher();
         stopQualitySampler();
         stopRtpStatisticsSweeper();
+        stopGiftFlags();
       },
       flushStatus: () => statusCoalescer.stop(),
       statusPendingCount: () => statusCoalescer.pendingCount(),

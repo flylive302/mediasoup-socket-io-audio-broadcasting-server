@@ -131,6 +131,20 @@ export class GiftBuffer {
     try {
     this.flushCount++;
 
+    // gift-authority-tick-fanout 01: sample queue depth once per flush tick —
+    // never more often, per the ticket's cap. Wrapped so a Redis hiccup here
+    // can never fail the flush it is only observing; pendingCount() already
+    // returns -1 (not a throw) on failure, which is skipped rather than
+    // published as a bogus negative depth.
+    try {
+      const depth = await this.pendingCount();
+      if (depth >= 0) {
+        metrics.giftQueueDepth.set(depth);
+      }
+    } catch (err) {
+      this.logger.warn({ err }, "Failed to sample gift queue depth");
+    }
+
     // Atomically pop up to MAX_BATCH_SIZE items from the queue.
     // Remaining items stay in the queue for the next flush tick.
     // This prevents unbounded batch sizes that cause HTTP timeouts.

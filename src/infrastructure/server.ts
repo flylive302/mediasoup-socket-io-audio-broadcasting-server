@@ -109,7 +109,7 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
     // gift-burst-ping-timeout: env-driven (default 60 s, was a hard-coded 20 s).
     // Rationale and prod evidence on `SOCKET_PING_TIMEOUT_MS` in config/index.ts.
     // The ~45 s hard-kill linger quoted above is now ~85 s worst case.
-    pingInterval: 25_000,
+    pingInterval: config.SOCKET_PING_INTERVAL_MS,
     pingTimeout: config.SOCKET_PING_TIMEOUT_MS,
     // platform-security 04: bound inbound messages. Socket.IO's default is
     // 1 MB per message — roughly 250x anything legitimate sends, and nobody
