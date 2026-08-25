@@ -93,6 +93,33 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-authority-tick-fanout 04: claim-based flush + dead-letter consumer.
+  giftInflightReclaimed: new Counter({
+    name: "flylive_gift_inflight_reclaimed_total",
+    help: "Gifts moved from this instance's in-flight list back to pending at boot",
+    registers: [metricsRegistry],
+  }),
+  giftDeadLetterReplayed: new Counter({
+    name: "flylive_gift_dead_letter_replayed_total",
+    help: "Dead-lettered gifts re-queued to pending by the consumer (younger than GIFT_PENDING_TTL_MS)",
+    registers: [metricsRegistry],
+  }),
+  giftDeadLetterExpired: new Counter({
+    name: "gift_dead_letter_expired_total",
+    help: "Dead-lettered gifts dropped by the consumer because they outlived GIFT_PENDING_TTL_MS (or were corrupt)",
+    registers: [metricsRegistry],
+  }),
+  giftDeadLetterHighWater: new Counter({
+    name: "flylive_gift_dead_letter_high_water_total",
+    help: "Samples where the dead-letter queue exceeded 80% of its cap",
+    registers: [metricsRegistry],
+  }),
+  giftDeadLetterTrimmed: new Counter({
+    name: "flylive_gift_dead_letter_trimmed_total",
+    help: "Dead-lettered gifts destroyed by the above-cap trim",
+    registers: [metricsRegistry],
+  }),
+
   // gift-authority-tick-fanout 01: pending bookings in the Redis gift buffer
   // (gifts:pending). Sampled once per flush tick from GiftBuffer's own
   // pendingCount() — never more often — so booking backlog is visible in the
@@ -120,6 +147,35 @@ export const metrics = {
     // Straddles GIFT_BUFFER_FLUSH_INTERVAL_MS (500ms default): anything far above
     // it means flushes are backing up behind a slow Laravel, not idling.
     buckets: [0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5],
+    registers: [metricsRegistry],
+  }),
+
+  // gift-authority-tick-fanout 14: the room ticker's own fan-out (`gift:batch`),
+  // distinct from giftBatchSize above (the buffer's POST batch to Laravel).
+  // No `roomId` label anywhere here — a live room's id is unbounded
+  // cardinality for a Prometheus label set.
+  giftBatchItems: new Histogram({
+    name: "flylive_gift_batch_items",
+    help: "Number of merged items emitted in one gift:batch tick",
+    buckets: [1, 2, 5, 10, 25, 50, 100, 200],
+    registers: [metricsRegistry],
+  }),
+
+  giftBatchesTotal: new Counter({
+    name: "flylive_gift_batches_total",
+    help: "Total number of gift:batch emits across all rooms",
+    registers: [metricsRegistry],
+  }),
+
+  giftBatchSpillTotal: new Counter({
+    name: "flylive_gift_batch_spill_total",
+    help: "Total number of gift:batch ticks that exceeded the 200-item cap and spilled remainder to the next tick",
+    registers: [metricsRegistry],
+  }),
+
+  giftBatchRelayCallsTotal: new Counter({
+    name: "flylive_gift_batch_relay_calls_total",
+    help: "Total number of cross-instance relay calls made by the gift room ticker (one per tick per room with remotes)",
     registers: [metricsRegistry],
   }),
 

@@ -9,6 +9,7 @@ import type {
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
+import { giftPendingTtlMs } from "./flags.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -20,6 +21,7 @@ const MAX_BATCH_SIZE = 50;
  * Lua script: atomically pop up to N items from the left of a list.
  * Returns the popped items as an array, or an empty array if the list is empty.
  * This is more efficient than LPOP in a loop (single round-trip).
+ * Used by the dead-letter consumer (KEYS[1] = gifts:dead_letter).
  */
 const ATOMIC_LPOP_N_LUA = `
   local items = redis.call('lrange', KEYS[1], 0, ARGV[1] - 1)
@@ -29,19 +31,72 @@ const ATOMIC_LPOP_N_LUA = `
   return items
 `;
 
+/**
+ * gift-authority-tick-fanout 04: CLAIM instead of pop. Atomically moves up to
+ * N items from the head of the pending list (KEYS[1]) to the tail of this
+ * instance's in-flight list (KEYS[2]) and returns them. A gift is never held
+ * only in process memory: until the backend confirms it, it lives in
+ * `gifts:inflight:{instanceId}`, which `reclaimInflight()` moves back to
+ * pending on the next boot of this instance.
+ */
+const ATOMIC_CLAIM_N_LUA = `
+  local items = redis.call('lrange', KEYS[1], 0, ARGV[1] - 1)
+  if #items > 0 then
+    redis.call('ltrim', KEYS[1], #items, -1)
+    redis.call('rpush', KEYS[2], unpack(items))
+  end
+  return items
+`;
+
+/**
+ * gift-authority-tick-fanout 04: move EVERY item of KEYS[1] (in-flight) back
+ * to KEYS[2] (pending), preserving order, and return the count. Boot reclaim
+ * and shutdown return path. Chunked so a huge list can't exceed Lua's unpack
+ * limit.
+ */
+const ATOMIC_MOVE_ALL_LUA = `
+  local moved = 0
+  while true do
+    local items = redis.call('lrange', KEYS[1], 0, 999)
+    if #items == 0 then break end
+    redis.call('rpush', KEYS[2], unpack(items))
+    redis.call('ltrim', KEYS[1], #items, -1)
+    moved = moved + #items
+  end
+  return moved
+`;
+
 interface BufferedGift extends GiftTransaction {
   retryCount?: number;
 }
 
-// GF-006 FIX: Cap dead-letter queue to prevent unbounded Redis memory growth
-const DEAD_LETTER_MAX_LENGTH = 10_000;
+// GF-006 FIX: Cap dead-letter queue to prevent unbounded Redis memory growth.
+// gift-authority-tick-fanout 04: raised 10 000 → 50 000. Trimming DESTROYS
+// gifts the room already rendered, so it is now a last resort that only fires
+// above the cap (and is logged); the 80 % high-water mark alerts first.
+export const DEAD_LETTER_MAX_LENGTH = 50_000;
+export const DEAD_LETTER_HIGH_WATER = Math.floor(DEAD_LETTER_MAX_LENGTH * 0.8);
+/** How often the dead-letter consumer runs (ticket 04). */
+export const DEAD_LETTER_CONSUMER_INTERVAL_MS = 30_000;
+/** Max parked gifts replayed per consumer tick — same bound as a flush. */
+const DEAD_LETTER_REPLAY_BATCH = MAX_BATCH_SIZE;
 
 export class GiftBuffer {
   private readonly QUEUE_KEY = "gifts:pending";
   private readonly DEAD_LETTER_KEY = "gifts:dead_letter";
+  /** Per-instance claim list — see ATOMIC_CLAIM_N_LUA (ticket 04). */
+  private readonly INFLIGHT_KEY = `gifts:inflight:${config.INSTANCE_ID}`;
   private timer: NodeJS.Timeout | null = null;
+  private deadLetterTimer: NodeJS.Timeout | null = null;
   private flushCount = 0;
   private isFlushing = false;
+  private isReplaying = false;
+  /**
+   * ticket 04: the dead-letter consumer only replays while the backend is
+   * known healthy — set by the most recent booking call's outcome. Starts
+   * false so a boot into a dead backend never floods pending from the DLQ.
+   */
+  private lastBookingOk = false;
 
   constructor(
     private readonly redis: Redis,
@@ -50,24 +105,82 @@ export class GiftBuffer {
     private readonly logger: Logger,
   ) {}
 
-  /** Start the batch processor */
+  /**
+   * Start the batch processor. ticket 04: this instance's in-flight list from
+   * a previous life is moved back to pending BEFORE the first flush tick, so
+   * a crash mid-booking never loses a gift (re-booking is idempotent by
+   * transaction id on the Laravel side). Sync-callable: the reclaim is
+   * awaited internally; `started` resolves once the timers are armed.
+   */
   start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(
-      () => this.flush(),
-      config.GIFT_BUFFER_FLUSH_INTERVAL_MS,
-    );
+    if (this.timer || this.starting) return;
+    this.starting = this.reclaimInflight()
+      .catch((err) => {
+        recordRedisDegradation("gift-buffer", "inflight-reclaim");
+        this.logger.error(
+          { err, key: this.INFLIGHT_KEY },
+          "Gift buffer: in-flight reclaim failed at boot — items stay in the in-flight list for the next boot",
+        );
+      })
+      .then(() => {
+        if (this.timer) return;
+        this.timer = setInterval(
+          () => this.flush(),
+          config.GIFT_BUFFER_FLUSH_INTERVAL_MS,
+        );
+        this.deadLetterTimer = setInterval(
+          () => this.replayDeadLetters(),
+          DEAD_LETTER_CONSUMER_INTERVAL_MS,
+        );
+        this.deadLetterTimer.unref?.();
+        this.logger.info(
+          {
+            intervalMs: config.GIFT_BUFFER_FLUSH_INTERVAL_MS,
+            deadLetterIntervalMs: DEAD_LETTER_CONSUMER_INTERVAL_MS,
+          },
+          "Gift buffer started",
+        );
+      });
+  }
+
+  private starting: Promise<void> | null = null;
+
+  /** Resolves once start()'s boot reclaim finished and the timers are armed. */
+  get started(): Promise<void> {
+    return this.starting ?? Promise.resolve();
+  }
+
+  /**
+   * ticket 04: move this instance's leftover in-flight gifts back to pending.
+   * Returns the count (logged either way so a rollout can prove the path ran).
+   */
+  async reclaimInflight(): Promise<number> {
+    const moved = (await this.redis.eval(
+      ATOMIC_MOVE_ALL_LUA,
+      2,
+      this.INFLIGHT_KEY,
+      this.QUEUE_KEY,
+    )) as number;
+    if (moved > 0) {
+      metrics.giftInflightReclaimed.inc(moved);
+    }
     this.logger.info(
-      { intervalMs: config.GIFT_BUFFER_FLUSH_INTERVAL_MS },
-      "Gift buffer started",
+      { reclaimed: moved, key: this.INFLIGHT_KEY },
+      "Gift buffer: in-flight gifts reclaimed to pending at boot",
     );
+    return moved;
   }
 
   /** Stop the batch processor and flush pending */
   async stop(): Promise<void> {
+    await this.started;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.deadLetterTimer) {
+      clearInterval(this.deadLetterTimer);
+      this.deadLetterTimer = null;
     }
     this.logger.info("Gift buffer stopping, flushing pending items...");
 
@@ -79,6 +192,30 @@ export class GiftBuffer {
     // finish, THEN do one final flush to drain anything still queued.
     await this.waitForIdle();
     await this.flush();
+
+    // ticket 04: anything still claimed (a flush that hit the idle deadline,
+    // or a Redis error after the claim) goes back to pending so the NEXT
+    // instance books it, instead of waiting for this instance's next boot.
+    try {
+      const returned = (await this.redis.eval(
+        ATOMIC_MOVE_ALL_LUA,
+        2,
+        this.INFLIGHT_KEY,
+        this.QUEUE_KEY,
+      )) as number;
+      if (returned > 0) {
+        this.logger.warn(
+          { returned, key: this.INFLIGHT_KEY },
+          "Gift buffer: in-flight gifts returned to pending at shutdown",
+        );
+      }
+    } catch (err) {
+      recordRedisDegradation("gift-buffer", "inflight-return");
+      this.logger.error(
+        { err, key: this.INFLIGHT_KEY },
+        "Gift buffer: could not return in-flight gifts at shutdown — they will be reclaimed at this instance's next boot",
+      );
+    }
     this.logger.info("Gift buffer stopped");
   }
 
@@ -128,6 +265,11 @@ export class GiftBuffer {
     if (this.isFlushing) return;
     this.isFlushing = true;
 
+    // ticket 04: raw claimed strings, kept so in-flight entries can be removed
+    // by exact value (LREM) once the backend confirmed, or returned to pending
+    // on a Redis-layer error below.
+    let claimed: string[] = [];
+
     try {
     this.flushCount++;
 
@@ -145,30 +287,36 @@ export class GiftBuffer {
       this.logger.warn({ err }, "Failed to sample gift queue depth");
     }
 
-    // Atomically pop up to MAX_BATCH_SIZE items from the queue.
-    // Remaining items stay in the queue for the next flush tick.
-    // This prevents unbounded batch sizes that cause HTTP timeouts.
+    // ticket 04: atomically CLAIM up to MAX_BATCH_SIZE items — moved from
+    // pending to this instance's in-flight list, not popped into memory.
+    // Remaining items stay in pending for the next flush tick.
     const items = await this.redis.eval(
-      ATOMIC_LPOP_N_LUA,
-      1,
+      ATOMIC_CLAIM_N_LUA,
+      2,
       this.QUEUE_KEY,
+      this.INFLIGHT_KEY,
       MAX_BATCH_SIZE,
     ) as string[];
 
     if (!items || items.length === 0) return;
+    claimed = items;
 
     // GF-003 FIX: Per-item JSON parsing with error handling
     // Corrupted entries go to dead-letter instead of poisoning the entire batch
     const transactions: BufferedGift[] = [];
+    const rawByTransaction = new Map<string, string>();
     for (const item of items) {
       try {
-        transactions.push(JSON.parse(item) as BufferedGift);
+        const parsed = JSON.parse(item) as BufferedGift;
+        transactions.push(parsed);
+        rawByTransaction.set(parsed.transaction_id, item);
       } catch {
         this.logger.warn(
           { item: item.slice(0, 200) },
           "Corrupted gift entry, moving to dead letter",
         );
         await this.redis.rpush(this.DEAD_LETTER_KEY, item);
+        await this.redis.lrem(this.INFLIGHT_KEY, 1, item);
         metrics.giftsProcessed.inc({ status: "dead_letter" });
       }
     }
@@ -203,22 +351,29 @@ export class GiftBuffer {
     // GF-006 FIX: Report dead-letter queue size for alerting
     // GF-014 FIX: Sample every 10th flush to reduce Redis RTT
     if (this.flushCount % 10 === 0) {
-      const dlqSize = await this.redis.llen(this.DEAD_LETTER_KEY);
-      metrics.giftDeadLetterSize.set(dlqSize);
+      await this.sampleDeadLetterSize();
     }
 
     // gift-path-latency 11: hop (d) — the batch POST itself. Timed on BOTH
     // outcomes: a timeout is the slow case this measurement exists to expose, so
     // recording successes only would hide exactly the tail that matters.
     const postStartedAt = Date.now();
+    let batchConfirmed = false;
 
     try {
       const result = await this.laravelClient.processGiftBatch(transactions);
+      this.lastBookingOk = true;
 
       metrics.giftBatchPostSeconds.observe(
         { outcome: "success" },
         (Date.now() - postStartedAt) / 1000,
       );
+
+      // ticket 04: the backend confirmed the whole batch (per-item outcomes
+      // are inside `result`) — claims are released AFTER this try/catch so a
+      // Redis error in the release reaches the outer handler, not the
+      // per-item Laravel fallback.
+      batchConfirmed = true;
 
       // Handle failures - notify senders via Socket.IO. batchId lets the FE
       // key its per-burst refund (Laravel's failure rows don't carry it, so
@@ -251,6 +406,7 @@ export class GiftBuffer {
       this.emitSenderBalances(result, transactions);
 
     } catch (error) {
+      this.lastBookingOk = false;
       metrics.giftBatchPostSeconds.observe(
         { outcome: "failure" },
         (Date.now() - postStartedAt) / 1000,
@@ -268,9 +424,16 @@ export class GiftBuffer {
       let hasDeadLetterEntries = false;
 
       for (const gift of transactions) {
+        // ticket 04: every branch below either books, dead-letters or
+        // re-queues this gift — all three release its claim in the same
+        // pipeline so the in-flight list never carries a settled item.
+        const raw = rawByTransaction.get(gift.transaction_id);
+        if (raw !== undefined) pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+
         // Try sending as individual 1-item batch
         try {
           const result = await this.laravelClient.processGiftBatch([gift]);
+          this.lastBookingOk = true;
 
           // Handle individual failures from Laravel response
           if (result.failed.length > 0) {
@@ -322,15 +485,153 @@ export class GiftBuffer {
         pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
       }
 
-      // GF-006 FIX: Cap dead-letter queue once (not per-item) to prevent unbounded growth
-      if (hasDeadLetterEntries) {
-        pipeline.ltrim(this.DEAD_LETTER_KEY, -DEAD_LETTER_MAX_LENGTH, -1);
-      }
-
       await pipeline.exec();
+
+      // ticket 04: the destructive trim is no longer unconditional — see
+      // sampleDeadLetterSize (alert at 80 %, trim only above the cap, logged).
+      if (hasDeadLetterEntries) {
+        await this.sampleDeadLetterSize();
+      }
     }
+
+    if (batchConfirmed) {
+      await this.releaseInflight(
+        transactions.map((t) => rawByTransaction.get(t.transaction_id)),
+      );
+    }
+    } catch (err) {
+      // ticket 04: a Redis-layer error anywhere in the flush (claim parsing,
+      // pipeline exec, release) — the claimed batch goes back to pending so
+      // it is booked by the next tick instead of sitting in in-flight until
+      // this instance's next boot. Best effort: if Redis is down the items
+      // are still safe in in-flight.
+      recordRedisDegradation("gift-buffer", "flush");
+      this.logger.error(
+        { err, batchSize: claimed.length },
+        "Gift flush hit a Redis error — returning claimed batch to pending",
+      );
+      if (claimed.length > 0) {
+        await this.returnToPending(claimed);
+      }
     } finally {
       this.isFlushing = false;
+    }
+  }
+
+  /** ticket 04: LREM each confirmed raw entry from the in-flight list. */
+  private async releaseInflight(raws: Array<string | undefined>): Promise<void> {
+    const pipeline = this.redis.pipeline();
+    let any = false;
+    for (const raw of raws) {
+      if (raw === undefined) continue;
+      pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+      any = true;
+    }
+    if (any) await pipeline.exec();
+  }
+
+  /** ticket 04: put claimed raws back on pending and drop their claims. */
+  private async returnToPending(raws: string[]): Promise<void> {
+    try {
+      const pipeline = this.redis.pipeline();
+      for (const raw of raws) {
+        pipeline.rpush(this.QUEUE_KEY, raw);
+        pipeline.lrem(this.INFLIGHT_KEY, 1, raw);
+      }
+      await pipeline.exec();
+    } catch (err) {
+      this.logger.error(
+        { err, count: raws.length, key: this.INFLIGHT_KEY },
+        "Gift buffer: could not return claimed batch to pending — items stay in in-flight for boot reclaim",
+      );
+    }
+  }
+
+  /**
+   * ticket 04: DLQ size → gauge; error-log + metric above the 80 % high-water
+   * mark; trim ONLY above the cap, and log exactly how many were destroyed.
+   */
+  private async sampleDeadLetterSize(): Promise<void> {
+    const dlqSize = await this.redis.llen(this.DEAD_LETTER_KEY);
+    metrics.giftDeadLetterSize.set(dlqSize);
+
+    if (dlqSize > DEAD_LETTER_MAX_LENGTH) {
+      const trimmed = dlqSize - DEAD_LETTER_MAX_LENGTH;
+      await this.redis.ltrim(this.DEAD_LETTER_KEY, -DEAD_LETTER_MAX_LENGTH, -1);
+      metrics.giftDeadLetterTrimmed.inc(trimmed);
+      this.logger.error(
+        { dlqSize, cap: DEAD_LETTER_MAX_LENGTH, trimmed },
+        "Gift dead-letter queue ABOVE CAP — oldest entries destroyed",
+      );
+    } else if (dlqSize > DEAD_LETTER_HIGH_WATER) {
+      metrics.giftDeadLetterHighWater.inc();
+      this.logger.error(
+        { dlqSize, highWater: DEAD_LETTER_HIGH_WATER, cap: DEAD_LETTER_MAX_LENGTH },
+        "Gift dead-letter queue above 80% of cap — investigate before trimming starts",
+      );
+    }
+  }
+
+  /**
+   * ticket 04: dead-letter consumer. While the last booking call succeeded,
+   * replay parked gifts younger than GIFT_PENDING_TTL_MS (runtime flag) back
+   * to pending with a fresh retry budget; older ones are dropped with a
+   * metric + warn carrying the transaction id. Never runs concurrently with
+   * itself; a Redis error is logged and the tick skipped.
+   */
+  async replayDeadLetters(): Promise<void> {
+    if (this.isReplaying || !this.lastBookingOk) return;
+    this.isReplaying = true;
+    try {
+      const items = (await this.redis.eval(
+        ATOMIC_LPOP_N_LUA,
+        1,
+        this.DEAD_LETTER_KEY,
+        DEAD_LETTER_REPLAY_BATCH,
+      )) as string[];
+      if (!items || items.length === 0) return;
+
+      const ttlMs = giftPendingTtlMs();
+      const now = Date.now();
+      const pipeline = this.redis.pipeline();
+      let replayed = 0;
+      let expired = 0;
+
+      for (const item of items) {
+        let gift: BufferedGift;
+        try {
+          gift = JSON.parse(item) as BufferedGift;
+        } catch {
+          expired++;
+          metrics.giftDeadLetterExpired.inc();
+          this.logger.warn({ item: item.slice(0, 200) }, "Dead-letter entry corrupt — dropped");
+          continue;
+        }
+        const ageMs = now - gift.timestamp;
+        if (!Number.isFinite(ageMs) || ageMs > ttlMs) {
+          expired++;
+          metrics.giftDeadLetterExpired.inc();
+          this.logger.warn(
+            { transactionId: gift.transaction_id, ageMs, ttlMs, senderId: gift.sender_id },
+            "Dead-letter gift older than GIFT_PENDING_TTL_MS — dropped",
+          );
+          continue;
+        }
+        gift.retryCount = 0;
+        pipeline.rpush(this.QUEUE_KEY, JSON.stringify(gift));
+        replayed++;
+      }
+
+      if (replayed > 0) {
+        await pipeline.exec();
+        metrics.giftDeadLetterReplayed.inc(replayed);
+      }
+      this.logger.info({ replayed, expired, ttlMs }, "Dead-letter consumer tick");
+    } catch (err) {
+      recordRedisDegradation("gift-buffer", "dead-letter-replay");
+      this.logger.warn({ err }, "Dead-letter consumer tick failed — skipped");
+    } finally {
+      this.isReplaying = false;
     }
   }
 

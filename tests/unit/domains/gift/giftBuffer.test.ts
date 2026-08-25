@@ -16,7 +16,14 @@ vi.mock("@src/config/index.js", () => ({
   config: {
     GIFT_BUFFER_FLUSH_INTERVAL_MS: 5000,
     GIFT_MAX_RETRIES: 5,
+    INSTANCE_ID: "i-test",
   },
+}));
+
+// ticket 04: dead-letter consumer reads the runtime TTL flag.
+const PENDING_TTL_MS = 30_000;
+vi.mock("@src/domains/gift/flags.js", () => ({
+  giftPendingTtlMs: () => PENDING_TTL_MS,
 }));
 
 vi.mock("@src/infrastructure/metrics.js", () => ({
@@ -28,10 +35,20 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftBufferWaitSeconds: { observe: vi.fn() },
     giftBatchPostSeconds: { observe: vi.fn() },
     redisDegradations: { inc: vi.fn() },
+    giftInflightReclaimed: { inc: vi.fn() },
+    giftDeadLetterReplayed: { inc: vi.fn() },
+    giftDeadLetterExpired: { inc: vi.fn() },
+    giftDeadLetterHighWater: { inc: vi.fn() },
+    giftDeadLetterTrimmed: { inc: vi.fn() },
   },
 }));
 
-import { GiftBuffer } from "@src/domains/gift/giftBuffer.js";
+import {
+  GiftBuffer,
+  DEAD_LETTER_MAX_LENGTH,
+  DEAD_LETTER_HIGH_WATER,
+  DEAD_LETTER_CONSUMER_INTERVAL_MS,
+} from "@src/domains/gift/giftBuffer.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -40,17 +57,34 @@ function createMockRedis() {
   const pipeline = {
     rpush: vi.fn().mockReturnThis(),
     ltrim: vi.fn().mockReturnThis(),
+    lrem: vi.fn().mockReturnThis(),
     del: vi.fn().mockReturnThis(),
     exec: vi.fn().mockResolvedValue([]),
   };
 
-  return {
+  // ticket 04: eval serves three scripts — claim (2 keys, returns items),
+  // move-all (2 keys, returns count) and the DLQ pop (1 key, returns items).
+  // Tests set `_claimItems` / `_dlqItems` / `_moved`; scripts are told apart
+  // by their key arguments.
+  const redis = {
+    _claimItems: [] as string[],
+    _dlqItems: [] as string[],
+    _moved: 0,
     rpush: vi.fn().mockResolvedValue(1),
-    eval: vi.fn().mockResolvedValue([]),   // Lua script returns array of items (empty = no items)
+    lrem: vi.fn().mockResolvedValue(1),
+    ltrim: vi.fn().mockResolvedValue("OK"),
     llen: vi.fn().mockResolvedValue(0),
     pipeline: vi.fn().mockReturnValue(pipeline),
     _pipeline: pipeline,
+    eval: vi.fn(),
   };
+  redis.eval.mockImplementation(async (_lua: string, numKeys: number, k1: string, k2?: string) => {
+    if (numKeys === 2 && k1 === "gifts:pending") return redis._claimItems;
+    if (numKeys === 2 && k1.startsWith("gifts:inflight:") && k2 === "gifts:pending") return redis._moved;
+    if (numKeys === 1 && k1 === "gifts:dead_letter") return redis._dlqItems;
+    return [];
+  });
+  return redis;
 }
 
 function createMockLaravelClient() {
@@ -137,7 +171,7 @@ describe("GiftBuffer", () => {
   // ─── flush: empty queue ───────────────────────────────────────────
 
   it("skips processing when queue is empty (eval returns empty array)", async () => {
-    mockRedis.eval.mockResolvedValue([]);
+    mockRedis._claimItems = [];
 
     // Trigger flush via stop()
     await buffer.stop();
@@ -149,7 +183,7 @@ describe("GiftBuffer", () => {
   // ─── flush: gift-authority-tick-fanout 01 — queue depth gauge ──────
 
   it("samples giftQueueDepth from pendingCount() once per flush tick, even when the queue is empty", async () => {
-    mockRedis.eval.mockResolvedValue([]);
+    mockRedis._claimItems = [];
     mockRedis.llen.mockResolvedValue(7);
 
     await buffer.stop(); // one flush tick (waitForIdle + final flush both no-op past the first)
@@ -159,7 +193,7 @@ describe("GiftBuffer", () => {
   });
 
   it("does not publish a bogus giftQueueDepth when pendingCount() falls back to the -1 sentinel", async () => {
-    mockRedis.eval.mockResolvedValue([]);
+    mockRedis._claimItems = [];
     mockRedis.llen.mockRejectedValue(new Error("redis down"));
 
     await buffer.stop();
@@ -172,7 +206,7 @@ describe("GiftBuffer", () => {
   it("processes batch through Laravel and deletes processing key on success", async () => {
     const giftJson = makeGiftJSON();
     // Lua script returns items directly
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
 
     await buffer.stop();
 
@@ -194,7 +228,7 @@ describe("GiftBuffer", () => {
 
     const gift1 = makeGiftJSON({ transaction_id: "tx-1", timestamp: flushTime - 1000 });
     const gift2 = makeGiftJSON({ transaction_id: "tx-2", timestamp: flushTime - 500 });
-    mockRedis.eval.mockResolvedValue([gift1, gift2]);
+    mockRedis._claimItems = [gift1, gift2];
 
     await buffer.stop();
 
@@ -210,7 +244,7 @@ describe("GiftBuffer", () => {
     // One normal (past) transaction and one with a future timestamp (clock skew / bad stamp).
     const pastGift = makeGiftJSON({ transaction_id: "tx-1", timestamp: flushTime - 1000 });
     const futureGift = makeGiftJSON({ transaction_id: "tx-2", timestamp: flushTime + 5000 });
-    mockRedis.eval.mockResolvedValue([pastGift, futureGift]);
+    mockRedis._claimItems = [pastGift, futureGift];
 
     await buffer.stop();
 
@@ -233,7 +267,7 @@ describe("GiftBuffer", () => {
       timestamp: flushTime - 2000,
       retryCount: 2,
     });
-    mockRedis.eval.mockResolvedValue([freshGift, retriedGift]);
+    mockRedis._claimItems = [freshGift, retriedGift];
 
     await buffer.stop();
 
@@ -244,7 +278,7 @@ describe("GiftBuffer", () => {
 
   it("observes exactly one giftBatchPostSeconds sample under outcome=success on a successful batch POST", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     // default mockLaravel.processGiftBatch resolves { failed: [] }
 
     await buffer.stop();
@@ -262,7 +296,7 @@ describe("GiftBuffer", () => {
 
   it("observes exactly one giftBatchPostSeconds sample under outcome=failure when the batch POST rejects, unconfused by the per-item fallback", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 
     await buffer.stop();
@@ -324,7 +358,7 @@ describe("GiftBuffer", () => {
 
   it("emits balance.updated to the sender socket from the batch response's processed entries", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     const balance = {
       coins: "49500",
       diamonds: "10",
@@ -346,7 +380,7 @@ describe("GiftBuffer", () => {
 
   it("stays silent when the batch response has no processed entries (older Laravel)", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     mockLaravel.processGiftBatch.mockResolvedValue({ failed: [] });
 
     await buffer.stop();
@@ -361,7 +395,7 @@ describe("GiftBuffer", () => {
 
   it("emits gift:error for Laravel-reported failures", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     mockLaravel.processGiftBatch.mockResolvedValue({
       failed: [
         {
@@ -390,7 +424,7 @@ describe("GiftBuffer", () => {
 
   it("re-queues items with incremented retryCount on Laravel error", async () => {
     const giftJson = makeGiftJSON();
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 
     await buffer.stop();
@@ -407,7 +441,7 @@ describe("GiftBuffer", () => {
 
   it("moves to dead-letter queue when retryCount exceeds max", async () => {
     const giftJson = makeGiftJSON({ retryCount: 5 });
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     mockLaravel.processGiftBatch.mockRejectedValue(new Error("Network error"));
 
     await buffer.stop();
@@ -417,12 +451,10 @@ describe("GiftBuffer", () => {
       "gifts:dead_letter",
       expect.any(String),
     );
-    // GF-006: Verify LTRIM is called to cap dead-letter queue
-    expect(pipeline.ltrim).toHaveBeenCalledWith(
-      "gifts:dead_letter",
-      -10_000,
-      -1,
-    );
+    // ticket 04: no unconditional trim any more — llen is 0 here, so nothing
+    // is destroyed (see the cap/high-water tests below).
+    expect(pipeline.ltrim).not.toHaveBeenCalled();
+    expect(mockRedis.ltrim).not.toHaveBeenCalled();
     expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({
       status: "dead_letter",
     });
@@ -441,7 +473,7 @@ describe("GiftBuffer", () => {
     const validJson = makeGiftJSON();
     const corruptedEntry = "{invalid_json!!!";
     // Lua script returns both items directly
-    mockRedis.eval.mockResolvedValue([corruptedEntry, validJson]);
+    mockRedis._claimItems = [corruptedEntry, validJson];
 
     await buffer.stop();
 
@@ -458,7 +490,7 @@ describe("GiftBuffer", () => {
 
   it("cleans up when all items are corrupted (GF-003)", async () => {
     // Lua script returns corrupted items directly
-    mockRedis.eval.mockResolvedValue(["{corrupt1", "{corrupt2"]);
+    mockRedis._claimItems = ["{corrupt1", "{corrupt2"];
 
     await buffer.stop();
 
@@ -476,14 +508,14 @@ describe("GiftBuffer", () => {
 
     // GF-014: DLQ size is sampled every 10th flush.
     // Trigger 9 empty flushes via start() + advanceTimersByTime, then stop() for the 10th.
-    mockRedis.eval.mockResolvedValue([]); // empty queue for first 9 flushes
+    mockRedis._claimItems = []; // empty queue for first 9 flushes
     buffer.start();
     for (let i = 0; i < 9; i++) {
       await vi.advanceTimersByTimeAsync(5000);
     }
 
     // 10th flush: has data
-    mockRedis.eval.mockResolvedValue([giftJson]);
+    mockRedis._claimItems = [giftJson];
     await buffer.stop();
 
     expect(mockRedis.llen).toHaveBeenCalledWith("gifts:dead_letter");
@@ -518,8 +550,9 @@ describe("GiftBuffer", () => {
     await stopped;
 
     // The final-flush call inside stop() must have actually called eval again.
-    // (First call = in-flight, second = final flush during stop.)
-    expect(mockRedis.eval).toHaveBeenCalledTimes(2);
+    // (First call = in-flight, second = final flush during stop, third = the
+    // ticket-04 in-flight→pending return at shutdown.)
+    expect(mockRedis.eval).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -529,6 +562,232 @@ describe("GiftBuffer", () => {
 // a Redis error, emitted neither log nor metric, and returned -1. The sentinel
 // is load-bearing (callers distinguish "unknown" from "zero"), so these tests
 // pin that it is unchanged — the ticket adds observability, never behaviour.
+
+
+// ─── gift-authority-tick-fanout 04: claim-based flush + dead-letter consumer ──
+
+describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockRedis: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockLaravel: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockIo: any;
+  let mockLogger: Logger;
+  let buffer: GiftBuffer;
+  const INFLIGHT = "gifts:inflight:i-test";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    mockRedis = createMockRedis();
+    mockLaravel = createMockLaravelClient();
+    mockIo = createMockIo();
+    mockLogger = createMockLogger();
+    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, mockIo, mockLogger);
+  });
+
+  it("claims into the per-instance in-flight list (2-key script) instead of popping", async () => {
+    mockRedis._claimItems = [makeGiftJSON()];
+    await buffer.stop();
+    expect(mockRedis.eval).toHaveBeenCalledWith(
+      expect.stringContaining("rpush"),
+      2,
+      "gifts:pending",
+      INFLIGHT,
+      50,
+    );
+  });
+
+  it("releases the claim (LREM in-flight) only after a successful booking response", async () => {
+    const raw = makeGiftJSON();
+    mockRedis._claimItems = [raw];
+    let released = false;
+    mockRedis._pipeline.lrem.mockImplementation(() => {
+      released = true;
+      return mockRedis._pipeline;
+    });
+    mockLaravel.processGiftBatch.mockImplementation(async () => {
+      expect(released).toBe(false); // still claimed while the POST is in flight
+      return { failed: [] };
+    });
+
+    await buffer.stop();
+
+    expect(mockRedis._pipeline.lrem).toHaveBeenCalledWith(INFLIGHT, 1, raw);
+    expect(mockRedis._pipeline.exec).toHaveBeenCalled();
+  });
+
+  it("per-item fallback releases each claim in the same pipeline as its re-queue / dead-letter", async () => {
+    const raw = makeGiftJSON();
+    mockRedis._claimItems = [raw];
+    mockLaravel.processGiftBatch.mockRejectedValue(new Error("down"));
+
+    await buffer.stop();
+
+    const p = mockRedis._pipeline;
+    expect(p.lrem).toHaveBeenCalledWith(INFLIGHT, 1, raw);
+    expect(p.rpush).toHaveBeenCalledWith("gifts:pending", expect.stringContaining('"retryCount":1'));
+  });
+
+  it("returns the claimed batch to pending when Redis throws inside the flush", async () => {
+    const raw = makeGiftJSON();
+    mockRedis._claimItems = [raw];
+    // First pipeline (release after success) explodes at exec.
+    mockRedis._pipeline.exec
+      .mockRejectedValueOnce(new Error("redis gone"))
+      .mockResolvedValue([]);
+
+    await buffer.stop();
+
+    const p = mockRedis._pipeline;
+    expect(p.rpush).toHaveBeenCalledWith("gifts:pending", raw);
+    expect(p.lrem).toHaveBeenCalledWith(INFLIGHT, 1, raw);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ batchSize: 1 }),
+      expect.stringContaining("returning claimed batch to pending"),
+    );
+    // flush lock released: a second flush (stop's final one already ran) must be possible
+    mockRedis._claimItems = [];
+    await expect(buffer.stop()).resolves.toBeUndefined();
+  });
+
+  it("boot: moves this instance's in-flight list back to pending BEFORE the first flush tick and logs the count", async () => {
+    mockRedis._moved = 7;
+    const order: string[] = [];
+    mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) => {
+      if (n === 2 && k1 === INFLIGHT) { order.push("reclaim"); return 7; }
+      if (n === 2 && k1 === "gifts:pending") { order.push("claim"); return []; }
+      return [];
+    });
+
+    buffer.start();
+    await buffer.started;
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(order[0]).toBe("reclaim");
+    expect(order).toContain("claim");
+    expect(metrics.giftInflightReclaimed.inc).toHaveBeenCalledWith(7);
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ reclaimed: 7, key: INFLIGHT }),
+      expect.stringContaining("reclaimed"),
+    );
+    await buffer.stop();
+  });
+
+  it("boot reclaim failure is logged and the flush timer still starts", async () => {
+    mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) => {
+      if (n === 2 && k1 === INFLIGHT) throw new Error("redis down");
+      return [];
+    });
+    buffer.start();
+    await buffer.started;
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ key: INFLIGHT }),
+      expect.stringContaining("reclaim failed"),
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(mockRedis.eval).toHaveBeenCalledWith(expect.any(String), 2, "gifts:pending", INFLIGHT, 50);
+    await buffer.stop();
+  });
+
+  it("graceful stop returns any leftover in-flight items to pending", async () => {
+    mockRedis._moved = 3;
+    await buffer.stop();
+    expect(mockRedis.eval).toHaveBeenCalledWith(expect.stringContaining("moved"), 2, INFLIGHT, "gifts:pending");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ returned: 3 }),
+      expect.stringContaining("returned to pending at shutdown"),
+    );
+  });
+
+  describe("dead-letter consumer", () => {
+    it("does not replay while the last booking call failed", async () => {
+      mockRedis._dlqItems = [makeGiftJSON()];
+      await buffer.replayDeadLetters();
+      expect(mockRedis.eval).not.toHaveBeenCalledWith(expect.any(String), 1, "gifts:dead_letter", expect.anything());
+    });
+
+    it("re-queues young gifts with a fresh retry budget and drops ones older than GIFT_PENDING_TTL_MS", async () => {
+      // Make the backend healthy first via a successful (empty-claim) flush path.
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "warm" })];
+      await buffer.stop();
+      vi.clearAllMocks();
+
+      const now = Date.now();
+      mockRedis._dlqItems = [
+        makeGiftJSON({ transaction_id: "young", timestamp: now - PENDING_TTL_MS / 2, retryCount: 5 }),
+        makeGiftJSON({ transaction_id: "old", timestamp: now - PENDING_TTL_MS - 1 }),
+        "{not json",
+      ];
+
+      await buffer.replayDeadLetters();
+
+      const p = mockRedis._pipeline;
+      expect(p.rpush).toHaveBeenCalledTimes(1);
+      expect(p.rpush).toHaveBeenCalledWith("gifts:pending", expect.stringContaining('"transaction_id":"young"'));
+      expect(p.rpush).toHaveBeenCalledWith("gifts:pending", expect.stringContaining('"retryCount":0'));
+      expect(metrics.giftDeadLetterReplayed.inc).toHaveBeenCalledWith(1);
+      expect(metrics.giftDeadLetterExpired.inc).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ transactionId: "old" }),
+        expect.stringContaining("older than GIFT_PENDING_TTL_MS"),
+      );
+    });
+
+    it("runs on its own 30 s interval once started", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      buffer.start();
+      await buffer.started;
+      await vi.advanceTimersByTimeAsync(5000); // one flush → lastBookingOk
+      mockRedis._claimItems = [];
+      vi.clearAllMocks();
+      mockRedis.eval.mockImplementation(async (_l: string, n: number, k1: string) =>
+        n === 1 && k1 === "gifts:dead_letter" ? [] : n === 2 && k1 === INFLIGHT ? 0 : []);
+
+      await vi.advanceTimersByTimeAsync(DEAD_LETTER_CONSUMER_INTERVAL_MS);
+
+      expect(mockRedis.eval).toHaveBeenCalledWith(expect.any(String), 1, "gifts:dead_letter", 50);
+      await buffer.stop();
+    });
+  });
+
+  describe("dead-letter cap", () => {
+    it("logs at error + increments high-water above 80% of the cap, without trimming", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ retryCount: 5 })];
+      mockLaravel.processGiftBatch.mockRejectedValue(new Error("down"));
+      mockRedis.llen.mockResolvedValue(DEAD_LETTER_HIGH_WATER + 1);
+
+      await buffer.stop();
+
+      expect(metrics.giftDeadLetterHighWater.inc).toHaveBeenCalled();
+      expect(mockRedis.ltrim).not.toHaveBeenCalled();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ dlqSize: DEAD_LETTER_HIGH_WATER + 1 }),
+        expect.stringContaining("80%"),
+      );
+    });
+
+    it("trims only above the cap and logs how many were destroyed", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ retryCount: 5 })];
+      mockLaravel.processGiftBatch.mockRejectedValue(new Error("down"));
+      mockRedis.llen.mockResolvedValue(DEAD_LETTER_MAX_LENGTH + 25);
+
+      await buffer.stop();
+
+      expect(mockRedis.ltrim).toHaveBeenCalledWith("gifts:dead_letter", -DEAD_LETTER_MAX_LENGTH, -1);
+      expect(metrics.giftDeadLetterTrimmed.inc).toHaveBeenCalledWith(25);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ trimmed: 25 }),
+        expect.stringContaining("ABOVE CAP"),
+      );
+    });
+
+    it("cap constant is 50 000", () => {
+      expect(DEAD_LETTER_MAX_LENGTH).toBe(50_000);
+    });
+  });
+});
 
 describe("GiftBuffer.pendingCount — Redis degradation", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

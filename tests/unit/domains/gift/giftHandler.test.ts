@@ -34,6 +34,24 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   },
 }));
 
+// gift-authority-tick-fanout 14: this file mocks flags.js directly (not the
+// config mock above) so GIFT_LEGACY_SHAPE / GIFT_ROOM_TICK_MS can be flipped
+// per-test without touching @src/config/index.js's mock (giftBuffer.ts also
+// reads flags.js at import time — see the primary's coordination note).
+let mockLegacyShape = true;
+let mockRoomTickMs = 0;
+vi.mock("@src/domains/gift/flags.js", () => ({
+  giftLegacyShape: () => mockLegacyShape,
+  giftRoomTickMs: () => mockRoomTickMs,
+}));
+
+const mockEnqueueGift = vi.fn();
+const mockFlushAllRooms = vi.fn();
+vi.mock("@src/domains/gift/roomTicker.js", () => ({
+  enqueueGift: (...args: unknown[]) => mockEnqueueGift(...args),
+  flushAllRooms: (...args: unknown[]) => mockFlushAllRooms(...args),
+}));
+
 // Mock crypto for deterministic UUIDs
 vi.mock("@src/shared/crypto.js", () => ({
   generateCorrelationId: vi.fn().mockReturnValue("test-correlation-id"),
@@ -171,6 +189,9 @@ describe("GiftHandler", () => {
     mockRedis = createMockRedis();
     mockIo = createMockIo();
     const mockLaravel = createMockLaravelClient();
+    // Default: today's shipped-inert behaviour (legacy on, tick off).
+    mockLegacyShape = true;
+    mockRoomTickMs = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
   });
@@ -602,6 +623,118 @@ describe("GiftHandler", () => {
         success: false,
         error: Errors.RATE_LIMITED,
       });
+    });
+  });
+
+  // ─── gift-authority-tick-fanout 14: flag matrix ────────────────────
+
+  describe("broadcast flag matrix", () => {
+    const payload = {
+      roomId: "room-1",
+      giftId: 100,
+      recipientId: 2,
+      quantity: 3,
+    };
+
+    it("ships inert (GIFT_LEGACY_SHAPE default on, GIFT_ROOM_TICK_MS default 0): byte-identical to today — N+1 legacy emits, no ticker use", async () => {
+      mockLegacyShape = true;
+      mockRoomTickMs = 0;
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      await sendGift(payload);
+
+      // One per accepted leg (1) + one burst-shaped emit = 2 total, exact
+      // legacy shapes, nothing extra.
+      expect(socket._emit).toHaveBeenCalledTimes(2);
+      expect(socket._emit).toHaveBeenNthCalledWith(1, "gift:received", {
+        senderId: 1,
+        roomId: "room-1",
+        giftId: 100,
+        recipientId: 2,
+        quantity: 3,
+        batchId: undefined,
+      });
+      expect(socket._emit).toHaveBeenNthCalledWith(2, "gift:received", {
+        senderId: 1,
+        roomId: "room-1",
+        giftId: 100,
+        recipientIds: [2],
+        quantity: 3,
+        batchId: undefined,
+      });
+      expect(mockEnqueueGift).not.toHaveBeenCalled();
+    });
+
+    it("legacy on + tick on: keeps the legacy emits AND also enqueues into the room ticker", async () => {
+      mockLegacyShape = true;
+      mockRoomTickMs = 100;
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      await sendGift(payload);
+
+      expect(socket._emit).toHaveBeenCalledTimes(2); // legacy unchanged
+      expect(mockEnqueueGift).toHaveBeenCalledTimes(1);
+      expect(mockEnqueueGift).toHaveBeenCalledWith("room-1", {
+        senderId: 1,
+        giftId: 100,
+        recipientIds: [2],
+        quantity: 3,
+        transactionId: expect.any(String),
+      });
+    });
+
+    it("legacy off + tick off: exactly ONE burst-shape emit per tap, no per-recipient loop", async () => {
+      mockLegacyShape = false;
+      mockRoomTickMs = 0;
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      await sendGift(payload);
+
+      expect(socket._emit).toHaveBeenCalledTimes(1);
+      expect(socket._emit).toHaveBeenCalledWith("gift:received", {
+        senderId: 1,
+        roomId: "room-1",
+        giftId: 100,
+        recipientIds: [2],
+        quantity: 3,
+        batchId: undefined,
+      });
+      expect(mockEnqueueGift).not.toHaveBeenCalled();
+    });
+
+    it("legacy off + tick on: no direct emits at all, only the ticker enqueue", async () => {
+      mockLegacyShape = false;
+      mockRoomTickMs = 100;
+      const socket = createMockSocket("room-1");
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendGift = extractHandler(socket, "gift:send");
+      await sendGift(payload);
+
+      expect(socket._emit).not.toHaveBeenCalled();
+      expect(mockEnqueueGift).toHaveBeenCalledTimes(1);
+      expect(mockEnqueueGift).toHaveBeenCalledWith("room-1", {
+        senderId: 1,
+        giftId: 100,
+        recipientIds: [2],
+        quantity: 3,
+        transactionId: expect.any(String),
+      });
+    });
+
+    it("flushes the room ticker on stop()", async () => {
+      await handler.stop();
+      expect(mockFlushAllRooms).toHaveBeenCalledTimes(1);
     });
   });
 });

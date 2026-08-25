@@ -28,3 +28,8 @@ tfplan*
 
 # Local Vultr API key for terraform (never commit)
 terraform-vultr/.vultr-api-key
+
+# Cloudflare Origin CA material for the per-instance TLS terminator (aws-production 39) — never commit
+terraform/keys/origin-instance.pem
+terraform/keys/origin-instance.key
+terraform/keys/prod.tfvars.bak-*

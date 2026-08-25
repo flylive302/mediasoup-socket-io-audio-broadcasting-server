@@ -28,6 +28,7 @@ import { RoomRegistry } from "@src/domains/room/room-registry.js";
 import { PipeManager } from "@src/domains/media/pipe-manager.js";
 import { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
+import { initRoomTicker } from "@src/domains/gift/roomTicker.js";
 
 
 export interface BootstrapResult {
@@ -143,6 +144,13 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
 
   const appContext = await initializeSocket(io, durableClient, pubClient);
   const { roomManager, workerManager, giftHandler, autoCloseJob, eventRouter, statusCoalescer } = appContext;
+
+  // gift-authority-tick-fanout 14: wire the room ticker ONCE here, not per
+  // gift tap / per routed event — `appContext` is the single mutated-in-place
+  // object every caller shares, so `appContext.cascadeRelay` below is always
+  // read live even though CASCADE_ENABLED wiring (a few lines down) happens
+  // after this call.
+  initRoomTicker(io, appContext);
 
   // SFU Cascade — conditionally wire coordinator and relay.
   // DURABLE, not cache: `cascade:room:{id}:owner` is a CAS lock. `refreshOwnership`

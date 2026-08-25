@@ -15,6 +15,7 @@ import { registerDrainRepinClient } from "@src/infrastructure/drain.js";
 import { RateLimiter } from "@src/infrastructure/rateLimiter.js";
 import { installSocketEventBudget } from "@src/infrastructure/socketEventBudget.js";
 import type { AppContext } from "@src/context.js";
+import { getServerCapabilities } from "@src/domains/gift/capabilities.js";
 
 // Domain Registry - registers all domain handlers
 import { registerAllDomains } from "@src/domains/index.js";
@@ -209,6 +210,11 @@ export async function initializeSocket(
     const correlationId = socket.data.correlationId;
 
     logger.info({ socketId: socket.id, userId, correlationId }, "Socket connected");
+
+    // gift-authority-tick-fanout 14: capability handshake — `giftBatch` is
+    // the only capability this ticket owns; `ackBalance` belongs to a
+    // different ticket in the same epic and is not advertised here.
+    socket.emit("server:capabilities", getServerCapabilities());
 
     // platform-security 05: global per-socket event budget, ahead of every
     // socket.on(eventName, ...) listener (including the five existing

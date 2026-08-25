@@ -13,6 +13,21 @@ vi.mock("@src/config/index.js", () => ({
   isDev: false,
 }));
 
+// gift-authority-tick-fanout 14: event-router.ts reads giftRoomTickMs() for
+// the lucky:room-result fold. Mock flags.js directly rather than adding
+// giftFlagShapes to the config mock above (flags.ts itself needs that export
+// shape; other test files hit the same trap — see giftBuffer.test.ts /
+// giftHandler.test.ts).
+let mockRoomTickMs = 0;
+vi.mock("@src/domains/gift/flags.js", () => ({
+  giftRoomTickMs: () => mockRoomTickMs,
+}));
+
+const mockEnqueueLucky = vi.fn();
+vi.mock("@src/domains/gift/roomTicker.js", () => ({
+  enqueueLucky: (...args: unknown[]) => mockEnqueueLucky(...args),
+}));
+
 // Mock logger
 vi.mock("@src/infrastructure/logger.js", () => ({
   logger: {
@@ -38,6 +53,11 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
 
 import { EventRouter } from "@src/integrations/laravel/event-router.js";
 import { metrics } from "@src/infrastructure/metrics.js";
+
+beforeEach(() => {
+  mockRoomTickMs = 0;
+  mockEnqueueLucky.mockClear();
+});
 import { RELAY_EVENTS } from "@src/integrations/laravel/types.js";
 import type { LaravelEvent } from "@src/integrations/laravel/types.js";
 
@@ -167,6 +187,67 @@ describe("EventRouter", () => {
       const result = await router.route(event);
 
       expect(result.targetCount).toBe(2);
+    });
+  });
+
+  // ─── gift-authority-tick-fanout 14: lucky room-result tick fold ─
+
+  describe("lucky:room-result tick fold", () => {
+    it("emits directly (today's behaviour) when the ticker is off", async () => {
+      mockRoomTickMs = 0;
+      const event = createEvent({ event: "lucky:room-result", room_id: 123, user_id: null });
+
+      const result = await router.route(event);
+
+      expect(io.to).toHaveBeenCalledWith("123");
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(result.delivered).toBe(true);
+    });
+
+    it("folds into the room ticker instead of a direct emit when the ticker is on", async () => {
+      mockRoomTickMs = 100;
+      const event = createEvent({
+        event: "lucky:room-result",
+        room_id: 123,
+        user_id: null,
+        payload: { winnerId: 9 },
+      });
+
+      const result = await router.route(event);
+
+      expect(mockEnqueueLucky).toHaveBeenCalledTimes(1);
+      expect(mockEnqueueLucky).toHaveBeenCalledWith("123", { winnerId: 9 });
+      // No direct adapter emit for this event — the ticker owns the emit.
+      expect(io.to).not.toHaveBeenCalledWith("123");
+      expect(result.delivered).toBe(true);
+    });
+
+    it("does not fold a plain room event (only lucky:room-result is special-cased)", async () => {
+      mockRoomTickMs = 100;
+      const event = createEvent({ event: "balance.updated", room_id: 123, user_id: null });
+
+      await router.route(event);
+
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(io.to).toHaveBeenCalledWith("123");
+    });
+
+    it("skips both the direct emit and the ticker fold when the fan-out claim is lost", async () => {
+      mockRoomTickMs = 100;
+      // Simulate a lost claim by wiring a redis whose claim always fails —
+      // reuse the same fan-out-claim mechanism the rest of the suite tests.
+      const redis = {
+        set: vi.fn().mockResolvedValue(null), // NX SET fails → claim lost
+      } as any;
+      const r = new EventRouter(io, repo, clientManager, logger, redis);
+
+      const event = createEvent({ event: "lucky:room-result", room_id: 123, user_id: null });
+      const result = await r.route(event);
+
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(io.to).not.toHaveBeenCalledWith("123");
+      expect(result.delivered).toBe(true);
+      expect(result.targetCount).toBe(0);
     });
   });
 

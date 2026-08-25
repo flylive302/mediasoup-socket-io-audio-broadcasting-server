@@ -12,6 +12,8 @@ import type { AppContext } from "@src/context.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { config } from "@src/config/index.js";
 import { reactError } from "@src/shared/react-error.js";
+import { giftLegacyShape, giftRoomTickMs } from "./flags.js";
+import { enqueueGift, flushAllRooms } from "./roomTicker.js";
 
 interface BurstFields {
   roomId: string;
@@ -29,6 +31,10 @@ export class GiftHandler {
   }
 
   async stop(): Promise<void> {
+    // gift-authority-tick-fanout 14: drain every room's accumulated
+    // gift:batch state before the buffer/sockets stop, so a room never loses
+    // an accepted-but-unemitted tap on shutdown.
+    flushAllRooms();
     await this.buffer.stop();
   }
 
@@ -153,7 +159,7 @@ export class GiftHandler {
     // gift-authority-tick-fanout 01: rate counterpart, see giftActivityWindow.
     sock.data.giftActivityWindow?.record(Date.now());
 
-    this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context);
+    this.broadcastReceived(sock, payload, user.id, acceptedRecipientIds, context, transaction.transaction_id);
 
     // BL-001 FIX: Record room activity to prevent auto-close during active gifting
     // GF-016 FIX: Log errors instead of silently swallowing
@@ -197,10 +203,24 @@ export class GiftHandler {
   }
 
   /**
-   * REACT: dual-emit for the OTA transition. Legacy singular `gift:received`
-   * events fan out first (one per accepted leg, exact legacy shape) so stale
-   * bundles keep rendering; the burst-shaped event (post-filter
-   * `recipientIds[]`) is emitted last so new clients can dedupe by batchId.
+   * REACT: flag matrix from gift-authority-tick-fanout 14.
+   *
+   *  - `GIFT_LEGACY_SHAPE` on (default): today's dual-emit unchanged — one
+   *    `gift:received` per accepted leg (exact legacy shape) so stale
+   *    bundles keep rendering, then one burst-shaped `gift:received`
+   *    (post-filter `recipientIds[]`) last.
+   *  - `GIFT_ROOM_TICK_MS` > 0: this tap's leg ALSO (in addition to legacy,
+   *    if legacy is also on) gets accumulated into the room's ticker instead
+   *    of/as-well-as a direct emit — see roomTicker.ts. Sender exclusion for
+   *    the ticker's merged `gift:batch` cannot be done per-recipient (one
+   *    batch spans many senders), so it emits to the whole room with
+   *    `senderId` on each item for the client to skip its own; see
+   *    roomTicker.ts's module doc.
+   *  - Both off: exactly ONE burst-shape `gift:received` per tap (no
+   *    per-recipient loop) — sender still excluded as today.
+   *
+   * Flags are read fresh on every call (never cached) so a runtime flip
+   * takes effect on the very next tap.
    */
   private broadcastReceived(
     sock: Socket,
@@ -208,26 +228,54 @@ export class GiftHandler {
     senderId: number,
     acceptedRecipientIds: number[],
     context: AppContext,
+    transactionId: string,
   ): void {
-    for (const recipientId of acceptedRecipientIds) {
-      // GF-008 FIX: Explicitly pick emitted fields instead of spreading payload
+    const legacy = giftLegacyShape();
+    const tickMs = giftRoomTickMs();
+
+    if (legacy) {
+      for (const recipientId of acceptedRecipientIds) {
+        // GF-008 FIX: Explicitly pick emitted fields instead of spreading payload
+        emitToRoom(sock, payload.roomId, "gift:received", {
+          senderId,
+          roomId: payload.roomId,
+          giftId: payload.giftId,
+          recipientId,
+          quantity: payload.quantity,
+          batchId: payload.batchId,
+        }, context.cascadeRelay);
+      }
+
       emitToRoom(sock, payload.roomId, "gift:received", {
         senderId,
         roomId: payload.roomId,
         giftId: payload.giftId,
-        recipientId,
+        recipientIds: acceptedRecipientIds,
+        quantity: payload.quantity,
+        batchId: payload.batchId,
+      }, context.cascadeRelay);
+    } else if (tickMs <= 0) {
+      // Both flags off: exactly one burst-shape emit per tap.
+      emitToRoom(sock, payload.roomId, "gift:received", {
+        senderId,
+        roomId: payload.roomId,
+        giftId: payload.giftId,
+        recipientIds: acceptedRecipientIds,
         quantity: payload.quantity,
         batchId: payload.batchId,
       }, context.cascadeRelay);
     }
 
-    emitToRoom(sock, payload.roomId, "gift:received", {
-      senderId,
-      roomId: payload.roomId,
-      giftId: payload.giftId,
-      recipientIds: acceptedRecipientIds,
-      quantity: payload.quantity,
-      batchId: payload.batchId,
-    }, context.cascadeRelay);
+    if (tickMs > 0) {
+      // roomTicker is wired once (io + live cascadeRelay source) at bootstrap
+      // in server.ts — see initRoomTicker() there.
+      enqueueGift(payload.roomId, {
+        senderId,
+        giftId: payload.giftId,
+        recipientIds: acceptedRecipientIds,
+        quantity: payload.quantity ?? 1,
+        transactionId,
+      });
+    }
   }
 }
