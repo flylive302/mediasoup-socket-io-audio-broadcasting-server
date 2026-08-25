@@ -24,6 +24,22 @@ const USER_XP_TTL_SECONDS = 72 * 60 * 60;
 
 export type UserXp = { wealth_xp: string; charm_xp: string };
 
+/** Minimal slice of LaravelClient the overlay needs (keeps this module test-light). */
+export type XpSource = {
+  getUserBalance(userId: number): Promise<UserXp | null>;
+};
+
+let xpSource: XpSource | null = null;
+
+/**
+ * Composition-root hook (socket/index.ts) — same pattern as drain's
+ * registerDrainRepinClient. Lets the auth middleware warm a cold Redis key
+ * from Laravel without constructing its own client.
+ */
+export function registerXpSourceClient(client: XpSource | null): void {
+  xpSource = client;
+}
+
 /** GATE — pick numeric-string XP fields out of an untrusted payload. */
 export function extractXp(payload: Record<string, unknown>): UserXp | null {
   const w = payload.wealth_xp;
@@ -62,14 +78,29 @@ export async function overlayUserXp(
   logger: Logger,
   user: User,
 ): Promise<User> {
+  let stored: Record<string, string> | null = null;
   try {
-    const stored = await redis.hgetall(USER_XP_KEY(user.id));
-    const xp = extractXp(stored ?? {});
-    if (!xp) return user;
-    return { ...user, ...xp };
+    stored = await redis.hgetall(USER_XP_KEY(user.id));
   } catch (err) {
     recordRedisDegradation("user-xp", "read");
     logger.warn({ err, userId: user.id }, "Failed to overlay user XP");
+    return user;
+  }
+
+  const cached = extractXp(stored ?? {});
+  if (cached) return { ...user, ...cached };
+
+  // Cold key (no balance.updated since deploy / TTL lapsed): warm it from
+  // Laravel so the very first connect is already correct. Fail-open.
+  if (!xpSource) return user;
+  try {
+    const fresh = await xpSource.getUserBalance(user.id);
+    const xp = fresh ? extractXp(fresh) : null;
+    if (!xp) return user;
+    void persistUserXp(redis, logger, user.id, xp);
+    return { ...user, ...xp };
+  } catch (err) {
+    logger.warn({ err, userId: user.id }, "Failed to warm user XP from Laravel");
     return user;
   }
 }

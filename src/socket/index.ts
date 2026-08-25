@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import { authMiddleware } from "@src/auth/middleware.js";
+import { registerXpSourceClient } from "@src/shared/user-xp.js";
 import { WorkerManager } from "@src/infrastructure/worker.manager.js";
 import { RoomManager } from "@src/domains/room/roomManager.js";
 import { ClientManager } from "@src/client/clientManager.js";
@@ -88,6 +89,9 @@ export async function initializeSocket(
   // away via Laravel. Registered here (the composition root) so drain.ts
   // never constructs its own client.
   registerDrainRepinClient(laravelClient);
+  // XP freshness: auth middleware warms a cold `user:{id}:xp` key from
+  // Laravel so reconnects never fall back to the stale JWT snapshot.
+  registerXpSourceClient(laravelClient);
 
   // realtime-02: coalesce Room status churn → ≤1 update/Room/window to Laravel.
   const statusCoalescer = new StatusCoalescer(laravelClient, logger);
