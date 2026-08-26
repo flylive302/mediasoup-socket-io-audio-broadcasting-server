@@ -270,6 +270,17 @@ variable "cascade_enabled" {
   default     = true
 }
 
+variable "affinity_enabled" {
+  description = "Operator attestation that room affinity is live (AFFINITY_ENABLED): every speaker of a room lands on its pinned instance (Laravel REALTIME_INSTANCE_PINNING_ENABLED=true + drain re-pin observed). MSAB refuses to boot with cascade_enabled=false unless this is true (config/index.ts boot rail). Ships inert: default false. aws-production 24."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = var.cascade_enabled || var.affinity_enabled
+    error_message = "cascade_enabled=false requires affinity_enabled=true — without cascade AND without affinity, sockets landing off-origin get hard join failures. The MSAB boot rail would refuse to start every instance; fail the plan instead of the fleet."
+  }
+}
+
 variable "cascade_ports_open" {
   description = "Open UDP 40000-49999 (cascade plainTransport range) to the internet. Must stay true while cascade_enabled=true: cascade uses instance PUBLIC IPs even between two instances in the same region. Close only when cascade is retired."
   type        = bool

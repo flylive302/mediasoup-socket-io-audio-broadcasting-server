@@ -550,3 +550,31 @@ run "loadgen_enabled_plans_cleanly_at_root_scope" {
     error_message = "module.loadgen's rendered user-data must carry environment=staging into the MSAB discovery filter"
   }
 }
+
+# -----------------------------------------------------------------------------
+# aws-production 24 — cascade off without affinity attested must fail the PLAN,
+# not the fleet (MSAB's boot rail would otherwise refuse every instance).
+# -----------------------------------------------------------------------------
+run "cascade_off_without_affinity_fails_the_plan" {
+  command = plan
+
+  variables {
+    cascade_enabled = false
+  }
+
+  expect_failures = [var.affinity_enabled]
+}
+
+run "cascade_off_with_affinity_attested_plans" {
+  command = plan
+
+  variables {
+    cascade_enabled  = false
+    affinity_enabled = true
+  }
+
+  assert {
+    condition     = var.affinity_enabled && !var.cascade_enabled
+    error_message = "The ticket 24 flip pair must be a valid plan"
+  }
+}

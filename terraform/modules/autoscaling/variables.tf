@@ -454,6 +454,12 @@ variable "cascade_enabled" {
   default     = true
 }
 
+variable "affinity_enabled" {
+  description = "Operator attestation that room affinity is live (AFFINITY_ENABLED env). Required by the MSAB boot rail when cascade_enabled=false."
+  type        = bool
+  default     = false
+}
+
 variable "instance_type_overrides" {
   description = <<-EOT
     Ordered list of fallback instance types for the mixed-instances policy. When non-empty, the

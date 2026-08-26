@@ -24,6 +24,7 @@ variable "rtc_min_port" { type = number }
 variable "rtc_max_port" { type = number }
 variable "cascade_ports_open" { type = bool }
 variable "cascade_enabled" { type = bool }
+variable "affinity_enabled" { type = bool }
 
 variable "redis_node_type" { type = string }
 

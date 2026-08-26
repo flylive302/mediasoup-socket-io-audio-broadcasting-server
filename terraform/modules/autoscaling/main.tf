@@ -459,6 +459,7 @@ locals {
     cors_origins           = var.cors_origins
     laravel_api_url        = var.laravel_api_url
     cascade_enabled        = var.cascade_enabled
+    affinity_enabled       = var.affinity_enabled
     cloudflare_turn_key_id = var.cloudflare_turn_key_id
     event_queue_url        = var.event_queue_url
     sentry_dsn             = var.sentry_dsn

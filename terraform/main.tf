@@ -160,6 +160,7 @@ module "region_mumbai" {
   rtc_max_port                          = var.rtc_max_port
   cascade_ports_open                    = var.cascade_ports_open
   cascade_enabled                       = var.cascade_enabled
+  affinity_enabled                      = var.affinity_enabled
   redis_node_type                       = var.redis_node_type
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
@@ -259,6 +260,7 @@ module "region_frankfurt" {
   rtc_max_port                          = var.rtc_max_port
   cascade_ports_open                    = var.cascade_ports_open
   cascade_enabled                       = var.cascade_enabled
+  affinity_enabled                      = var.affinity_enabled
   redis_node_type                       = var.redis_node_type
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days
@@ -338,6 +340,7 @@ module "region_singapore" {
   rtc_max_port                          = var.rtc_max_port
   cascade_ports_open                    = var.cascade_ports_open
   cascade_enabled                       = var.cascade_enabled
+  affinity_enabled                      = var.affinity_enabled
   redis_node_type                       = var.redis_node_type
   redis_durable_node_type               = var.redis_durable_node_type
   redis_durable_snapshot_retention_days = var.redis_durable_snapshot_retention_days

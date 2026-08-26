@@ -148,3 +148,47 @@ run "instance_dns_renders_registration_and_cleanup_when_enabled" {
     error_message = "The terminate-hook drain script must carry the best-effort DNS cleanup block once manage_instance_dns = true"
   }
 }
+
+# -----------------------------------------------------------------------------
+# aws-production 24 — AFFINITY_ENABLED reaches the instance env, inert by default.
+# -----------------------------------------------------------------------------
+run "affinity_env_renders_false_by_default" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = var.affinity_enabled == false
+    error_message = "affinity_enabled must default to false (ship-inert; it is an operator attestation)"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "\nAFFINITY_ENABLED=false\n")
+    error_message = "user-data must always render AFFINITY_ENABLED so the MSAB boot rail sees an explicit value"
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "\nCASCADE_ENABLED=true\n")
+    error_message = "cascade must stay ON by default until the ticket 24 rollout flips it"
+  }
+}
+
+run "affinity_env_renders_true_when_attested" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  variables {
+    affinity_enabled = true
+    cascade_enabled  = false
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "\nAFFINITY_ENABLED=true\n") && strcontains(output.user_data_rendered, "\nCASCADE_ENABLED=false\n")
+    error_message = "The ticket 24 flip (affinity on, cascade off) must render both env values"
+  }
+}

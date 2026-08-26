@@ -359,6 +359,8 @@ AWS_REGION=${region}
 
 # SFU Cascade
 CASCADE_ENABLED=${cascade_enabled}
+# Room affinity attestation (aws-production 24). Boot rail: CASCADE_ENABLED=false needs this true.
+AFFINITY_ENABLED=${affinity_enabled}
 PUBLIC_IP=$PUBLIC_IP
 
 # ICE Servers — Cloudflare Realtime TURN (dynamic credentials)
