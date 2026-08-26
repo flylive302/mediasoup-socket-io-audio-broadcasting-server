@@ -8,6 +8,7 @@ import { startQualitySampler, stopQualitySampler } from "./domains/media/quality
 import { startRtpStatisticsSweeper, stopRtpStatisticsSweeper } from "./domains/media/quality/rtpStatisticsSweeper.js";
 import { startDrain, isDraining, type DrainReport } from "./infrastructure/drain.js";
 import { createCrashShutdown } from "./infrastructure/crash-shutdown.js";
+import { startInstanceHeartbeat } from "./infrastructure/instance-heartbeat.js";
 import { createRejectionBreaker } from "./infrastructure/rejection-breaker.js";
 import { waitForActiveDisconnects } from "./socket/index.js";
 import { startGiftFlags, stopGiftFlags } from "./domains/gift/flags.js";
@@ -88,6 +89,10 @@ const start = async () => {
     // server's gift catalog cache. Never blocks start — see catalogCache.ts.
     startGiftCatalog(laravelClient, logger);
 
+    // aws-production/24 follow-up: announce this box to Laravel's placement
+    // registry every 15s, so an idle fresh instance can receive rooms.
+    const instanceHeartbeat = startInstanceHeartbeat(laravelClient);
+
     const address = await server.listen({
       port: config.PORT,
       host: "0.0.0.0",
@@ -130,6 +135,7 @@ const start = async () => {
       isShuttingDown = true;
 
       logger.info({ signal }, "Graceful shutdown initiated");
+      instanceHeartbeat.stop();
 
       // F-5: SIGTERM (ASG scale-in / deploy rotate) must give live calls a real
       // chance to drain. Previously the ceiling was 15s — any room mid-call was

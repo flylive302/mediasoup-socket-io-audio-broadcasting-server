@@ -257,6 +257,29 @@ export class LaravelClient {
   }
 
   /**
+   * Periodic liveness heartbeat for Laravel's placement registry
+   * (aws-production/24 follow-up). Before this, the registry was fed only by
+   * room-status posts — an idle, freshly booted box never appeared, so it
+   * never received rooms and drains onto it moved nothing. Never throws.
+   */
+  async sendInstanceHeartbeat(region: string): Promise<boolean> {
+    try {
+      const response = await this.post("/api/v1/internal/instances/heartbeat", {
+        region,
+      });
+
+      if (!response.ok) {
+        this.logger.warn({ status: response.status }, "Instance heartbeat rejected");
+      }
+
+      return response.ok;
+    } catch (error) {
+      this.logger.warn({ error }, "Instance heartbeat failed");
+      return false;
+    }
+  }
+
+  /**
    * Mark THIS instance draining (true) or back in service (false) in
    * Laravel's placement registry (aws-production/20). Identity travels via
    * the X-Instance-ID header every call already carries — Laravel refuses
@@ -645,6 +668,10 @@ const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
     "/api/v1/internal/rooms/:id/members/:id/role",
   ],
   [/^\/api\/v1\/internal\/rooms\/[^/]+$/, "/api/v1/internal/rooms/:id"],
+  [
+    /^\/api\/v1\/internal\/instances\/heartbeat$/,
+    "/api/v1/internal/instances/heartbeat",
+  ],
   [
     /^\/api\/v1\/internal\/instances\/draining$/,
     "/api/v1/internal/instances/draining",

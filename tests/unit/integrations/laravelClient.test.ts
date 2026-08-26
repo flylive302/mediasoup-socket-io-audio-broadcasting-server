@@ -292,3 +292,29 @@ describe("LaravelClient — dead API metrics wired (observability-audio-quality 
     );
   });
 });
+
+describe("LaravelClient — instance heartbeat (aws-production/24 follow-up)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the region to /instances/heartbeat with the instance header and returns ok", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.sendInstanceHeartbeat("ap-south-1")).resolves.toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://laravel.test/api/v1/internal/instances/heartbeat");
+    expect(JSON.parse(String(init.body))).toEqual({ region: "ap-south-1" });
+    expect((init.headers as Record<string, string>)["X-Instance-ID"]).toBe("i-test-box-1");
+  });
+
+  it("returns false (never throws) when Laravel is unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.sendInstanceHeartbeat("ap-south-1")).resolves.toBe(false);
+  });
+});
