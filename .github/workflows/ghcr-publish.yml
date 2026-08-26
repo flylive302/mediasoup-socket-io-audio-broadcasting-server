@@ -1,8 +1,13 @@
 name: Publish image to ghcr.io
 
+# Ticket 41: DISPATCH-ONLY. deploy.yml now builds (ECR) and releases on every
+# master push that touches the image, and carries the Sentry release lifecycle
+# that used to live here. Keeping this on push would build every commit twice
+# and finalise the same Sentry release twice. GHCR only feeds the frozen Vultr
+# box (bom-02, DNS-rollback target — ticket 30); dispatch this by hand if that
+# box ever needs a newer image.
+
 on:
-  push:
-    branches: [master]
   workflow_dispatch: # Manual trigger from GitHub UI
   workflow_call: # Reused by the deploy workflows (build the caller's ref, return the tag)
     outputs:

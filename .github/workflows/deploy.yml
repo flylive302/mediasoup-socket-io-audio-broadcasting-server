@@ -1,6 +1,7 @@
 name: App Release — ECR build + scoped Terraform apply + ASG refresh
 
-# Ticket 30 — the APPLICATION pipeline, one of exactly two release paths:
+# Ticket 30 (separation) + ticket 41 (push-to-deploy) — the APPLICATION
+# pipeline, one of exactly two release paths:
 #
 #   deploy.yml               → application releases (image_tag changes ONLY)
 #   terraform-aws-infra.yml  → infrastructure changes (everything EXCEPT image_tag)
@@ -15,22 +16,52 @@ name: App Release — ECR build + scoped Terraform apply + ASG refresh
 # the infra pipeline. That closes the ticket's core gap: the untargeted
 # fleet-wide apply is no longer reachable from an application release.
 #
-# Separation rules (ticket 30 ACs):
-#   - Manual dispatch only — merging to master never deploys by itself
-#     (ghcr-publish.yml builds an image on push; publishing is not releasing).
-#   - The aws-production GitHub environment's required-reviewer setting is the
-#     explicit human approval, for forward deploys AND rollbacks alike.
-#   - Rollback = dispatch with the `image_tag` input pinned to a previous
-#     sha-<commit8> tag (ticket 14's mechanism) — same pipeline, same guard,
-#     same approval. No second mechanism.
+# Release rules (ticket 41 — reverses ticket 30's "manual dispatch only",
+# ADR 0036; ticket 24 proved drain → re-pin → client-follow live 2026-08-26):
+#   - `git push` to master = release. The push trigger below is path-filtered
+#     to the files that change the image (src, package*.json, docker/,
+#     tsconfig.json, .dockerignore, and this file). A docs-only or terraform-only
+#     push does NOT release — terraform changes ship via terraform-aws-infra.yml.
+#   - Push-triggered runs take the "build the pushed commit" path: the
+#     `image_tag` input is empty on a push event, so the ci → build-and-push →
+#     release → monitor chain runs exactly as an empty-input dispatch would.
+#   - The aws-production GitHub environment's required-reviewer setting is
+#     still the explicit human approval (one Approve click), for pushes,
+#     forward dispatches AND rollbacks alike. A push queues at the gate; nothing
+#     reaches ECR or terraform before Approve.
+#   - ROLLBACK / REDEPLOY = `workflow_dispatch` with the `image_tag` input
+#     pinned to a previous sha-<commit8> tag (ticket 14's mechanism): CI and the
+#     build are skipped, the tag is verified in ECR, then the same scope guard,
+#     approval, apply and canary refresh run. No second mechanism.
+#     Find previous tags: `aws ecr describe-images --repository-name
+#     flylive-audio/msab` or this workflow's own run summaries.
+#   - Only one release at a time: concurrency group `aws-deploy` queues
+#     (never cancels), so two quick pushes release in order.
 #   - No workflow_call / workflow_run wiring in either direction between the
-#     two pipelines.
+#     two pipelines. ghcr-publish.yml is dispatch-only since ticket 41, so a
+#     push builds exactly ONE image (this one); the Sentry release lifecycle
+#     moved here with it.
 #
-# AWS account status: fresh account, fleet not yet applied (see epic
-# aws-platform-build) — runnable end-to-end only once the environment holds the
-# reissued credentials + TF_BACKEND_PROD / TF_VARS_PROD.
+# image_tag drift (ticket 41, option b): this workflow applies with the freshly
+# built tag, so TF_VARS_PROD / prod.tfvars go stale after every release. The
+# INFRA pipeline no longer trusts either — it reads the live tag out of
+# terraform state (the launch templates' user-data) and pins it, so a later
+# infra apply cannot roll the image back. The step summary below still prints
+# the tag so a LOCAL `terraform apply -var-file=prod.tfvars` can be kept in sync.
 
 on:
+  push:
+    branches: [master]
+    # Only what changes the image (ticket 41 AC). Keep in step with
+    # docker/Dockerfile's COPY lines.
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "docker/**"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       image_tag:
@@ -48,7 +79,8 @@ jobs:
   ci:
     # Skipped when redeploying an already-built tag: that image's commit passed
     # CI when it was built, and a rollback must not be blocked by HEAD's state.
-    if: ${{ inputs.image_tag == '' }}
+    # On a push event `inputs` is empty, so this is always the build path.
+    if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +107,7 @@ jobs:
         run: npm test
 
   build-and-push:
-    if: ${{ inputs.image_tag == '' }}
+    if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
     needs: ci
     runs-on: ubuntu-latest
     environment: aws-production
@@ -129,6 +161,17 @@ jobs:
           # reference ":latest".
           tags: |
             ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+          # msab-sentry §10 (moved here from ghcr-publish.yml by ticket 41, which
+          # made that workflow dispatch-only): SENTRY_RELEASE at build time MUST
+          # be byte-identical to the runtime SENTRY_RELEASE cloud-init writes —
+          # both are this one `image_tag` (= sha-<commit8>). The auth token is a
+          # BuildKit secret: mounted into one RUN in the builder stage, never a
+          # layer. Both arch legs upload the same maps under the same release —
+          # sentry-cli upload is idempotent for identical files.
+          build-args: |
+            SENTRY_RELEASE=${{ steps.meta.outputs.image_tag }}
+          secrets: |
+            sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # Multi-arch: amd64 (c7i, current prod) + arm64 (c8g/Graviton, realtime-06).
@@ -147,6 +190,29 @@ jobs:
             --output table
           echo "✅ Image pushed and verified"
 
+      # msab-sentry §10: formalise the release the build's sourcemaps were
+      # uploaded under. HARD FAIL — without a finalised release the maps are
+      # unreadable, and nothing is serving traffic at build time so being loud
+      # is free. Also the compensating gate for a missing token: the Dockerfile
+      # skips upload when the secret is absent, but `releases new` errors on an
+      # empty token, so a misconfigured pipeline fails here, BEFORE the
+      # release job and its approval gate.
+      - name: Sentry release lifecycle
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: flylive
+          SENTRY_PROJECT: node-msab
+          SHA_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          npm install -g @sentry/cli@3.6.1
+          sentry-cli releases new "$SHA_TAG"
+          sentry-cli releases finalize "$SHA_TAG"
+          # WARN ONLY — suspect-commit attribution needs this repo linked in the
+          # flylive org's GitHub integration (a console setting outside this
+          # repo). An unlinked repo must not break image publishing.
+          sentry-cli releases set-commits "$SHA_TAG" --auto \
+            || echo "::warning::set-commits failed — is mediasoup-socket-io-audio-broadcasting-server linked in the flylive GitHub integration?"
+
   release:
     # Runs for BOTH paths: after a fresh build, or directly when the image_tag
     # input pins an existing tag (rollback / redeploy). `!cancelled()` +
@@ -155,7 +221,7 @@ jobs:
     if: >-
       ${{ !cancelled() && (
         needs.build-and-push.result == 'success' ||
-        (needs.build-and-push.result == 'skipped' && inputs.image_tag != '')
+        (needs.build-and-push.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.image_tag != '')
       ) }}
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -274,6 +340,21 @@ jobs:
       - name: Terraform apply (starts the canary refresh in every region)
         if: ${{ steps.scope.outputs.applied == 'true' }}
         run: terraform apply -input=false tfplan
+
+      - name: Release summary (live tag for local tfvars sync)
+        if: always()
+        env:
+          TAG: ${{ steps.tag.outputs.image_tag }}
+          APPLIED: ${{ steps.scope.outputs.applied }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          {
+            echo "## App release — \`$TAG\` (trigger: $TRIGGER, applied: ${APPLIED:-no})"
+            echo
+            echo "- CI (terraform-aws-infra.yml) reads the live tag from state — no secret re-paste needed (ticket 41, option b)."
+            echo "- LOCAL applies only: set \`image_tag = \"$TAG\"\` in \`terraform/prod.tfvars\` before any \`terraform apply -var-file=prod.tfvars\`, or it rolls the image back."
+            echo "- Rollback: dispatch this workflow with \`image_tag\` = the previous sha tag."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   monitor:
     # The apply above bumped each region's launch template, which starts that

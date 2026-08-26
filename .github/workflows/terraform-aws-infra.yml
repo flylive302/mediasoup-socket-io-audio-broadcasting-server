@@ -14,8 +14,11 @@ name: Terraform — AWS infra apply (manual dispatch only)
 #   - This pipeline has NO path to trigger an application deploy: the
 #     image-tag guard below fails the run if the plan would change the sha tag
 #     baked into any launch template's user-data. image_tag is a REQUIRED
-#     terraform variable, so this workflow takes it as an input — but it must
-#     be the tag that is ALREADY live. Shipping a new tag is deploy.yml's job.
+#     terraform variable; since ticket 41 (drift trap, option b) this workflow
+#     READS IT FROM STATE — the sha tag baked into the live launch templates —
+#     and pins it with `-var`, so neither TF_VARS_PROD nor the operator has to
+#     remember the last release. The `image_tag` input is only for greenfield
+#     (no launch template in state yet). Shipping a new tag is deploy.yml's job.
 #   - No workflow_call / workflow_run wiring in either direction: neither
 #     pipeline can invoke the other. (Operator verification: attempt the
 #     forbidden cross-trigger from each side and confirm GitHub rejects it.)
@@ -40,9 +43,10 @@ on:
         options: [plan, apply]
         default: plan
       image_tag:
-        description: "The CURRENTLY LIVE image tag (sha-<commit8>). This pipeline refuses to change it — new images ship via deploy.yml."
-        required: true
+        description: "Leave EMPTY (default): the live tag is read from terraform state. Only set it for greenfield provisioning (no launch template in state yet). This pipeline refuses to change the running image — new images ship via deploy.yml."
+        required: false
         type: string
+        default: ""
 
 concurrency:
   group: tf-aws-${{ inputs.environment }}
@@ -84,9 +88,59 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false -backend-config=backend-ci.hcl
 
+      - name: Resolve the LIVE image tag from state (ticket 41, drift trap option b)
+        id: live
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          # deploy.yml applies with a freshly built tag every release, so the
+          # tag in TF_VARS_PROD / prod.tfvars is stale the moment a release
+          # lands. Planning with it would roll the image BACK. The only source
+          # of truth is what is baked into the launch templates in state.
+          terraform show -json > state.json
+          extract_tags() {
+            printf '%s' "$1" | base64 -d > blob.bin 2>/dev/null || : > blob.bin
+            { gunzip -c blob.bin 2>/dev/null || cat blob.bin; } \
+              | grep -oE 'sha-[0-9a-f]{8}' | sort -u
+          }
+          LIVE=""
+          while IFS= read -r ud; do
+            [ -n "$ud" ] || continue
+            LIVE="${LIVE}$(extract_tags "$ud")"$'\n'
+          done < <(jq -r '[.. | objects | select(.type? == "aws_launch_template") | .values.user_data // empty] | .[]' state.json)
+          LIVE=$(printf '%s' "$LIVE" | grep -v '^$' | sort -u | paste -sd, -)
+
+          TFVARS_TAG=$(grep -oE '^\s*image_tag\s*=\s*"[^"]+"' ci.tfvars | grep -oE 'sha-[0-9a-f]{8}' || true)
+
+          if [ -z "$LIVE" ]; then
+            if [ -z "$INPUT_TAG" ]; then
+              echo "::error::No launch template with a sha tag in state and no image_tag input — greenfield provisioning must pass the initial tag explicitly."
+              exit 1
+            fi
+            echo "ℹ️  No launch template in state (greenfield) — using input tag $INPUT_TAG"
+            TAG="$INPUT_TAG"
+          else
+            case "$LIVE" in
+              *,*)
+                echo "::error::Launch templates in state carry DIFFERENT image tags ($LIVE) — a rollout is mid-flight or a region is stuck. Wait for deploy.yml to finish, then rerun."
+                exit 1
+                ;;
+            esac
+            TAG="$LIVE"
+            if [ -n "$INPUT_TAG" ] && [ "$INPUT_TAG" != "$LIVE" ]; then
+              echo "::error::image_tag input ($INPUT_TAG) ≠ live tag in state ($LIVE). This pipeline never changes the running image — leave the input empty, or ship the tag via deploy.yml."
+              exit 1
+            fi
+            echo "✅ Live image tag from state: $LIVE"
+          fi
+          if [ -n "$TFVARS_TAG" ] && [ "$TFVARS_TAG" != "$TAG" ]; then
+            echo "::warning::tfvars image_tag ($TFVARS_TAG) is stale vs live ($TAG) — ignored here (pinned by -var), but a LOCAL apply with prod.tfvars would roll the image back. Bump prod.tfvars when convenient."
+          fi
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Terraform plan
         env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
+          IMAGE_TAG: ${{ steps.live.outputs.image_tag }}
         run: terraform plan -input=false -var-file=ci.tfvars -var "image_tag=$IMAGE_TAG" -out=tfplan
 
       - name: Guard — this pipeline must not change the running image (ticket 30)

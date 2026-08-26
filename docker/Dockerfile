@@ -45,7 +45,8 @@ RUN npm run build
 # (local `docker build` without the secret) warns and continues; a PRESENT
 # token whose upload FAILS aborts the build (`set -e`). The compensating loud
 # gate for a genuinely-missing token in CI is the hard-fail `releases
-# new/finalize` step in ghcr-publish.yml, which needs the same token.
+# new/finalize` step in deploy.yml (ghcr-publish.yml on manual dispatch),
+# which needs the same token.
 ARG SENTRY_RELEASE
 RUN --mount=type=secret,id=sentry_token \
     set -e; \
