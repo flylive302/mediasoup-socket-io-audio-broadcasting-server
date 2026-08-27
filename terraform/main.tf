@@ -219,6 +219,11 @@ module "region_mumbai" {
   # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
   sentry_dsn = var.sentry_dsn
 
+  # ticket 28 step 13 — inert while true (the default); flipped to false in
+  # prod.tfvars at a normal release once the SQS consumer is confirmed live,
+  # so it rides the canary refresh like every other transport switch here.
+  event_http_ingest_enabled = var.event_http_ingest_enabled
+
   # aws-production/08 — the msab SG's port-9100 ingress-from-loadgen rule.
   # loadgen_ingress_enabled is computed here (root scope) from root variables
   # ONLY, never from module.loadgen's own output — that output is unknown at
@@ -318,6 +323,11 @@ module "region_frankfurt" {
 
   # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
   sentry_dsn = var.sentry_dsn
+
+  # ticket 28 step 13 — inert while true (the default); flipped to false in
+  # prod.tfvars at a normal release once the SQS consumer is confirmed live,
+  # so it rides the canary refresh like every other transport switch here.
+  event_http_ingest_enabled = var.event_http_ingest_enabled
 }
 
 module "region_singapore" {
@@ -398,6 +408,11 @@ module "region_singapore" {
 
   # Sentry (env-diff finding 2026-08-18) — inert while sentry_dsn is "".
   sentry_dsn = var.sentry_dsn
+
+  # ticket 28 step 13 — inert while true (the default); flipped to false in
+  # prod.tfvars at a normal release once the SQS consumer is confirmed live,
+  # so it rides the canary refresh like every other transport switch here.
+  event_http_ingest_enabled = var.event_http_ingest_enabled
 }
 
 # =============================================================================

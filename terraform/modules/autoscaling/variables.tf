@@ -256,6 +256,19 @@ variable "sentry_dsn" {
   default     = ""
 }
 
+variable "event_http_ingest_enabled" {
+  description = <<-EOT
+    ticket 28 step 13. Whether MSAB accepts POST /api/events over HTTP. Default
+    true renders NO EVENT_HTTP_INGEST_ENABLED line into the instance env — the
+    inert state, byte-identical to before this variable existed (MSAB itself
+    treats the var as true when unset). Set false only once the SQS consumer
+    (var.event_queue_url) is confirmed live: this makes MSAB return 410 on the
+    HTTP ingest route, retiring it as a transport.
+  EOT
+  type        = bool
+  default     = true
+}
+
 # --- Scaling Configuration ---
 
 variable "fleet_size" {

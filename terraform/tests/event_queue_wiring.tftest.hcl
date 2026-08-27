@@ -89,3 +89,49 @@ run "no_queue_url_renders_no_key_at_all" {
     error_message = "With no queue URL configured the env file must carry no EVENT_QUEUE_URL key at all — an empty key reads as 'configured' to anyone grepping the instance"
   }
 }
+
+# -----------------------------------------------------------------------------
+# ticket 28 step 13 — EVENT_HTTP_INGEST_ENABLED, the HTTP ingest retirement
+# switch. Same ships-inert contract as EVENT_QUEUE_URL above: the default
+# (true) must render NO key at all, since MSAB treats an unset var as true —
+# a present key would read as "deliberately configured" to anyone grepping
+# the instance env even though it changed nothing.
+# -----------------------------------------------------------------------------
+run "http_ingest_stays_enabled_by_default_and_renders_no_key" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  assert {
+    condition     = var.event_http_ingest_enabled == true
+    error_message = "event_http_ingest_enabled must default to true — HTTP ingest ships inert (unretired) until an operator deliberately flips it"
+  }
+
+  assert {
+    condition     = !strcontains(output.user_data_rendered, "\nEVENT_HTTP_INGEST_ENABLED=")
+    error_message = "With the default (true) the env file must carry no EVENT_HTTP_INGEST_ENABLED key at all — rendering it would make a no-op look like a deliberate change"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ARMED (retired): explicitly setting it false must render the key so MSAB
+# returns 410 on POST /api/events.
+# -----------------------------------------------------------------------------
+run "http_ingest_disabled_renders_the_key" {
+  command = plan
+
+  module {
+    source = "./modules/autoscaling"
+  }
+
+  variables {
+    event_http_ingest_enabled = false
+  }
+
+  assert {
+    condition     = strcontains(output.user_data_rendered, "\nEVENT_HTTP_INGEST_ENABLED=false\n")
+    error_message = "event_http_ingest_enabled = false must render EVENT_HTTP_INGEST_ENABLED=false into the instance env — without it MSAB keeps accepting HTTP ingest despite the operator's intent to retire it"
+  }
+}

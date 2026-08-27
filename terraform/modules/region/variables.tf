@@ -169,6 +169,13 @@ variable "sentry_dsn" {
   default = ""
 }
 
+# ticket 28 step 13 — HTTP ingest retirement switch. Default true (ships
+# inert), same pass-through contract as event_queue_url/sentry_dsn above.
+variable "event_http_ingest_enabled" {
+  type    = bool
+  default = true
+}
+
 variable "jwt_max_age_seconds" { type = number }
 variable "laravel_api_timeout_ms" { type = number }
 variable "ice_stun_urls" { type = string }

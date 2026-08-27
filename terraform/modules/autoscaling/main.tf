@@ -446,28 +446,29 @@ resource "aws_cloudwatch_metric_alarm" "zero_healthy_hosts" {
 # launch template carries it gzipped, which base64decode() alone can't unpack.
 locals {
   user_data_rendered = templatefile("${path.module}/user-data.sh", {
-    region                 = var.region
-    name_prefix            = local.env_prefix
-    ecr_repo_url           = var.ecr_repo_url
-    app_port               = var.app_port
-    rtc_min_port           = var.rtc_min_port
-    rtc_max_port           = var.rtc_max_port
-    redis_host             = var.redis_host
-    redis_port             = var.redis_port
-    redis_cache_host       = var.redis_cache_host
-    redis_cache_port       = var.redis_cache_port
-    cors_origins           = var.cors_origins
-    laravel_api_url        = var.laravel_api_url
-    cascade_enabled        = var.cascade_enabled
-    affinity_enabled       = var.affinity_enabled
-    cloudflare_turn_key_id = var.cloudflare_turn_key_id
-    event_queue_url        = var.event_queue_url
-    sentry_dsn             = var.sentry_dsn
-    sentry_environment     = var.environment
-    image_tag              = var.image_tag
-    jwt_max_age_seconds    = var.jwt_max_age_seconds
-    laravel_api_timeout_ms = var.laravel_api_timeout_ms
-    ice_stun_urls          = var.ice_stun_urls
+    region                    = var.region
+    name_prefix               = local.env_prefix
+    ecr_repo_url              = var.ecr_repo_url
+    app_port                  = var.app_port
+    rtc_min_port              = var.rtc_min_port
+    rtc_max_port              = var.rtc_max_port
+    redis_host                = var.redis_host
+    redis_port                = var.redis_port
+    redis_cache_host          = var.redis_cache_host
+    redis_cache_port          = var.redis_cache_port
+    cors_origins              = var.cors_origins
+    laravel_api_url           = var.laravel_api_url
+    cascade_enabled           = var.cascade_enabled
+    affinity_enabled          = var.affinity_enabled
+    cloudflare_turn_key_id    = var.cloudflare_turn_key_id
+    event_queue_url           = var.event_queue_url
+    sentry_dsn                = var.sentry_dsn
+    sentry_environment        = var.environment
+    event_http_ingest_enabled = var.event_http_ingest_enabled
+    image_tag                 = var.image_tag
+    jwt_max_age_seconds       = var.jwt_max_age_seconds
+    laravel_api_timeout_ms    = var.laravel_api_timeout_ms
+    ice_stun_urls             = var.ice_stun_urls
 
     # Container memory cap, computed from the instance type's RAM (AC #6).
     container_memory_mib = local.container_memory_mib

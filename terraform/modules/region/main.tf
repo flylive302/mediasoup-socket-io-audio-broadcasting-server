@@ -237,13 +237,14 @@ module "autoscaling" {
   # NOTE: laravel_internal_key / jwt_secret / session_secret / audio_domain /
   # cloudflare_turn_api_key are NOT passed to autoscaling any more (ticket 18) — the
   # module never used them; the instance fetches those secrets from SSM at boot.
-  cors_origins           = var.cors_origins
-  laravel_api_url        = var.laravel_api_url
-  cascade_enabled        = var.cascade_enabled
-  affinity_enabled       = var.affinity_enabled
-  cloudflare_turn_key_id = var.cloudflare_turn_key_id
-  event_queue_url        = var.event_queue_url
-  sentry_dsn             = var.sentry_dsn
+  cors_origins              = var.cors_origins
+  laravel_api_url           = var.laravel_api_url
+  cascade_enabled           = var.cascade_enabled
+  affinity_enabled          = var.affinity_enabled
+  cloudflare_turn_key_id    = var.cloudflare_turn_key_id
+  event_queue_url           = var.event_queue_url
+  sentry_dsn                = var.sentry_dsn
+  event_http_ingest_enabled = var.event_http_ingest_enabled
 
   # MSAB Application Config
   jwt_max_age_seconds    = var.jwt_max_age_seconds

@@ -338,6 +338,15 @@ MSAB_EVENTS_ENABLED=true
 EVENT_QUEUE_URL=${event_queue_url}
 %{ endif ~}
 
+# HTTP ingest retirement switch (ticket 28 step 13). OMITTED when true (the
+# default) — MSAB itself treats an unset var as true, so this line only ever
+# appears to record the operator's deliberate flip to false, which makes
+# MSAB return 410 on POST /api/events once the SQS consumer above is confirmed
+# live.
+%{ if !event_http_ingest_enabled ~}
+EVENT_HTTP_INGEST_ENABLED=false
+%{ endif ~}
+
 # Sentry (env-diff finding 2026-08-18 — Vultr reported, AWS didn't). Omitted
 # entirely when the DSN is unset, same contract as the HLS URL vars below.
 # SENTRY_RELEASE must be the byte-identical sha-<commit8> the image's

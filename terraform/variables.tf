@@ -470,6 +470,18 @@ variable "sentry_dsn" {
   default     = ""
 }
 
+# ticket 28 step 13 — HTTP ingest retirement switch. Default true ships
+# INERT: rendered user-data is byte-identical to before this variable existed,
+# since the instance env omits EVENT_HTTP_INGEST_ENABLED entirely whenever it
+# is true (matching MSAB's own "unset == true" default). Setting it false
+# makes MSAB return 410 on POST /api/events — HTTP ingest is retired and the
+# SQS queue (var.event_queue_url) is the only transport left standing.
+variable "event_http_ingest_enabled" {
+  description = "Whether MSAB accepts POST /api/events over HTTP. Default true (ships inert). Set false only after the SQS consumer is confirmed live — this makes MSAB return 410 on the HTTP ingest route."
+  type        = bool
+  default     = true
+}
+
 # --- Alerting (ticket 32) ---
 # Empty (default) ships alerting INERT: the global SNS topic (modules/alerting)
 # is created, alarms are wired to it, but nobody is subscribed — so nothing
