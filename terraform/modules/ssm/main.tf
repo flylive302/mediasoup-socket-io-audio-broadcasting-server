@@ -133,6 +133,55 @@ resource "aws_ssm_parameter" "laravel_internal_key" {
   }
 }
 
+# --- Laravel Internal Key, rotation overlap (secrets-repo-cleanup ticket 03) ---
+# Same gating as jwt_secret_previous above: created ONLY while a rotation is
+# in flight; outside one the parameter is absent and fetch_ssm() returns "".
+resource "aws_ssm_parameter" "laravel_internal_key_previous" {
+  count       = var.laravel_internal_key_previous == "" ? 0 : 1
+  name        = "/${local.env_prefix}/laravel-internal-key-previous"
+  description = "Outgoing Laravel internal key(s) still accepted during a rotation (comma-separated)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.laravel_internal_key_previous
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- Internal API Key (secrets-repo-cleanup ticket 03) ---
+# Distinct MSAB instance↔instance (cascade /internal/*) key, split out from laravel_internal_key. Created
+# ONLY once a distinct value is actually supplied — outside that,
+# user-data.sh falls back to LARAVEL_INTERNAL_KEY (today's behaviour), so
+# ship-inert holds with zero SSM footprint until the split is deliberately
+# turned on.
+resource "aws_ssm_parameter" "internal_api_key" {
+  count       = var.internal_api_key == "" ? 0 : 1
+  name        = "/${local.env_prefix}/internal-api-key"
+  description = "Distinct MSAB instance-to-instance (cascade) key, split from laravel_internal_key"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.internal_api_key
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# --- Internal API Key, rotation overlap (secrets-repo-cleanup ticket 03) ---
+resource "aws_ssm_parameter" "internal_api_key_previous" {
+  count       = var.internal_api_key_previous == "" ? 0 : 1
+  name        = "/${local.env_prefix}/internal-api-key-previous"
+  description = "Outgoing internal API key(s) still accepted during a rotation (comma-separated)"
+  type        = "SecureString"
+  key_id      = aws_kms_key.ssm.key_id
+  value       = var.internal_api_key_previous
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
 # --- Session Secret ---
 resource "aws_ssm_parameter" "session_secret" {
   name        = "/${local.env_prefix}/session-secret"

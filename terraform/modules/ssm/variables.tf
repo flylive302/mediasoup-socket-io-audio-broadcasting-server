@@ -42,6 +42,29 @@ variable "laravel_internal_key" {
   sensitive   = true
 }
 
+# Rotation overlap for laravel_internal_key, and the internal_api_key split —
+# same pattern as jwt_secret_previous above (secrets-repo-cleanup ticket 03).
+variable "laravel_internal_key_previous" {
+  description = "Rotation overlap for laravel_internal_key. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "internal_api_key" {
+  description = "Distinct MSAB instance-to-instance (cascade) key. Empty falls back to laravel_internal_key (today's behaviour)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "internal_api_key_previous" {
+  description = "Rotation overlap for internal_api_key. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "session_secret" {
   description = "Express session secret"
   type        = string

@@ -187,6 +187,9 @@ module "region_mumbai" {
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
   jwt_secret_previous                   = var.jwt_secret_previous
+  laravel_internal_key_previous         = var.laravel_internal_key_previous
+  internal_api_key                      = var.internal_api_key
+  internal_api_key_previous             = var.internal_api_key_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id
@@ -292,6 +295,9 @@ module "region_frankfurt" {
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
   jwt_secret_previous                   = var.jwt_secret_previous
+  laravel_internal_key_previous         = var.laravel_internal_key_previous
+  internal_api_key                      = var.internal_api_key
+  internal_api_key_previous             = var.internal_api_key_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id
@@ -377,6 +383,9 @@ module "region_singapore" {
   laravel_internal_key                  = var.laravel_internal_key
   jwt_secret                            = var.jwt_secret
   jwt_secret_previous                   = var.jwt_secret_previous
+  laravel_internal_key_previous         = var.laravel_internal_key_previous
+  internal_api_key                      = var.internal_api_key
+  internal_api_key_previous             = var.internal_api_key_previous
   session_secret                        = var.session_secret
   cloudflare_turn_api_key               = var.cloudflare_turn_api_key
   cloudflare_turn_key_id                = var.cloudflare_turn_key_id

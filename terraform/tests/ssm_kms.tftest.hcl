@@ -207,6 +207,66 @@ run "jwt_rotation_overlap_parameter_is_a_securestring_on_the_cmk" {
 }
 
 # -----------------------------------------------------------------------------
+# secrets-repo-cleanup ticket 03 — same rotation-overlap pattern as JWT, now
+# for laravel_internal_key, plus the internal_api_key split. All three default
+# "" and must create nothing (ship-inert).
+# -----------------------------------------------------------------------------
+run "ticket_03_internal_key_rotation_and_split_params_absent_by_default" {
+  command = plan
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.laravel_internal_key_previous) == 0
+    error_message = "With no rotation in flight, laravel-internal-key-previous must not be created"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.internal_api_key) == 0
+    error_message = "With no split value supplied, internal-api-key must not be created"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.internal_api_key_previous) == 0
+    error_message = "With no rotation in flight, internal-api-key-previous must not be created"
+  }
+}
+
+# command = apply for the same reason as the jwt_secret_previous run above —
+# key_id equality referenced through another resource's attribute is unknown
+# at plan time.
+run "ticket_03_internal_key_rotation_and_split_params_present_when_set" {
+  command = apply
+
+  module {
+    source = "./modules/ssm"
+  }
+
+  variables {
+    laravel_internal_key_previous = "outgoing-laravel-internal-key-0123456789ab"
+    internal_api_key              = "distinct-internal-api-key-0123456789ab"
+    internal_api_key_previous     = "outgoing-internal-api-key-0123456789ab"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.laravel_internal_key_previous) == 1 && aws_ssm_parameter.laravel_internal_key_previous[0].name == "/flylive-audio-production/laravel-internal-key-previous" && aws_ssm_parameter.laravel_internal_key_previous[0].type == "SecureString" && aws_ssm_parameter.laravel_internal_key_previous[0].key_id == aws_kms_key.ssm.key_id
+    error_message = "laravel-internal-key-previous must be created as a SecureString on the CMK when set"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.internal_api_key) == 1 && aws_ssm_parameter.internal_api_key[0].name == "/flylive-audio-production/internal-api-key" && aws_ssm_parameter.internal_api_key[0].type == "SecureString" && aws_ssm_parameter.internal_api_key[0].key_id == aws_kms_key.ssm.key_id
+    error_message = "internal-api-key must be created as a SecureString on the CMK when set"
+  }
+
+  assert {
+    condition     = length(aws_ssm_parameter.internal_api_key_previous) == 1 && aws_ssm_parameter.internal_api_key_previous[0].name == "/flylive-audio-production/internal-api-key-previous" && aws_ssm_parameter.internal_api_key_previous[0].type == "SecureString" && aws_ssm_parameter.internal_api_key_previous[0].key_id == aws_kms_key.ssm.key_id
+    error_message = "internal-api-key-previous must be created as a SecureString on the CMK when set"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # kms:Decrypt is granted to the shared EC2 role, scoped to exactly this
 # region's CMK ARN (not a wildcard), and the policy name is region-qualified
 # so two enabled regions never collide on the same role (see comment above

@@ -141,6 +141,22 @@ variable "jwt_secret_previous" {
   sensitive = true
   default   = ""
 }
+# Same rotation-overlap pattern, secrets-repo-cleanup ticket 03.
+variable "laravel_internal_key_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "internal_api_key" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+variable "internal_api_key_previous" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
 variable "session_secret" {
   type      = string
   sensitive = true

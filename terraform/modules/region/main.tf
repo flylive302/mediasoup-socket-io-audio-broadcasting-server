@@ -164,14 +164,17 @@ resource "cloudflare_dns_record" "audio" {
 module "ssm" {
   source = "../ssm"
 
-  project_name            = var.project_name
-  environment             = var.environment
-  jwt_secret              = var.jwt_secret
-  jwt_secret_previous     = var.jwt_secret_previous
-  laravel_internal_key    = var.laravel_internal_key
-  session_secret          = var.session_secret
-  cloudflare_turn_api_key = var.cloudflare_turn_api_key
-  redis_auth_token        = var.redis_auth_token
+  project_name                  = var.project_name
+  environment                   = var.environment
+  jwt_secret                    = var.jwt_secret
+  jwt_secret_previous           = var.jwt_secret_previous
+  laravel_internal_key          = var.laravel_internal_key
+  laravel_internal_key_previous = var.laravel_internal_key_previous
+  internal_api_key              = var.internal_api_key
+  internal_api_key_previous     = var.internal_api_key_previous
+  session_secret                = var.session_secret
+  cloudflare_turn_api_key       = var.cloudflare_turn_api_key
+  redis_auth_token              = var.redis_auth_token
 
   broadcast_hls_enabled    = var.broadcast_hls_enabled
   hls_r2_access_key_id     = var.hls_r2_access_key_id

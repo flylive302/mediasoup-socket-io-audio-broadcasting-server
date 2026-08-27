@@ -360,6 +360,34 @@ variable "jwt_secret_previous" {
   default     = ""
 }
 
+# --- Same rotation-overlap pattern for laravel_internal_key / internal_api_key
+# (secrets-repo-cleanup ticket 03). Ticket 03 also SPLITS internal_api_key out
+# from laravel_internal_key: today MSAB's INTERNAL_API_KEY reuses
+# laravel_internal_key's value (see modules/autoscaling/user-data.sh). Setting
+# internal_api_key gives it a distinct value; leaving it "" (the default)
+# keeps today's behaviour — user-data.sh falls back to the shared key.
+# Defaults "" = no rotation in progress / no split yet; ship inert.
+variable "laravel_internal_key_previous" {
+  description = "Rotation overlap for laravel_internal_key. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "internal_api_key" {
+  description = "Distinct MSAB instance-to-instance (cascade) key. Empty falls back to laravel_internal_key (today's behaviour, secrets-repo-cleanup ticket 03)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "internal_api_key_previous" {
+  description = "Rotation overlap for internal_api_key. Comma-separated. Empty outside a rotation."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "session_secret" {
   description = "Express session secret"
   type        = string
