@@ -125,7 +125,9 @@ export class GiftHandler {
     );
 
     // GF-012 FIX (burst-native): self-gift is excluded per leg, silently —
-    // it is not a rejection unless it drains the burst to zero.
+    // it is not a rejection unless it drains the burst to zero. self-gifting
+    // 01: exclusion is now flag-gated via GIFT_ALLOW_SELF_SEND (default off,
+    // no behaviour change).
     if (acceptedRecipientIds.length === 0) {
       return { success: false, error: Errors.NO_RECIPIENTS_SEATED };
     }
@@ -306,8 +308,10 @@ export class GiftHandler {
   }
 
   /**
-   * GATE: drops self-gift and unseated legs silently. Uses the same
-   * seat-state source as the legacy single-recipient GF-017 check.
+   * GATE: drops unseated legs silently; also drops self-gift unless
+   * GIFT_ALLOW_SELF_SEND is on (self-gifting 01). Uses the same seat-state
+   * source as the legacy single-recipient GF-017 check — a self-gift still
+   * requires the sender to be seated.
    */
   private async filterAcceptedRecipients(
     recipientIdsRaw: number[],
@@ -315,7 +319,10 @@ export class GiftHandler {
     roomId: string,
     context: AppContext,
   ): Promise<number[]> {
-    const candidateIds = [...new Set(recipientIdsRaw)].filter((id) => id !== senderId);
+    const unique = [...new Set(recipientIdsRaw)];
+    const candidateIds = config.GIFT_ALLOW_SELF_SEND
+      ? unique
+      : unique.filter((id) => id !== senderId);
 
     const accepted: number[] = [];
     for (const recipientId of candidateIds) {

@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import type { Socket, Server } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import { Errors } from "@src/shared/errors.js";
+import { config } from "@src/config/index.js";
 
 // ─── Mock modules ───────────────────────────────────────────────────
 vi.mock("@src/infrastructure/logger.js", () => ({
@@ -20,6 +21,9 @@ vi.mock("@src/config/index.js", () => ({
     GIFT_MAX_RETRIES: 3,
     GIFT_RATE_LIMIT: 330,
     GIFT_RATE_WINDOW: 60,
+    // self-gifting 01: default off, matching GIFT_ALLOW_SELF_SEND's real
+    // default (no behaviour change until a test flips it on).
+    GIFT_ALLOW_SELF_SEND: false,
   },
 }));
 
@@ -226,6 +230,9 @@ describe("GiftHandler", () => {
     mockLuckyEnabled = true;
     mockReadSpendable.mockResolvedValue(null);
     mockCatalog = new Map();
+    // self-gifting 01: reset to the real default (off) so tests don't leak
+    // state across each other.
+    config.GIFT_ALLOW_SELF_SEND = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
   });
@@ -485,6 +492,73 @@ describe("GiftHandler", () => {
       const result = await sendBurst(burstPayload); // recipientIds: [2, 3, 4]
 
       expect(result).toEqual({ success: true, acceptedRecipientIds: [3, 4], transaction_id: expect.any(String) });
+    });
+
+    // ─── self-gifting 01: GIFT_ALLOW_SELF_SEND flag matrix ───────────
+
+    it("flag off: self-only burst is dropped to zero → NO_RECIPIENTS_SEATED", async () => {
+      config.GIFT_ALLOW_SELF_SEND = false;
+      const socket = createMockSocket("room-1", 2); // userId = 2
+      const context = createMockContext();
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst({ ...burstPayload, recipientIds: [2] });
+
+      expect(result).toEqual({
+        success: false,
+        error: Errors.NO_RECIPIENTS_SEATED,
+      });
+      expect(
+        (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("flag on: self leg is accepted when the sender is seated", async () => {
+      config.GIFT_ALLOW_SELF_SEND = true;
+      const socket = createMockSocket("room-1", 2); // userId = 2
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(3); // sender seated
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst({ ...burstPayload, recipientIds: [2] });
+
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2], transaction_id: expect.any(String) });
+    });
+
+    it("flag on: self leg is dropped when the sender is NOT seated (GF-017 still applies)", async () => {
+      config.GIFT_ALLOW_SELF_SEND = true;
+      const socket = createMockSocket("room-1", 2); // userId = 2
+      const context = createMockContext();
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(null); // sender unseated
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst({ ...burstPayload, recipientIds: [2] });
+
+      expect(result).toEqual({
+        success: false,
+        error: Errors.NO_RECIPIENTS_SEATED,
+      });
+    });
+
+    it("flag on: burst [self, other] forwards both legs to Laravel", async () => {
+      config.GIFT_ALLOW_SELF_SEND = true;
+      const socket = createMockSocket("room-1", 2); // userId = 2
+      const context = createMockContext();
+      // Both sender (2) and other (3) are seated.
+      vi.mocked(context.seatRepository.getUserSeat).mockResolvedValue(3);
+      handler.handle(socket, context);
+
+      const sendBurst = extractHandler(socket, "gift:send");
+      const result = await sendBurst({ ...burstPayload, recipientIds: [2, 3] });
+
+      expect(result).toEqual({ success: true, acceptedRecipientIds: [2, 3], transaction_id: expect.any(String) });
+
+      const rpush = (mockRedis as unknown as { rpush: ReturnType<typeof vi.fn> }).rpush;
+      const enqueued = JSON.parse(rpush.mock.calls[0]?.[1] as string);
+      expect(enqueued.recipient_ids).toEqual([2, 3]);
     });
 
     it("enqueues exactly ONE buffer row per burst with the exact row shape", async () => {

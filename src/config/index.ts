@@ -298,6 +298,11 @@ const configSchema = z.object({
   GIFT_RATE_LIMIT: z.coerce.number().default(600),
   GIFT_RATE_WINDOW: z.coerce.number().default(60),
 
+  // self-gifting 01: allow a sender to appear in their own recipient list
+  // (seat check still applies). Default false — no behaviour change until
+  // this is explicitly flipped.
+  GIFT_ALLOW_SELF_SEND: booleanEnvSchema,
+
   // gift-authority-tick-fanout 03: runtime flag source (Redis hash → env →
   // default). These five are the ONLY flags this epic's `flags` module
   // resolves at runtime (src/domains/gift/flags.ts) — nothing reads them yet,
