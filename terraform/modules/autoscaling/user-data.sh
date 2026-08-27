@@ -309,6 +309,10 @@ JWT_MAX_AGE_SECONDS=${jwt_max_age_seconds}
 LARAVEL_API_URL=${laravel_api_url}
 LARAVEL_API_TIMEOUT_MS=${laravel_api_timeout_ms}
 
+# Gifts
+# self-gifting 03: flag is read by src/config GIFT_ALLOW_SELF_SEND (boolean).
+GIFT_ALLOW_SELF_SEND=${gift_allow_self_send}
+
 # MediaSoup
 MEDIASOUP_LISTEN_IP=0.0.0.0
 MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP

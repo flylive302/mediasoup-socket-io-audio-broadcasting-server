@@ -475,6 +475,12 @@ variable "jwt_max_age_seconds" {
   default     = 2592000 # 30 days (720 hours × 3600)
 }
 
+variable "gift_allow_self_send" {
+  description = "self-gifting 01/03: lets a seated sender gift themselves. Default false = inert."
+  type        = bool
+  default     = false
+}
+
 variable "laravel_api_timeout_ms" {
   description = "Timeout for MSAB → Laravel API calls in milliseconds"
   type        = number
