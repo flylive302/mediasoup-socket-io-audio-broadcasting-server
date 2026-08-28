@@ -28,6 +28,9 @@ interface HarnessOpts {
   // msab-crash-drain 02: model the Redis adapter rejecting the cross-instance
   // fetchSockets fan-out (an absent fleet peer mid-roll).
   fetchSocketsRejects?: boolean;
+  // room-47 stale-socket fix: other socket ids this user holds in ROOM on this
+  // instance, each with its live/dead state as the namespace reports it.
+  siblingSockets?: Array<{ id: string; connected: boolean }>;
 }
 
 function harness(members: Set<string>, opts: HarnessOpts = {}) {
@@ -66,6 +69,10 @@ function harness(members: Set<string>, opts: HarnessOpts = {}) {
     clientManager: {
       getClient: () => ({ transports: new Map() }),
       clearClientRoom,
+      getSocketIdsByUserInRoom: () => [
+        LEAVER,
+        ...(opts.siblingSockets ?? []).map((s) => s.id),
+      ],
     },
     seatRepository: { leaveSeat, reserveSeat },
     autoCloseService: { recordActivity },
@@ -84,6 +91,11 @@ function harness(members: Set<string>, opts: HarnessOpts = {}) {
   const socket = {
     id: LEAVER,
     data: { user: { id: LEAVER_ID } },
+    nsp: {
+      sockets: new Map(
+        (opts.siblingSockets ?? []).map((s) => [s.id, { connected: s.connected }]),
+      ),
+    },
     to: () => ({ emit }),
     leave: vi.fn((_room: string) => {
       members.delete(LEAVER);
@@ -253,5 +265,45 @@ describe("finalizeLeave — seat reservation across reconnect (realtime-22 rewor
     expect(emittedEvents(h.emit)).toEqual(
       expect.arrayContaining(["seat:cleared", "room:userLeft"]),
     );
+  });
+});
+
+describe("finalizeLeave — stale socket while the user is live on a newer socket (room-47, 2026-08-28)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("a ping-timeout of the OLD socket does NOT touch the seat, the roster, or the user-room mapping", async () => {
+    const { h, count } = await captureStatus(new Set(["sock-other", "sock-new"]), true, {
+      reservedIndices: [3], // the user IS seated — the old design would mark it disconnected
+      siblingSockets: [{ id: "sock-new", connected: true }],
+    });
+    expect(count).toBeNull();
+    expect(h.reserveSeat).not.toHaveBeenCalled();
+    expect(h.leaveSeat).not.toHaveBeenCalled();
+    expect(h.clearUserRoom).not.toHaveBeenCalled();
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(emittedEvents(h.emit)).toEqual([]);
+    // Only this socket's own tracking is dropped.
+    expect(h.clearClientRoom).toHaveBeenCalledWith(LEAVER);
+  });
+
+  it("a sibling socket that is itself DEAD does not count — the leave runs in full", async () => {
+    const { h } = await captureStatus(new Set(["sock-other"]), true, {
+      reservedIndices: [3],
+      siblingSockets: [{ id: "sock-dead", connected: false }],
+    });
+    expect(h.reserveSeat).toHaveBeenCalled();
+    expect(emittedEvents(h.emit)).toEqual(
+      expect.arrayContaining(["seat:cleared", "room:userLeft"]),
+    );
+  });
+
+  it("an EXPLICIT leave always runs in full, even with a live sibling (multi-device: they meant to leave)", async () => {
+    const { h } = await captureStatus(new Set(["sock-other", "sock-new"]), false, {
+      siblingSockets: [{ id: "sock-new", connected: true }],
+      leaveResult: { success: true, seatIndex: 3, clearedSeatIndices: [3] },
+    });
+    expect(h.leaveSeat).toHaveBeenCalled();
+    expect(h.clearUserRoom).toHaveBeenCalledWith(LEAVER_ID);
+    expect(emittedEvents(h.emit)).toContain("room:userLeft");
   });
 });

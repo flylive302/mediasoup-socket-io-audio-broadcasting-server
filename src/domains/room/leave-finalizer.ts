@@ -26,6 +26,23 @@ export interface FinalizeLeaveOptions {
 }
 
 /**
+ * GATE: does `userId` hold another CONNECTED socket in `roomId` on this
+ * instance, other than `socket`? Same-instance is the right scope: Laravel
+ * pins every join of a room to its CAS owner, so a reconnect lands here.
+ */
+function hasOtherLiveSocketInRoom(
+  socket: Socket,
+  context: AppContext,
+  userId: number,
+  roomId: string,
+): boolean {
+  const siblings = context.clientManager.getSocketIdsByUserInRoom(userId, roomId);
+  return siblings.some(
+    (sid) => sid !== socket.id && socket.nsp.sockets.get(sid)?.connected === true,
+  );
+}
+
+/**
  * Tear down one client's membership of `roomId` and update the backend.
  * Returns the post-leave presence count, or null if the count could not be read.
  */
@@ -60,6 +77,25 @@ export async function finalizeLeave(
         // Worker may already be gone — nothing to clean up.
       }
     }
+  }
+
+  // Stale-socket disconnect (room-47 incident, 2026-08-28): a phone that loses
+  // its connection silently opens a NEW socket and re-joins at once; the OLD
+  // socket only dies ~60 s later by ping timeout. Running the full leave for
+  // that stale socket marked the seat `disconnectedAt` (swept 120 s later —
+  // "Seat reservation expired"), broadcast seat:cleared + room:userLeft for a
+  // user who was live and speaking on the new socket, and wiped their
+  // user→room mapping. GATE: if this user still has another connected socket
+  // in this room, this socket is stale — its transports are already closed
+  // above; drop its tracking and stop. The seat, the roster and Laravel's
+  // count all belong to the live socket.
+  if (options.viaDisconnect && hasOtherLiveSocketInRoom(socket, context, userId, roomId)) {
+    clientManager.clearClientRoom(socket.id);
+    logger.info(
+      { roomId, userId, socketId: socket.id },
+      "Stale socket disconnect ignored — user still live on a newer socket in this room",
+    );
+    return null;
   }
 
   // realtime-22 (reworked, seat-desync-self-heal): on a genuine socket death
