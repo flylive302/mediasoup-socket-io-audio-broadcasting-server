@@ -356,3 +356,43 @@ describe("LaravelClient — assertRoomPin (room-pin-owner-mismatch/01)", () => {
     await expect(client.assertRoomPin("42")).resolves.toBe(false);
   });
 });
+
+describe("LaravelClient — repinRooms (room-pin-owner-mismatch/01)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("parses held from the batch response like the other counters", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, { repinned: 5, unplaced: 1, remaining: 0, held: 2 }),
+      ),
+    );
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.repinRooms(50)).resolves.toEqual({
+      repinned: 5,
+      unplaced: 1,
+      remaining: 0,
+      held: 2,
+    });
+  });
+
+  it("defaults held to 0 when the response omits it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, { repinned: 5, unplaced: 1, remaining: 0 }),
+      ),
+    );
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.repinRooms(50)).resolves.toEqual({
+      repinned: 5,
+      unplaced: 1,
+      remaining: 0,
+      held: 0,
+    });
+  });
+});

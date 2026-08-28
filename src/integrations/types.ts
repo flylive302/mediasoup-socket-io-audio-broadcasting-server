@@ -76,6 +76,7 @@ export interface RepinBatchResult {
   repinned: number;
   unplaced: number;
   remaining: number;
+  held: number;
 }
 
 /**

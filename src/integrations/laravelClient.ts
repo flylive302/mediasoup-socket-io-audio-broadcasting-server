@@ -349,6 +349,7 @@ export class LaravelClient {
         repinned: typeof data.repinned === "number" ? data.repinned : 0,
         unplaced: typeof data.unplaced === "number" ? data.unplaced : 0,
         remaining: typeof data.remaining === "number" ? data.remaining : 0,
+        held: typeof data.held === "number" ? data.held : 0,
       };
     } catch (error) {
       this.logger.error({ error }, "Error re-pinning rooms batch");

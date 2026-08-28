@@ -46,6 +46,7 @@ export interface RepinSummary {
   repinned: number;
   unplaced: number;
   remaining: number;
+  held: number;
 }
 
 /**
@@ -189,7 +190,7 @@ export function startDrain(
  * "all rooms moved".
  */
 async function runRepinLoop(client: DrainRepinClient): Promise<void> {
-  repinSummary = { repinned: 0, unplaced: 0, remaining: -1 };
+  repinSummary = { repinned: 0, unplaced: 0, remaining: -1, held: 0 };
 
   const acknowledged = await client.setInstanceDraining(true);
   if (!acknowledged) {
@@ -216,11 +217,17 @@ async function runRepinLoop(client: DrainRepinClient): Promise<void> {
       repinSummary.repinned += batch.repinned;
       repinSummary.unplaced += batch.unplaced;
       repinSummary.remaining = batch.remaining;
+      repinSummary.held = batch.held;
 
       logger.info({ batch, repinSummary }, "Drain re-pin batch applied");
 
       if (batch.remaining === 0) {
-        logger.info({ repinSummary }, "✅ All rooms re-pinned away from this instance");
+        logger.info(
+          { repinSummary },
+          repinSummary.held > 0
+            ? `✅ All movable rooms re-pinned away; ${repinSummary.held} live rooms held`
+            : "✅ All rooms re-pinned away from this instance",
+        );
         return;
       }
 

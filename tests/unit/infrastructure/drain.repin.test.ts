@@ -49,14 +49,14 @@ function createMockRoomManager(initialRoomCount = 0) {
 }
 
 /** Repin client whose batches are scripted; records every call. */
-function createMockRepinClient(batches: Array<{ repinned: number; unplaced: number; remaining: number } | null>) {
+function createMockRepinClient(batches: Array<{ repinned: number; unplaced: number; remaining: number; held?: number } | null>) {
   let call = 0;
   const client: DrainRepinClient = {
     setInstanceDraining: vi.fn(async () => true),
     repinRooms: vi.fn(async () => {
       const batch = batches[Math.min(call, batches.length - 1)] ?? null;
       call++;
-      return batch;
+      return batch ? { held: 0, ...batch } : null;
     }),
   };
   return client;
@@ -110,7 +110,27 @@ describe("Drain re-pin loop (aws-production/20)", () => {
 
     expect(getDrainReport()).toMatchObject({
       outcome: "all_rooms_closed",
-      repin: { repinned: 30, unplaced: 0, remaining: 0 },
+      repin: { repinned: 30, unplaced: 0, remaining: 0, held: 0 },
+    });
+  });
+
+  it("carries held from the last batch into the final repin summary", async () => {
+    const client = createMockRepinClient([
+      { repinned: 25, unplaced: 0, remaining: 5, held: 0 },
+      { repinned: 5, unplaced: 0, remaining: 0, held: 3 },
+    ]);
+    registerDrainRepinClient(client);
+
+    const roomManager = createMockRoomManager(2);
+    startDrain(roomManager, { timeoutMs: 600_000, affinityEnabled: () => true });
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    roomManager._setRoomCount(0);
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    expect(getDrainReport()).toMatchObject({
+      outcome: "all_rooms_closed",
+      repin: { repinned: 30, unplaced: 0, remaining: 0, held: 3 },
     });
   });
 
@@ -132,7 +152,7 @@ describe("Drain re-pin loop (aws-production/20)", () => {
     expect(getDrainReport()).toMatchObject({
       outcome: "timeout",
       roomsStillOpen: 4,
-      repin: { repinned: 0, unplaced: 4, remaining: 4 },
+      repin: { repinned: 0, unplaced: 4, remaining: 4, held: 0 },
     });
   });
 
