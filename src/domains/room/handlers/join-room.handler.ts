@@ -46,7 +46,11 @@ async function getJoinBlockStatus(
   roomId: string,
   userId: number,
   context: AppContext,
-): Promise<{ blocked: boolean; permanent: boolean; remainingSeconds: number | null }> {
+): Promise<{
+  blocked: boolean;
+  permanent: boolean;
+  remainingSeconds: number | null;
+}> {
   const roomBlockRepo = new RoomBlockRepository(context.redis, logger);
   return roomBlockRepo.getStatus(roomId, userId);
 }
@@ -133,6 +137,15 @@ async function resolveClusterForJoin(
         listenerCount: 0,
       });
       logger.info({ roomId, selfId }, "Origin claimed via Redis CAS");
+      // room-pin-owner-mismatch/01: assert the durable pin so Laravel's
+      // fallback routing stops sending joiners to a non-owner sibling.
+      if (claim.won) {
+        context.laravelClient
+          .assertRoomPin(roomId)
+          .catch((err) =>
+            reactError(err, { roomId }, "Failed to assert room pin"),
+          );
+      }
     } else if (cascadeCoordinator) {
       // Another instance in our region owns the room. Become an edge piping
       // from them. waitForOriginInfo handles the owner-init race.
@@ -195,7 +208,8 @@ async function fetchEdgeOriginData(
 
   let originParticipants = firstParticipants;
   if (snapshot !== null && originParticipants === null) {
-    originParticipants = await cascadeCoordinator.fetchOriginParticipants(roomId);
+    originParticipants =
+      await cascadeCoordinator.fetchOriginParticipants(roomId);
   }
 
   const originUnreachable = snapshot === null && originParticipants === null;
@@ -331,7 +345,11 @@ async function processJoin(
       image_url: string | null;
     }[];
   }[] = [];
-  const existingProducers: { producerId: string; userId: number; source: string }[] = [];
+  const existingProducers: {
+    producerId: string;
+    userId: number;
+    source: string;
+  }[] = [];
 
   // Deduplicate by userId (same user may have stale sockets across instances)
   const seenUserIds = new Set<number>();
@@ -487,7 +505,9 @@ async function processJoin(
   // the local loop didn't surface. Edge joins are excluded: their list was
   // just replaced wholesale with the origin's piped producers above.
   if (!cascadeCoordinator?.isEdgeRoom(roomId)) {
-    const knownProducerIds = new Set(existingProducers.map((p) => p.producerId));
+    const knownProducerIds = new Set(
+      existingProducers.map((p) => p.producerId),
+    );
     for (const sp of cluster.getSourceProducers()) {
       if (knownProducerIds.has(sp.producerId)) continue;
       if (sp.userId === userId) continue; // never hand a joiner their own stale producer
@@ -564,7 +584,10 @@ async function processJoin(
     newCount,
     userId,
     reclaimedSeat: reclaim.reclaimed
-      ? { seatIndex: reclaim.seatIndex ?? -1, isMuted: reclaim.isMuted ?? false }
+      ? {
+          seatIndex: reclaim.seatIndex ?? -1,
+          isMuted: reclaim.isMuted ?? false,
+        }
       : null,
   };
 }
@@ -705,7 +728,11 @@ export const joinRoomHandler = createHandler(
   async (payload, socket, context): Promise<HandlerResult> => {
     // GATE
     const userId = socket.data.user.id;
-    const blockStatus = await getJoinBlockStatus(payload.roomId, userId, context);
+    const blockStatus = await getJoinBlockStatus(
+      payload.roomId,
+      userId,
+      context,
+    );
     if (blockStatus.blocked) {
       logger.info(
         { roomId: payload.roomId, userId, ...blockStatus },

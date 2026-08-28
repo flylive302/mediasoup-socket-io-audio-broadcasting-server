@@ -318,3 +318,41 @@ describe("LaravelClient — instance heartbeat (aws-production/24 follow-up)", (
     await expect(client.sendInstanceHeartbeat("ap-south-1")).resolves.toBe(false);
   });
 });
+
+describe("LaravelClient — assertRoomPin (room-pin-owner-mismatch/01)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts room_id to /instances/pin-room with the instance header and returns true on ok", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.assertRoomPin("42")).resolves.toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://laravel.test/api/v1/internal/instances/pin-room");
+    expect(JSON.parse(String(init.body))).toEqual({ room_id: 42 });
+    expect((init.headers as Record<string, string>)["X-Instance-ID"]).toBe(
+      "i-test-box-1",
+    );
+  });
+
+  it("returns false on a non-ok response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(500, { message: "boom" })),
+    );
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.assertRoomPin("42")).resolves.toBe(false);
+  });
+
+  it("returns false (never throws) when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const client = new LaravelClient(createLogger());
+
+    await expect(client.assertRoomPin("42")).resolves.toBe(false);
+  });
+});

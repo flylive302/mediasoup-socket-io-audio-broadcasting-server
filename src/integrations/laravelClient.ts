@@ -213,7 +213,11 @@ export class LaravelClient {
       recordLaravelApiCall(metricsLabel, String(response.status), startedAt);
       return response;
     } catch (error) {
-      recordLaravelApiCall(metricsLabel, laravelFailureStatus(error), startedAt);
+      recordLaravelApiCall(
+        metricsLabel,
+        laravelFailureStatus(error),
+        startedAt,
+      );
       captureLaravelFailure("POST", endpoint, error);
       throw error;
     } finally {
@@ -248,7 +252,11 @@ export class LaravelClient {
       recordLaravelApiCall(metricsLabel, String(response.status), startedAt);
       return response;
     } catch (error) {
-      recordLaravelApiCall(metricsLabel, laravelFailureStatus(error), startedAt);
+      recordLaravelApiCall(
+        metricsLabel,
+        laravelFailureStatus(error),
+        startedAt,
+      );
       captureLaravelFailure("GET", endpoint, error);
       throw error;
     } finally {
@@ -269,7 +277,10 @@ export class LaravelClient {
       });
 
       if (!response.ok) {
-        this.logger.warn({ status: response.status }, "Instance heartbeat rejected");
+        this.logger.warn(
+          { status: response.status },
+          "Instance heartbeat rejected",
+        );
       }
 
       return response.ok;
@@ -302,7 +313,10 @@ export class LaravelClient {
 
       return response.ok;
     } catch (error) {
-      this.logger.error({ error, draining }, "Error setting instance draining flag");
+      this.logger.error(
+        { error, draining },
+        "Error setting instance draining flag",
+      );
       return false;
     }
   }
@@ -314,9 +328,12 @@ export class LaravelClient {
    */
   async repinRooms(limit: number): Promise<RepinBatchResult | null> {
     try {
-      const response = await this.post("/api/v1/internal/instances/repin-rooms", {
-        limit,
-      });
+      const response = await this.post(
+        "/api/v1/internal/instances/repin-rooms",
+        {
+          limit,
+        },
+      );
 
       if (!response.ok) {
         this.logger.error(
@@ -336,6 +353,33 @@ export class LaravelClient {
     } catch (error) {
       this.logger.error({ error }, "Error re-pinning rooms batch");
       return null;
+    }
+  }
+
+  /**
+   * Tell Laravel this instance now owns `roomId` (won or reclaimed the CAS
+   * claim) so `rooms.pinned_instance` converges on the real owner
+   * (room-pin-owner-mismatch/01). REACT: fire-and-forget, never throws —
+   * a miss only means the read-time fallback stays stale until the next win.
+   */
+  async assertRoomPin(roomId: string): Promise<boolean> {
+    try {
+      const response = await this.post("/api/v1/internal/instances/pin-room", {
+        room_id: Number(roomId),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(
+          { roomId, status: response.status },
+          "Failed to assert room pin",
+        );
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.warn({ roomId, error }, "Error asserting room pin");
+      return false;
     }
   }
 
@@ -474,7 +518,9 @@ export class LaravelClient {
 
     const gifts = Array.isArray(parsed.gifts)
       ? parsed.gifts.filter(
-          (g): g is {
+          (
+            g,
+          ): g is {
             id: number;
             price: number;
             is_active: boolean;
@@ -510,7 +556,9 @@ export class LaravelClient {
     const response = await this.get(`/api/v1/internal/users/${userId}/balance`);
     if (response.status === 404) return null;
     if (!response.ok) {
-      throw new Error(`Failed to fetch user balance: ${response.status} ${response.statusText}`);
+      throw new Error(
+        `Failed to fetch user balance: ${response.status} ${response.statusText}`,
+      );
     }
     return (await response.json()) as {
       coins: string;
@@ -654,7 +702,10 @@ function normalizeEndpoint(endpoint: string): string {
 const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
   [/^\/api\/v1\/internal\/gifts\/batch$/, "/api/v1/internal/gifts/batch"],
   [/^\/api\/v1\/internal\/gifts\/catalog$/, "/api/v1/internal/gifts/catalog"],
-  [/^\/api\/v1\/internal\/users\/[^/]+\/balance$/, "/api/v1/internal/users/:id/balance"],
+  [
+    /^\/api\/v1\/internal\/users\/[^/]+\/balance$/,
+    "/api/v1/internal/users/:id/balance",
+  ],
   [
     /^\/api\/v1\/internal\/rooms\/[^/]+\/status$/,
     "/api/v1/internal/rooms/:id/status",
@@ -679,6 +730,10 @@ const LARAVEL_ENDPOINT_TEMPLATES: ReadonlyArray<[RegExp, string]> = [
   [
     /^\/api\/v1\/internal\/instances\/repin-rooms$/,
     "/api/v1/internal/instances/repin-rooms",
+  ],
+  [
+    /^\/api\/v1\/internal\/instances\/pin-room$/,
+    "/api/v1/internal/instances/pin-room",
   ],
   [/^\/api\/v1\/internal\/users\/revoked$/, "/api/v1/internal/users/revoked"],
 ];

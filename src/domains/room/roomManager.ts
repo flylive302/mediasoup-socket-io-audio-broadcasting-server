@@ -162,14 +162,20 @@ export class RoomManager {
         // them); a key a rival now holds forces an explicit step-down. Cascade
         // EDGE rooms are excluded from both: "lost" is their steady state and
         // reclaiming would steal the origin's claim.
-        const isEdgeRoom =
-          this.cascadeCoordinator?.isEdgeRoom(roomId) ?? false;
+        const isEdgeRoom = this.cascadeCoordinator?.isEdgeRoom(roomId) ?? false;
         registry
           ?.refreshOwnership(roomId, selfId, { allowReclaim: !isEdgeRoom })
           .then((result) => {
             if (isEdgeRoom) return;
             if (result === "reclaimed") {
               metrics.ownershipTransfers.inc({ kind: "reclaimed" });
+              // room-pin-owner-mismatch/01: a reclaim is a fresh win — make
+              // the durable pin follow the CAS owner.
+              this.laravelClient
+                .assertRoomPin(roomId)
+                .catch((err) =>
+                  reactError(err, { roomId }, "Failed to assert room pin"),
+                );
             } else if (result === "lost") {
               this.stepDownAsOrigin(roomId);
               return;
@@ -228,7 +234,11 @@ export class RoomManager {
               present > 0
                 ? await this.isOwner(roomId).catch((err: unknown) => {
                     recordRedisDegradation("room-manager", "ownership-check");
-                    reactError(err, { roomId }, "Ownership check failed — assuming not owner");
+                    reactError(
+                      err,
+                      { roomId },
+                      "Ownership check failed — assuming not owner",
+                    );
                     return false;
                   })
                 : false;
@@ -251,11 +261,11 @@ export class RoomManager {
                 : 0;
             const mode =
               present > 0 && owns
-                ? (await this.roomModeService?.evaluate(
+                ? ((await this.roomModeService?.evaluate(
                     roomId,
                     present,
                     speakerCount,
-                  )) ?? undefined
+                  )) ?? undefined)
                 : undefined;
             if (!this.rooms.has(roomId)) return;
             // realtime-02: also refresh the Laravel-side activity TTL with a
@@ -279,7 +289,11 @@ export class RoomManager {
             // refreshes room:state's TTL. Sustained failure here is how a room
             // silently drifts or expires — count it, don't just log it.
             recordRedisDegradation("room-manager", "heartbeat-reconcile");
-            reactError(err, { roomId }, "Presence reconcile on heartbeat failed");
+            reactError(
+              err,
+              { roomId },
+              "Presence reconcile on heartbeat failed",
+            );
           });
       }
     }, RoomManager.OWNERSHIP_HEARTBEAT_MS);
@@ -643,26 +657,22 @@ export class RoomManager {
     }
     if (this.cascadeCoordinator) {
       cleanupOps.push(
-        this.cascadeCoordinator
-          .cleanup(roomId)
-          .catch((err) =>
-            reactError(err, { roomId }, "Cascade cleanup failed", {
-              level: "error",
-            }),
-          ),
+        this.cascadeCoordinator.cleanup(roomId).catch((err) =>
+          reactError(err, { roomId }, "Cascade cleanup failed", {
+            level: "error",
+          }),
+        ),
       );
     }
     // B-1: Release CAS ownership claim so another instance can re-claim if a
     // new room with this id appears later (e.g., user re-opens after closing).
     if (this.roomRegistry) {
       cleanupOps.push(
-        this.roomRegistry
-          .cleanup(roomId)
-          .catch((err) =>
-            reactError(err, { roomId }, "RoomRegistry cleanup failed", {
-              level: "error",
-            }),
-          ),
+        this.roomRegistry.cleanup(roomId).catch((err) =>
+          reactError(err, { roomId }, "RoomRegistry cleanup failed", {
+            level: "error",
+          }),
+        ),
       );
     }
     await Promise.all(cleanupOps);

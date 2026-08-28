@@ -128,6 +128,7 @@ function createMockContext(remoteSockets: unknown[] = []) {
     },
     laravelClient: {
       updateRoomStatus: vi.fn().mockResolvedValue(undefined),
+      assertRoomPin: vi.fn().mockResolvedValue(true),
     },
     statusCoalescer: { submit: vi.fn() },
     redis: {},
@@ -548,6 +549,54 @@ describe("joinRoomHandler", () => {
       await h({ roomId: "room-1" }, vi.fn());
 
       expect(ctx.roomManager.evictLocalRoom).not.toHaveBeenCalled();
+    });
+  });
+
+  // room-pin-owner-mismatch/01: a fresh CAS win must assert the durable pin
+  // so Laravel's fallback routing converges on the real owner; an
+  // already-owned room (won:false, owner===self) or a lost claim must not
+  // spam the pin endpoint.
+  describe("assertRoomPin on ownership claim (room-pin-owner-mismatch/01)", () => {
+    function makeClaimContext(claim: {
+      won: boolean;
+      owner: string | null;
+    }) {
+      const ctx = createMockContext();
+      ctx.roomRegistry = {
+        getOwner: vi.fn().mockResolvedValue(claim.owner),
+        claimOwnership: vi.fn().mockResolvedValue(claim),
+        registerOrigin: vi.fn().mockResolvedValue(undefined),
+        refreshOwnership: vi.fn().mockResolvedValue(undefined),
+      };
+      return ctx;
+    }
+
+    it("calls assertRoomPin once when the claim is won", async () => {
+      const ctx = makeClaimContext({ won: true, owner: "self" });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-9" }, vi.fn());
+
+      expect(ctx.laravelClient.assertRoomPin).toHaveBeenCalledTimes(1);
+      expect(ctx.laravelClient.assertRoomPin).toHaveBeenCalledWith("room-9");
+    });
+
+    it("does NOT call assertRoomPin when already owned (won:false, owner===self)", async () => {
+      const ctx = makeClaimContext({ won: false, owner: "self" });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-9" }, vi.fn());
+
+      expect(ctx.laravelClient.assertRoomPin).not.toHaveBeenCalled();
+    });
+
+    it("does NOT call assertRoomPin when the claim is lost to another instance", async () => {
+      const ctx = makeClaimContext({ won: false, owner: "other-instance" });
+      const h = joinRoomHandler(socket, ctx);
+
+      await h({ roomId: "room-9" }, vi.fn());
+
+      expect(ctx.laravelClient.assertRoomPin).not.toHaveBeenCalled();
     });
   });
 

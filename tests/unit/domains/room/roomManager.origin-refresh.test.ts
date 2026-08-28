@@ -68,12 +68,16 @@ function makeManager(
     forgetOwnerCache: vi.fn(),
   };
   const roomModeService = { evaluate: vi.fn(async () => "interactive") };
+  const laravelClient = {
+    updateRoomStatus: vi.fn(),
+    assertRoomPin: vi.fn(async () => true),
+  };
 
   const manager = new RoomManager(
     { setOnWorkerDied: vi.fn() } as never,
     { defineCommand: vi.fn() } as never,
     {} as never,
-    { updateRoomStatus: vi.fn() } as never,
+    laravelClient as never,
     statusCoalescer as never,
   );
 
@@ -91,7 +95,7 @@ function makeManager(
   manager.setPresenceTracker(presenceTracker as never);
   manager.setBroadcastClosedHook(vi.fn());
 
-  return { manager, roomRegistry };
+  return { manager, roomRegistry, laravelClient };
 }
 
 const HEARTBEAT_MS = 30_000;
@@ -165,6 +169,47 @@ describe("RoomManager heartbeat — :origin info refresh (aws-production/38-D)",
     // Second tick still ran both refreshes — the rejection didn't kill the loop.
     expect(roomRegistry.refreshOwnership).toHaveBeenCalledTimes(2);
     expect(roomRegistry.registerOrigin).toHaveBeenCalledTimes(2);
+    manager.stopOwnershipHeartbeat();
+  });
+});
+
+// room-pin-owner-mismatch/01: a reclaim is a fresh win for this instance, so
+// the durable pin must follow the CAS owner. A "held" (already-owned, no
+// transfer) or "lost" (stepped down) result must not call it.
+describe("RoomManager heartbeat — assertRoomPin on reclaim (room-pin-owner-mismatch/01)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("calls assertRoomPin when the refresh reclaims ownership", async () => {
+    const { manager, laravelClient } = makeManager("reclaimed");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    expect(laravelClient.assertRoomPin).toHaveBeenCalledTimes(1);
+    expect(laravelClient.assertRoomPin).toHaveBeenCalledWith("r1");
+    manager.stopOwnershipHeartbeat();
+  });
+
+  it("does NOT call assertRoomPin when the refresh merely holds (already owned)", async () => {
+    const { manager, laravelClient } = makeManager("held");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    expect(laravelClient.assertRoomPin).not.toHaveBeenCalled();
+    manager.stopOwnershipHeartbeat();
+  });
+
+  it("does NOT call assertRoomPin when the refresh is lost", async () => {
+    const { manager, laravelClient } = makeManager("lost");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+
+    expect(laravelClient.assertRoomPin).not.toHaveBeenCalled();
     manager.stopOwnershipHeartbeat();
   });
 });
