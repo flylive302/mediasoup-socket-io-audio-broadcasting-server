@@ -56,10 +56,18 @@ async function getJoinBlockStatus(
 }
 
 /**
+ * keep-watching 20: this instance lost the CAS claim and cascade is off — the
+ * joiner was routed here mid hand-over (instance refresh). Distinct class so
+ * the handler answers `Errors.ROOM_HANDOVER` (client retries once) instead of
+ * the generic INTERNAL_ERROR + Sentry exception.
+ */
+export class RoomHandoverError extends Error {}
+
+/**
  * Resolve the local mediasoup cluster that will serve this join — origin (CAS
  * winner), cascade edge, or single-instance fallback. Extracted so the
  * snapshot-miss recovery (realtime-20) can re-run the FULL resolution after
- * detaching a stale edge. Throws if no cluster can be served.
+ * detaching a stale edge. Throws `RoomHandoverError` if no cluster can be served.
  */
 async function resolveClusterForJoin(
   roomId: string,
@@ -172,7 +180,7 @@ async function resolveClusterForJoin(
   }
 
   if (!cluster) {
-    throw new Error(
+    throw new RoomHandoverError(
       `Cannot serve room ${roomId}: another instance owns it but cascade edge setup failed`,
     );
   }
@@ -747,7 +755,22 @@ export const joinRoomHandler = createHandler(
     }
 
     // EXECUTE
-    const result = await processJoin(payload, socket, context);
+    let result: Awaited<ReturnType<typeof processJoin>>;
+    try {
+      result = await processJoin(payload, socket, context);
+    } catch (err) {
+      // keep-watching 20: transient owner hand-over — not an internal error.
+      // A machine-readable code lets the client retry once; the owner's next
+      // heartbeat asserts the pin so the retry lands on the right instance.
+      if (err instanceof RoomHandoverError) {
+        logger.warn(
+          { roomId: payload.roomId, userId, err: err.message },
+          "room:join deferred — room owner hand-over in progress",
+        );
+        return { success: false, error: Errors.ROOM_HANDOVER } as HandlerResult;
+      }
+      throw err;
+    }
 
     // REACT
     afterJoin(result, payload, socket, context);

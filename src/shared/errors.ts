@@ -26,6 +26,14 @@ export const Errors = {
    * the HTTP join gate's `user_blocked` error code.
    */
   ROOM_BLOCKED: "room_blocked",
+  /**
+   * Machine-readable — keep-watching 20 / room-pin-owner-mismatch. Raised
+   * when this instance lost the CAS claim for the room and cascade is off,
+   * i.e. the joiner was routed here during an owner hand-over (instance
+   * refresh). Transient by construction: the owner asserts the pin on its
+   * next heartbeat, so the client retries ONCE after a short delay.
+   */
+  ROOM_HANDOVER: "room_handover",
 
   // Seat
   SEAT_TAKEN: "Seat is already taken",

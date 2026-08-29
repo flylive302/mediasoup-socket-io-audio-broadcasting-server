@@ -820,3 +820,31 @@ describe("joinRoomHandler", () => {
     });
   });
 });
+
+// keep-watching 20 / room-pin-owner-mismatch: a joiner routed to a non-owner
+// instance while cascade is off gets a machine-readable, retryable code —
+// never the generic INTERNAL_ERROR (which the client cannot tell apart from a
+// real crash, and which paged Sentry 720×/day before the pin fix).
+describe("joinRoomHandler — owner hand-over (keep-watching 20)", () => {
+  it("answers room_handover when CAS is lost and no edge path exists", async () => {
+    const socket = createMockSocket();
+    const ctx = createMockContext();
+    ctx.roomRegistry = {
+      getOwner: vi.fn().mockResolvedValue("other-instance"),
+      claimOwnership: vi.fn().mockResolvedValue({ won: false, owner: "other-instance" }),
+      registerOrigin: vi.fn().mockResolvedValue(undefined),
+      refreshOwnership: vi.fn().mockResolvedValue(undefined),
+    };
+    ctx.cascadeCoordinator = {
+      isEdgeRoom: vi.fn().mockReturnValue(false),
+      handleCrossRegionJoin: vi.fn().mockResolvedValue({ isEdge: false }),
+      handleSameRegionEdge: vi.fn().mockResolvedValue({ isEdge: false }),
+    };
+    const cb = vi.fn();
+
+    await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: false, error: "room_handover" });
+    expect(ctx.roomManager.getOrCreateRoom).not.toHaveBeenCalled();
+  });
+});
