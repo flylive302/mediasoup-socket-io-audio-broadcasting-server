@@ -8,6 +8,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
 import { reactError } from "@src/shared/react-error.js";
+import { maskProfanity } from "@src/domains/chat/profanity.js";
 
 const handleChatMessage = createHandler(
   "chat:message",
@@ -31,6 +32,19 @@ const handleChatMessage = createHandler(
       return { success: false, error: Errors.RATE_LIMITED };
     }
 
+    // Apple Guideline 1.2: mask objectionable words in free-text chat before
+    // broadcast. Only "text" messages carry user-authored prose — system/gift/
+    // emoji/sticker types are structured payloads, not free text, so they're
+    // left untouched.
+    let content = payload.content;
+    if (config.CHAT_PROFANITY_FILTER_ENABLED && payload.type === "text") {
+      const filtered = maskProfanity(payload.content);
+      content = filtered.text;
+      if (filtered.masked) {
+        logger.debug({ roomId: payload.roomId, userId, masked: true }, "Chat message masked");
+      }
+    }
+
     // Include a lightweight author snapshot. The frontend still prefers its
     // live participants map, but cross-region/rejoin races can leave that map
     // incomplete when chat arrives before room:userJoined/profile sync.
@@ -41,7 +55,7 @@ const handleChatMessage = createHandler(
       userAvatar: socket.data.user.avatar,
       userFrameId: socket.data.user.frame_id,
       userChatBubbleId: socket.data.user.chat_bubble_id,
-      content: payload.content,
+      content,
       type: payload.type,
       timestamp: Date.now(),
     };

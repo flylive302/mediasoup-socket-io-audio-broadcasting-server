@@ -171,6 +171,13 @@ const configSchema = z.object({
   // count. See CONTEXT.md "Active Speaker".
   UI_ACTIVE_SPEAKER_HIGHLIGHT_COUNT: z.coerce.number().default(6),
   RATE_LIMIT_MESSAGES_PER_MINUTE: z.coerce.number().default(60),
+  // Apple Guideline 1.2 "method for filtering objectionable content":
+  // masks profanity/slurs/sexual terms in chat text before broadcast.
+  // Default ON — this IS the intended production behavior, not an opt-in.
+  CHAT_PROFANITY_FILTER_ENABLED: z.coerce.boolean().default(true),
+  // Extra blocked words merged with the built-in list, comma-separated,
+  // read once at module load by src/domains/chat/profanity.ts.
+  CHAT_BLOCKED_WORDS: z.string().default(""),
   // Seat Reactions: ~1 per 1.5s per sender (ADR 0015 / seat-reactions slice 01)
   RATE_LIMIT_SEAT_REACTIONS_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_SEAT_REACTIONS_WINDOW_SECONDS: z.coerce.number().default(1.5),
