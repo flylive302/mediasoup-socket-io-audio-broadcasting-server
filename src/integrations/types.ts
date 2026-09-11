@@ -58,6 +58,34 @@ export interface BatchProcessingResult {
     /** 06: true when every id in the group was a replay of an earlier booking. */
     already_booked?: boolean;
   }>;
+  /**
+   * gift-backlog-and-lag 03: true when Laravel's `GIFT_LUCKY_INLINE` flag is
+   * on and the batch commit inlined the lucky result below instead of
+   * relying on the queued `lucky:*` relay via event-router.ts. The backend
+   * env var is the single switch — MSAB carries no flag of its own and
+   * simply reads this field when present.
+   */
+  lucky_inline?: boolean;
+  /** See `lucky_inline` and `LuckyInlineEntry`. */
+  lucky?: LuckyInlineEntry[];
+}
+
+/**
+ * gift-backlog-and-lag 03: one lucky-draw outcome for one gift group in the
+ * batch, carried inline in the HTTP response instead of arriving later via
+ * the queued `lucky:*` Laravel events routed by event-router.ts. `sender` is
+ * the exact payload the client already receives as `lucky:result` (kind
+ * "result") or `lucky:no-draw` (kind "no-draw"); `room` is the exact
+ * `lucky:room-result` payload, or null for a no-draw (nothing to show the
+ * room). See docs/issues/gift-backlog-and-lag/03-lucky-result-inline-in-batch-response.md.
+ */
+export interface LuckyInlineEntry {
+  transaction_ids: string[];
+  sender_id: number;
+  room_id: number;
+  kind: "result" | "no-draw";
+  sender: Record<string, unknown>;
+  room: Record<string, unknown> | null;
 }
 
 /**

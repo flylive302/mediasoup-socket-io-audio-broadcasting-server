@@ -234,7 +234,9 @@ describe("GiftHandler", () => {
     // state across each other.
     config.GIFT_ALLOW_SELF_SEND = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any);
+    const mockUserSocketRepo = { getSocketIds: vi.fn().mockResolvedValue([]) } as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    handler = new GiftHandler(mockRedis, mockIo, mockLaravel as any, mockUserSocketRepo);
   });
 
   // ─── gift:send ────────────────────────────────────────────────────

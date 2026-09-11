@@ -42,9 +42,8 @@ import {
   claimFanoutEmit,
   releaseClaim,
 } from "@src/infrastructure/event-dedup.js";
-import { giftRoomTickMs } from "@src/domains/gift/flags.js";
 import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush } from "@src/domains/gift/balanceSync.js";
-import { enqueueLucky } from "@src/domains/gift/roomTicker.js";
+import { deliverLuckyRoomResult } from "@src/domains/gift/luckyDelivery.js";
 import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
 /** Payload for auth.force_disconnect relay event */
@@ -179,19 +178,12 @@ export class EventRouter {
           break;
 
         case "room":
-          if (
-            shouldEmit &&
-            event.event === RELAY_EVENTS.lucky.LUCKY_ROOM_RESULT &&
-            giftRoomTickMs() > 0
-          ) {
-            // gift-authority-tick-fanout 14: the fan-out-claim winner folds
-            // the room-wide lucky win into the room's next gift:batch tick
-            // instead of emitting it directly — never coalesced/dropped,
-            // just carried on the same cadence as gifts. Sender-only
-            // `lucky:result` (routed as "user"/"user_in_room" above) is
-            // untouched by this flag.
-            enqueueLucky(target.roomId, event.payload);
-            const localCount = this.io.sockets.adapter.rooms.get(target.roomId)?.size ?? 0;
+          if (shouldEmit && event.event === RELAY_EVENTS.lucky.LUCKY_ROOM_RESULT) {
+            // gift-authority-tick-fanout 14 / gift-backlog-and-lag 03: shared
+            // with the inline batch-response path in giftBuffer.ts — see
+            // deliverLuckyRoomResult's doc comment. Sender-only `lucky:result`
+            // (routed as "user"/"user_in_room" above) is untouched by this.
+            const localCount = deliverLuckyRoomResult(this.io, target.roomId, event.payload);
             result = { delivered: true, targetCount: localCount };
           } else {
             result = shouldEmit

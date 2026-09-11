@@ -104,7 +104,11 @@ export async function initializeSocket(
   // gift-authority-tick-fanout 11: ledger wiring (durable Redis — the one
   // holding gifts:pending). Inert while GIFT_BALANCE_AUTHORITY=off.
   initBalanceSync(redis, laravelClient, logger);
-  const giftHandler = new GiftHandler(redis, io, laravelClient);
+  // gift-backlog-and-lag 03: constructed early (moved ahead of its former
+  // spot below, near the events-system block) so GiftBuffer can resolve a
+  // lucky entry's sender_id → socket ids for the inline delivery path.
+  const userSocketRepository = new UserSocketRepository(redisCache, logger);
+  const giftHandler = new GiftHandler(redis, io, laravelClient, userSocketRepository);
   const rateLimiter = new RateLimiter(redisCache);
 
   // realtime-01: presence is the authoritative source of "who is in a Room".
@@ -152,8 +156,8 @@ export async function initializeSocket(
   );
   autoCloseJob.start();
 
-  // Initialize events system (Laravel pub/sub)
-  const userSocketRepository = new UserSocketRepository(redisCache, logger);
+  // Initialize events system (Laravel pub/sub). userSocketRepository was
+  // constructed earlier, above GiftHandler — see gift-backlog-and-lag 03.
   const userRoomRepository = new UserRoomRepository(redisCache, logger);
   const eventRouter = new EventRouter(
     io,

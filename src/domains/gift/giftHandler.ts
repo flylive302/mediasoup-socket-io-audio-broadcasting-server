@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Socket, Server } from "socket.io";
 import type { Redis } from "ioredis";
 import { GiftBuffer } from "./giftBuffer.js";
+import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 import { LaravelClient } from "@src/integrations/laravelClient.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { sendGiftSchema, prepareGiftSchema } from "@src/socket/schemas.js";
@@ -29,8 +30,8 @@ interface BurstFields {
 export class GiftHandler {
   private readonly buffer: GiftBuffer;
 
-  constructor(redis: Redis, io: Server, laravelClient: LaravelClient) {
-    this.buffer = new GiftBuffer(redis, laravelClient, io, logger);
+  constructor(redis: Redis, io: Server, laravelClient: LaravelClient, userSocketRepo: UserSocketRepository) {
+    this.buffer = new GiftBuffer(redis, laravelClient, io, logger, userSocketRepo);
     this.buffer.start();
   }
 

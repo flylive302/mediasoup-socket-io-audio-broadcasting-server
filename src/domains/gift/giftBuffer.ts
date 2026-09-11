@@ -5,6 +5,7 @@ import type { LaravelClient } from "@src/integrations/laravelClient.js";
 import type {
   BatchProcessingResult,
   GiftTransaction,
+  LuckyInlineEntry,
 } from "@src/integrations/types.js";
 import { GIFT_BATCH_RETRY_CODE } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
@@ -12,6 +13,8 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import { giftFlushPartitions, giftPendingTtlMs } from "./flags.js";
 import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush, type ReconcileSource } from "./balanceSync.js";
+import { deliverLuckyRoomResult } from "./luckyDelivery.js";
+import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 
 /**
  * Max transactions per flush — prevents large accumulated batches from
@@ -121,6 +124,11 @@ export class GiftBuffer {
     private readonly laravelClient: LaravelClient,
     private readonly io: SocketServer,
     private readonly logger: Logger,
+    /**
+     * gift-backlog-and-lag 03: resolves a lucky entry's `sender_id` to its
+     * live socket ids for the inline delivery path (`result.lucky[]`).
+     */
+    private readonly userSocketRepo: UserSocketRepository,
   ) {}
 
   /**
@@ -535,6 +543,7 @@ export class GiftBuffer {
       // the ledger (booked or failed — both are terminal) with the snapshot;
       // in redis mode the balance push waits for that so it is spendable.
       this.settleAndEmit(result, transactions, "batch");
+      this.emitLuckyInline(result);
 
     } catch (error) {
       this.lastBookingOk = false;
@@ -593,6 +602,7 @@ export class GiftBuffer {
             metrics.giftsProcessed.inc({ status: "success" }, 1);
           }
           this.settleAndEmit(result, [gift], "fallback");
+          this.emitLuckyInline(result);
           continue; // Item handled, don't re-queue
         } catch {
           // Individual item also failed — fall through to retry/dead-letter logic
@@ -840,6 +850,54 @@ export class GiftBuffer {
     } catch (error) {
       this.logger.warn({ error }, "Failed to reconcile sender ledgers from batch response");
     }
+  }
+
+  /**
+   * REACT (fire-and-forget) — gift-backlog-and-lag 03: `GIFT_LUCKY_INLINE`.
+   * When Laravel inlined the lucky draw outcome in the batch response, emit
+   * it straight to the sender's sockets (and, for a win, fold the room-wide
+   * announcement into the room ticker / direct emit via the shared
+   * `deliverLuckyRoomResult` helper) instead of waiting on the queued
+   * `lucky:*` relay via event-router.ts. No MSAB env flag — the backend's
+   * `GIFT_LUCKY_INLINE` is the single switch; this is a pure no-op when the
+   * field is absent, so an unflagged backend leaves this byte-for-byte
+   * unchanged. Never allowed to fail the batch.
+   */
+  private emitLuckyInline(result: BatchProcessingResult): void {
+    if (!result.lucky_inline || !result.lucky?.length) return;
+
+    for (const entry of result.lucky) {
+      try {
+        this.emitLuckyInlineEntry(entry);
+      } catch (error) {
+        this.logger.warn(
+          { error, senderId: entry.sender_id, roomId: entry.room_id, kind: entry.kind },
+          "Failed to deliver inline lucky result — dropped (queued relay stays off once GIFT_LUCKY_INLINE is on)",
+        );
+      }
+    }
+  }
+
+  private emitLuckyInlineEntry(entry: LuckyInlineEntry): void {
+    void this.userSocketRepo.getSocketIds(entry.sender_id).then((socketIds) => {
+      if (socketIds.length === 0) return;
+      let target = this.io.to(socketIds[0]!);
+      for (let i = 1; i < socketIds.length; i++) {
+        target = target.to(socketIds[i]!);
+      }
+      target.emit(entry.kind === "result" ? "lucky:result" : "lucky:no-draw", entry.sender);
+    }).catch((error) => {
+      this.logger.warn(
+        { error, senderId: entry.sender_id, kind: entry.kind },
+        "Failed to resolve sender sockets for inline lucky result",
+      );
+    });
+
+    if (entry.room !== null) {
+      deliverLuckyRoomResult(this.io, String(entry.room_id), entry.room);
+    }
+
+    metrics.giftLuckyInlineTotal.inc({ kind: entry.kind });
   }
 
   private emitSenderBalances(

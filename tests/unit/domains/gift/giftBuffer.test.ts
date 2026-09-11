@@ -34,9 +34,20 @@ vi.mock("@src/domains/gift/balanceSync.js", () => ({
     l ? { ...payload, coins: String(l.spendable), seq: l.seq } : payload,
 }));
 
+// gift-backlog-and-lag 03: the inline-lucky path's room leg goes through the
+// same deliverLuckyRoomResult() helper event-router.ts uses, which reads the
+// room ticker flag. Mutable so tests can flip it (mirrors giftRoomTickMs's
+// mock in event-router.test.ts).
+let mockRoomTickMs = 0;
+const mockEnqueueLucky = vi.fn();
+vi.mock("@src/domains/gift/roomTicker.js", () => ({
+  enqueueLucky: (...args: unknown[]) => mockEnqueueLucky(...args),
+}));
+
 vi.mock("@src/domains/gift/flags.js", () => ({
   giftPendingTtlMs: () => PENDING_TTL_MS,
   giftFlushPartitions: () => flushPartitions,
+  giftRoomTickMs: () => mockRoomTickMs,
 }));
 
 vi.mock("@src/infrastructure/metrics.js", () => ({
@@ -54,6 +65,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftDeadLetterExpired: { inc: vi.fn() },
     giftDeadLetterHighWater: { inc: vi.fn() },
     giftDeadLetterTrimmed: { inc: vi.fn() },
+    giftLuckyInlineTotal: { inc: vi.fn() },
   },
 }));
 
@@ -113,14 +125,31 @@ function createMockLaravelClient() {
 
 function createMockIo() {
   const emitFn = vi.fn();
+  // gift-backlog-and-lag 03: the inline-lucky path chains `.to(id).to(id2)…`
+  // for multi-socket senders (same pattern as event-router's emitToUser), so
+  // the returned target must itself expose `.to`/`.emit`.
+  const target: { to: ReturnType<typeof vi.fn>; emit: typeof emitFn } = {
+    to: vi.fn(),
+    emit: emitFn,
+  };
+  target.to.mockReturnValue(target);
   return {
-    to: vi.fn().mockReturnValue({ emit: emitFn }),
+    to: vi.fn().mockReturnValue(target),
+    sockets: { adapter: { rooms: new Map<string, { size: number }>() } },
     _emit: emitFn,
+    _toTarget: target,
   };
 }
 
 function createMockLogger() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+}
+
+/** gift-backlog-and-lag 03: resolves a lucky entry's sender_id → socket ids. */
+function createMockUserSocketRepo(socketIdsBySender: Record<number, string[]> = {}) {
+  return {
+    getSocketIds: vi.fn(async (userId: number) => socketIdsBySender[userId] ?? []),
+  };
 }
 
 function makeGiftJSON(overrides: Record<string, unknown> = {}) {
@@ -146,14 +175,18 @@ describe("GiftBuffer", () => {
   let mockLaravel: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mockIo: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockUserSocketRepo: any;
   let buffer: GiftBuffer;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    mockRoomTickMs = 0;
     mockRedis = createMockRedis();
     mockLaravel = createMockLaravelClient();
     mockIo = createMockIo();
+    mockUserSocketRepo = createMockUserSocketRepo({ 1: ["sock-1"] });
     const mockLogger = createMockLogger();
     // Create buffer WITHOUT calling start() so flush tests run manually
     buffer = new GiftBuffer(
@@ -161,6 +194,7 @@ describe("GiftBuffer", () => {
       mockLaravel,
       mockIo,
       mockLogger,
+      mockUserSocketRepo,
     );
   });
 
@@ -407,6 +441,105 @@ describe("GiftBuffer", () => {
       "balance.updated",
       expect.anything(),
     );
+  });
+
+  // ─── gift-backlog-and-lag 03: inline lucky result ──────────────────
+
+  describe("inline lucky result (GIFT_LUCKY_INLINE)", () => {
+    function luckyResult(overrides: Record<string, unknown> = {}) {
+      return {
+        failed: [],
+        lucky_inline: true,
+        lucky: [
+          {
+            transaction_ids: ["tx-1"],
+            sender_id: 1,
+            room_id: 42,
+            kind: "result" as const,
+            sender: { multiplier: 2, coins_won: 100 },
+            room: { sender_id: 1, gift_id: 100, coins_won: 100 },
+            ...overrides,
+          },
+        ],
+      };
+    }
+
+    it("emits lucky:result to every sender socket and the room via a direct emit (ticker off)", async () => {
+      mockUserSocketRepo = createMockUserSocketRepo({ 1: ["sock-1", "sock-2"] });
+      buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, mockIo, createMockLogger(), mockUserSocketRepo);
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(luckyResult());
+
+      await buffer.stop();
+
+      expect(mockUserSocketRepo.getSocketIds).toHaveBeenCalledWith(1);
+      expect(mockIo.to).toHaveBeenCalledWith("sock-1");
+      expect(mockIo._toTarget.to).toHaveBeenCalledWith("sock-2");
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:result", { multiplier: 2, coins_won: 100 });
+      // Ticker off (mockRoomTickMs = 0 by default): room leg is a direct emit.
+      expect(mockIo.to).toHaveBeenCalledWith("42");
+      expect(mockIo._emit).toHaveBeenCalledWith(
+        "lucky:room-result",
+        { sender_id: 1, gift_id: 100, coins_won: 100 },
+      );
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyInlineTotal.inc).toHaveBeenCalledWith({ kind: "result" });
+    });
+
+    it("emits lucky:no-draw to sender sockets and skips the room leg (room: null)", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(
+        luckyResult({ kind: "no-draw", sender: { reason: "cooldown" }, room: null }),
+      );
+
+      await buffer.stop();
+
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:no-draw", { reason: "cooldown" });
+      expect(mockIo.to).not.toHaveBeenCalledWith("42");
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyInlineTotal.inc).toHaveBeenCalledWith({ kind: "no-draw" });
+    });
+
+    it("folds the room leg into the room ticker instead of a direct emit when GIFT_ROOM_TICK_MS > 0", async () => {
+      mockRoomTickMs = 100;
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(luckyResult());
+
+      await buffer.stop();
+
+      expect(mockEnqueueLucky).toHaveBeenCalledWith("42", { sender_id: 1, gift_id: 100, coins_won: 100 });
+      expect(mockIo.to).not.toHaveBeenCalledWith("42");
+    });
+
+    it("field absent → no lucky emit at all (older/unflagged Laravel)", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue({ failed: [] });
+
+      await buffer.stop();
+
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:result", expect.anything());
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:no-draw", expect.anything());
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyInlineTotal.inc).not.toHaveBeenCalled();
+    });
+
+    it("lucky_inline true but lucky[] empty → no emit", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue({ failed: [], lucky_inline: true, lucky: [] });
+
+      await buffer.stop();
+
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:result", expect.anything());
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+    });
+
+    it("never fails the batch when the inline delivery throws", async () => {
+      mockUserSocketRepo.getSocketIds.mockRejectedValueOnce(new Error("redis down"));
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(luckyResult());
+
+      await expect(buffer.stop()).resolves.toBeUndefined();
+    });
   });
 
   // ─── gift-authority-tick-fanout 11: ledger reconcile per sender ──
@@ -769,7 +902,7 @@ describe("GiftBuffer — ticket 04 claim / reclaim / dead-letter consumer", () =
     mockLaravel = createMockLaravelClient();
     mockIo = createMockIo();
     mockLogger = createMockLogger();
-    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, mockIo, mockLogger);
+    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, mockIo, mockLogger, createMockUserSocketRepo());
   });
 
   it("claims into the per-instance in-flight list (2-key script) instead of popping", async () => {
@@ -994,7 +1127,7 @@ describe("GiftBuffer — ticket 05 partitions", () => {
     mockRedis = createMockRedis();
     mockLaravel = createMockLaravelClient();
     mockLogger = createMockLogger();
-    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, createMockIo(), mockLogger);
+    buffer = new GiftBuffer(mockRedis as Redis, mockLaravel, createMockIo(), mockLogger, createMockUserSocketRepo());
   });
 
   it("partitions=1 (default) uses exactly today's keys — gifts:pending and the unsuffixed in-flight list", async () => {
@@ -1094,6 +1227,7 @@ describe("GiftBuffer.pendingCount — Redis degradation", () => {
       createMockLaravelClient(),
       createMockIo(),
       mockLogger,
+      createMockUserSocketRepo(),
     );
   });
 

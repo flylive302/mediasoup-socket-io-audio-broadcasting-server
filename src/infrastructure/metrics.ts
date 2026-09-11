@@ -79,6 +79,15 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-backlog-and-lag 03: lucky result delivered inline from the batch
+  // response (GIFT_LUCKY_INLINE), by outcome kind.
+  giftLuckyInlineTotal: new Counter({
+    name: "flylive_gift_lucky_inline_total",
+    help: "Lucky draw results delivered inline from the gift batch response",
+    labelNames: ["kind"] as const, // result, no-draw
+    registers: [metricsRegistry],
+  }),
+
   giftBatchSize: new Histogram({
     name: "flylive_gift_batch_size",
     help: "Size of gift batches sent to Laravel",
