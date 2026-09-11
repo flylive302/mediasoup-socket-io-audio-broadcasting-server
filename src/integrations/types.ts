@@ -20,6 +20,14 @@ export interface GiftTransaction {
 }
 
 /**
+ * gift-batch-503 04: Laravel ran out of its per-request time budget before
+ * this tap's group was opened. Nothing was booked for it. NOT terminal — the
+ * buffer re-queues the tap whole (no gift:error, no ledger settle). Mirrors
+ * `GiftBatchProcessor::CODE_RETRY`.
+ */
+export const GIFT_BATCH_RETRY_CODE = 5030;
+
+/**
  * Response from Laravel batch gift processing endpoint
  * Per MSAB_PROTOCOL_REFERENCE.md Section 2
  */

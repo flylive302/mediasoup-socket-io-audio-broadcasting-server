@@ -16,6 +16,7 @@ vi.mock("@src/config/index.js", () => ({
   config: {
     GIFT_BUFFER_FLUSH_INTERVAL_MS: 5000,
     GIFT_MAX_RETRIES: 5,
+    GIFT_FALLBACK_BUDGET_MS: 5_000,
     INSTANCE_ID: "i-test",
   },
 }));
@@ -545,6 +546,80 @@ describe("GiftBuffer", () => {
       expect.stringContaining('"retryCount":1'),
     );
     expect(pipeline.exec).toHaveBeenCalled();
+  });
+
+  // ─── gift-batch-503 04: RETRY rows + bounded fallback ─────────────
+
+  describe("RETRY rows and the bounded per-item fallback (gift-batch-503 04)", () => {
+    it("re-queues a RETRY (5030) tap whole: retryCount+1, claim released, no gift:error, not settled", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 2 }),
+      ];
+      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-2", code: 5030, reason: "Batch time budget exhausted; retry" }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+      });
+
+      await buffer.stop();
+
+      const pipeline = mockRedis._pipeline;
+      expect(pipeline.rpush).toHaveBeenCalledWith(
+        "gifts:pending",
+        expect.stringMatching(/"transaction_id":"tx-2".*"retryCount":1/),
+      );
+      expect(pipeline.rpush).not.toHaveBeenCalledWith("gifts:dead_letter", expect.anything());
+      expect(pipeline.lrem).toHaveBeenCalledWith("gifts:inflight:i-test", 1, mockRedis._claimItems[1]);
+      // Not terminal: no gift:error for the sender, and its reservation stays.
+      expect(mockIo._emit).not.toHaveBeenCalledWith("gift:error", expect.anything());
+      expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, balance, ["tx-1"], "batch");
+      // The booked tap is still counted as a success, the retried one separately.
+      expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({ status: "retry" }, 1);
+      expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({ status: "success" }, 1);
+      expect(metrics.giftsProcessed.inc).not.toHaveBeenCalledWith({ status: "failed" });
+    });
+
+    it("a RETRY tap at the retry cap is dead-lettered like any other exhausted retry", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", retryCount: 4 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 5030, reason: "retry" }],
+      });
+
+      await buffer.stop();
+
+      expect(mockRedis._pipeline.rpush).toHaveBeenCalledWith("gifts:dead_letter", expect.stringContaining('"tx-1"'));
+      expect(mockIo._emit).toHaveBeenCalledWith("gift:error", expect.objectContaining({ code: "PROCESSING_FAILED" }));
+    });
+
+    it("per-item fallback stops at GIFT_FALLBACK_BUDGET_MS: untried items go back to pending untouched", async () => {
+      const raws = [
+        makeGiftJSON({ transaction_id: "tx-1" }),
+        makeGiftJSON({ transaction_id: "tx-2" }),
+        makeGiftJSON({ transaction_id: "tx-3" }),
+      ];
+      mockRedis._claimItems = raws;
+      mockLaravel.processGiftBatch
+        .mockRejectedValueOnce(new Error("batch timeout"))
+        // First per-item attempt eats the whole budget and also fails.
+        .mockImplementationOnce(async () => {
+          vi.advanceTimersByTime(6_000);
+          throw new Error("item timeout");
+        });
+
+      await buffer.stop();
+
+      // batch + exactly one per-item attempt; tx-2 / tx-3 were never sent.
+      expect(mockLaravel.processGiftBatch).toHaveBeenCalledTimes(2);
+      const pipeline = mockRedis._pipeline;
+      expect(pipeline.rpush).toHaveBeenCalledWith("gifts:pending", expect.stringMatching(/"tx-1".*"retryCount":1/));
+      expect(pipeline.rpush).toHaveBeenCalledWith("gifts:pending", raws[1]);
+      expect(pipeline.rpush).toHaveBeenCalledWith("gifts:pending", raws[2]);
+      expect(pipeline.lrem).toHaveBeenCalledWith("gifts:inflight:i-test", 1, raws[1]);
+      expect(pipeline.lrem).toHaveBeenCalledWith("gifts:inflight:i-test", 1, raws[2]);
+      expect(mockIo._emit).not.toHaveBeenCalledWith("gift:error", expect.anything());
+    });
   });
 
   // ─── flush: max retries → dead-letter ─────────────────────────────

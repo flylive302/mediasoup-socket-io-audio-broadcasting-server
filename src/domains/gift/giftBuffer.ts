@@ -6,6 +6,7 @@ import type {
   BatchProcessingResult,
   GiftTransaction,
 } from "@src/integrations/types.js";
+import { GIFT_BATCH_RETRY_CODE } from "@src/integrations/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
@@ -403,7 +404,7 @@ export class GiftBuffer {
 
     // GF-003 FIX: Per-item JSON parsing with error handling
     // Corrupted entries go to dead-letter instead of poisoning the entire batch
-    const transactions: BufferedGift[] = [];
+    let transactions: BufferedGift[] = [];
     const rawByTransaction = new Map<string, string>();
     for (const item of items) {
       try {
@@ -461,7 +462,7 @@ export class GiftBuffer {
     let batchConfirmed = false;
 
     try {
-      const result = await this.laravelClient.processGiftBatch(transactions);
+      let result = await this.laravelClient.processGiftBatch(transactions);
       this.lastBookingOk = true;
 
       metrics.giftBatchPostSeconds.observe(
@@ -474,6 +475,33 @@ export class GiftBuffer {
       // Redis error in the release reaches the outer handler, not the
       // per-item Laravel fallback.
       batchConfirmed = true;
+
+      // gift-batch-503 04: a RETRY row means Laravel stopped before opening
+      // that tap's group (time budget). Not terminal — re-queue the tap whole
+      // and keep it out of the terminal handling below (no gift:error, no
+      // ledger settle). Its claim is dropped in the same pipeline.
+      const retryIds = new Set(
+        result.failed.filter((f) => f.code === GIFT_BATCH_RETRY_CODE).map((f) => f.transaction_id),
+      );
+      if (retryIds.size > 0) {
+        const pipeline = this.redis.pipeline();
+        let hasDeadLetterEntries = false;
+        for (const gift of transactions) {
+          if (!retryIds.has(gift.transaction_id)) continue;
+          const raw = rawByTransaction.get(gift.transaction_id);
+          if (raw !== undefined) pipeline.lrem(part.inflightKey, 1, raw);
+          if (this.requeueOrDeadLetter(gift, part, pipeline)) hasDeadLetterEntries = true;
+        }
+        await pipeline.exec();
+        metrics.giftsProcessed.inc({ status: "retry" }, retryIds.size);
+        this.logger.warn(
+          { retried: retryIds.size, batchSize: transactions.length, partition },
+          "Gift batch returned RETRY rows (backend time budget) — re-queued whole",
+        );
+        if (hasDeadLetterEntries) await this.sampleDeadLetterSize();
+        transactions = transactions.filter((t) => !retryIds.has(t.transaction_id));
+        result = { ...result, failed: result.failed.filter((f) => !retryIds.has(f.transaction_id)) };
+      }
 
       // Handle failures - notify senders via Socket.IO. batchId lets the FE
       // key its per-burst refund (Laravel's failure rows don't carry it, so
@@ -525,6 +553,8 @@ export class GiftBuffer {
       // This prevents one slow/failed transaction from dooming the entire batch.
       const pipeline = this.redis.pipeline();
       let hasDeadLetterEntries = false;
+      const fallbackDeadline = Date.now() + config.GIFT_FALLBACK_BUDGET_MS;
+      let deferred = 0;
 
       for (const gift of transactions) {
         // ticket 04: every branch below either books, dead-letters or
@@ -532,6 +562,15 @@ export class GiftBuffer {
         // pipeline so the in-flight list never carries a settled item.
         const raw = rawByTransaction.get(gift.transaction_id);
         if (raw !== undefined) pipeline.lrem(part.inflightKey, 1, raw);
+
+        // gift-batch-503 04: bounded fallback. Past the budget, the rest go
+        // back to pending untouched (same retryCount — they were never
+        // tried) so this partition's next tick runs on time.
+        if (Date.now() >= fallbackDeadline) {
+          if (raw !== undefined) pipeline.rpush(part.queueKey, raw);
+          deferred++;
+          continue;
+        }
 
         // Try sending as individual 1-item batch
         try {
@@ -559,36 +598,17 @@ export class GiftBuffer {
           // Individual item also failed — fall through to retry/dead-letter logic
         }
 
-        const retryCount = (gift.retryCount ?? 0) + 1;
-
-        if (retryCount >= config.GIFT_MAX_RETRIES) {
-          // Move to dead letter queue after max retries
-          this.logger.warn(
-            { transactionId: gift.transaction_id, retryCount },
-            "Gift exceeded max retries, moving to dead letter queue",
-          );
-          pipeline.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
-          hasDeadLetterEntries = true;
-          metrics.giftsProcessed.inc({ status: "dead_letter" });
-
-          // Notify sender of permanent failure
-          if (gift.sender_socket_id) {
-            this.io.to(gift.sender_socket_id).emit("gift:error", {
-              transactionId: gift.transaction_id,
-              code: "PROCESSING_FAILED",
-              reason: "Gift processing failed after multiple attempts",
-              batchId: gift.batch_id,
-            });
-          }
-          continue;
-        }
-
-        // Re-queue with incremented retry count (same partition)
-        gift.retryCount = retryCount;
-        pipeline.rpush(part.queueKey, JSON.stringify(gift));
+        if (this.requeueOrDeadLetter(gift, part, pipeline)) hasDeadLetterEntries = true;
       }
 
       await pipeline.exec();
+
+      if (deferred > 0) {
+        this.logger.warn(
+          { deferred, batchSize: transactions.length, budgetMs: config.GIFT_FALLBACK_BUDGET_MS, partition },
+          "Gift per-item fallback hit its time budget — remaining items returned to pending",
+        );
+      }
 
       // ticket 04: the destructive trim is no longer unconditional — see
       // sampleDeadLetterSize (alert at 80 %, trim only above the cap, logged).
@@ -620,6 +640,39 @@ export class GiftBuffer {
     } finally {
       part.isFlushing = false;
     }
+  }
+
+  /**
+   * Bump the retry count and re-queue on the same partition, or dead-letter
+   * once GIFT_MAX_RETRIES is reached (sender told, metric bumped). Queues the
+   * Redis writes on `pipeline`; the caller execs it. Returns true when the
+   * gift was dead-lettered.
+   */
+  private requeueOrDeadLetter(gift: BufferedGift, part: Partition, pipeline: ReturnType<Redis["pipeline"]>): boolean {
+    const retryCount = (gift.retryCount ?? 0) + 1;
+
+    if (retryCount >= config.GIFT_MAX_RETRIES) {
+      this.logger.warn(
+        { transactionId: gift.transaction_id, retryCount },
+        "Gift exceeded max retries, moving to dead letter queue",
+      );
+      pipeline.rpush(this.DEAD_LETTER_KEY, JSON.stringify(gift));
+      metrics.giftsProcessed.inc({ status: "dead_letter" });
+
+      if (gift.sender_socket_id) {
+        this.io.to(gift.sender_socket_id).emit("gift:error", {
+          transactionId: gift.transaction_id,
+          code: "PROCESSING_FAILED",
+          reason: "Gift processing failed after multiple attempts",
+          batchId: gift.batch_id,
+        });
+      }
+      return true;
+    }
+
+    gift.retryCount = retryCount;
+    pipeline.rpush(part.queueKey, JSON.stringify(gift));
+    return false;
   }
 
   /** ticket 04: LREM each confirmed raw entry from the in-flight list. */

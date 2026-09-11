@@ -302,6 +302,11 @@ const configSchema = z.object({
   // Gift Buffer
   GIFT_BUFFER_FLUSH_INTERVAL_MS: z.coerce.number().default(500),
   GIFT_MAX_RETRIES: z.coerce.number().default(5),
+  // gift-batch-503 04: wall-clock budget for the per-item fallback after a
+  // failed batch POST. Each item awaits Laravel in series (30 s timeout each);
+  // unbounded, one bad batch held its partition for 50 × 30 s. Items not
+  // reached inside the budget go back to pending untouched.
+  GIFT_FALLBACK_BUDGET_MS: z.coerce.number().int().positive().default(5_000),
   GIFT_RATE_LIMIT: z.coerce.number().default(600),
   GIFT_RATE_WINDOW: z.coerce.number().default(60),
 
