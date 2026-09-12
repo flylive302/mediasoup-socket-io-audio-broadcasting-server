@@ -412,6 +412,21 @@ export class SeatRepository {
   }
 
   /**
+   * Number of occupied Seats (reserved-on-disconnect Seats count as occupied —
+   * they still hold the slot). O(1) HLEN; the seats hash only stores taken
+   * indices. Returns 0 on Redis error (callers gate conservatively).
+   */
+  async countOccupiedSeats(roomId: string): Promise<number> {
+    try {
+      return await this.redis.hlen(SEATS_KEY(roomId));
+    } catch (err) {
+      recordRedisDegradation("seat", "read");
+      logger.error({ err, roomId }, "Failed to count occupied seats");
+      return 0;
+    }
+  }
+
+  /**
    * Get seat by user ID
    * SEAT-005: O(1) via reverse index instead of O(n) HGETALL scan
    */

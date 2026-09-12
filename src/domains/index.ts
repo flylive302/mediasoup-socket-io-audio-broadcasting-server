@@ -19,6 +19,7 @@ import { userHandler } from "./user/user.handler.js";
 import { audioPlayerHandler } from "./audio-player/index.js";
 import { inboxTypingHandler } from "./inbox-typing/index.js";
 import { presenceHandler } from "./presence/index.js";
+import { luckyNumberHandler } from "./lucky-number/index.js";
 
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { registerLifecycle } from "@src/shared/lifecycle.js";
@@ -36,6 +37,7 @@ export const domains: DomainRegistration[] = [
   audioPlayerHandler,
   inboxTypingHandler,
   presenceHandler,
+  luckyNumberHandler,
 ] as const;
 
 /**

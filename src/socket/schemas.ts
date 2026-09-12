@@ -294,6 +294,11 @@ export const seatReactionSchema = z.object({
   code: z.string().regex(/^[0-9a-f]{4,8}(-[0-9a-f]{4,8})*$/, "Invalid reaction code"),
 });
 
+// Lucky Number — owner/admin starts a round (lucky-number/01)
+export const luckyNumberStartSchema = z.object({
+  roomId: roomIdSchema,
+});
+
 // ─────────────────────────────────────────────────────────────────
 // User Schemas
 // ─────────────────────────────────────────────────────────────────

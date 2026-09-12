@@ -785,6 +785,8 @@ export const joinRoomHandler = createHandler(
       existingProducers: result.existingProducers,
       musicPlayer: result.musicPlayer,
       activeAppSlides: result.activeAppSlides,
+      // lucky-number/01: FE hides the start button when the game is off.
+      luckyNumberEnabled: config.LUCKY_NUMBER_ENABLED,
     } as HandlerResult;
   },
 );

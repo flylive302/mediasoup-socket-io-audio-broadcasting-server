@@ -181,6 +181,12 @@ const configSchema = z.object({
   // Seat Reactions: ~1 per 1.5s per sender (ADR 0015 / seat-reactions slice 01)
   RATE_LIMIT_SEAT_REACTIONS_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_SEAT_REACTIONS_WINDOW_SECONDS: z.coerce.number().default(1.5),
+  // Lucky Number mini-game (lucky-number/01). Ships INERT: the flag defaults
+  // off, so the start handler refuses until an operator flips it per env.
+  LUCKY_NUMBER_ENABLED: booleanEnvSchema,
+  LUCKY_NUMBER_ROUND_MS: z.coerce.number().int().positive().default(10_000),
+  LUCKY_NUMBER_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(15_000),
+  LUCKY_NUMBER_MIN_SEATS: z.coerce.number().int().positive().default(2),
   // DM Typing indicator: ~1 per 2s per (sender, thread) — dm-realtime-platform/04
   RATE_LIMIT_TYPING_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_TYPING_WINDOW_SECONDS: z.coerce.number().default(2),

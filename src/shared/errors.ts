@@ -35,6 +35,13 @@ export const Errors = {
    */
   ROOM_HANDOVER: "room_handover",
 
+  // Lucky Number (lucky-number/01) — machine-readable, FE maps to copy
+  LUCKY_NUMBER_DISABLED: "lucky_number_disabled",
+  LUCKY_NUMBER_ROUND_LIVE: "lucky_number_round_live",
+  LUCKY_NUMBER_COOLDOWN: "lucky_number_cooldown",
+  LUCKY_NUMBER_NOT_ENOUGH_SEATS: "lucky_number_not_enough_seats",
+  LUCKY_NUMBER_STATE_UNAVAILABLE: "lucky_number_state_unavailable",
+
   // Seat
   SEAT_TAKEN: "Seat is already taken",
   SEAT_LOCKED: "Seat is locked",
