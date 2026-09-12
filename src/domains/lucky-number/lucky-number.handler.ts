@@ -6,7 +6,9 @@
  *       live round, cooldown elapsed, ≥ MIN_SEATS occupied.
  * EXECUTE: create round (server draws the number), arm the per-round timer,
  *          broadcast `luckyNumber:started` to the room INCLUDING sender.
- * Timer (EXECUTE, deferred): broadcast `luckyNumber:result`, clear state.
+ * Timer (EXECUTE, deferred): `resolveRound` broadcasts `luckyNumber:result`
+ *   and clears state — see lucky-number.resolve.ts.
+ * Picks (lucky-number/02) live in lucky-number-pick.handler.ts.
  * REACT: none — nothing persisted, nothing buffered.
  */
 import type { Socket } from "socket.io";
@@ -22,9 +24,10 @@ import {
   getLiveRound,
   isCoolingDown,
   startRound,
-  finishRound,
   type LuckyNumberRound,
 } from "./lucky-number.round.js";
+import { resolveRound } from "./lucky-number.resolve.js";
+import { luckyNumberPickHandler } from "./lucky-number-pick.handler.js";
 
 export const luckyNumberStartHandler = createHandler(
   "luckyNumber:start",
@@ -69,9 +72,11 @@ export const luckyNumberStartHandler = createHandler(
     // EXECUTE — create state + timer. Redis refusal = round refused.
     let round: LuckyNumberRound | null;
     try {
-      round = await startRound(context.redis, roomId, (ended) =>
-        endRound(ended, context),
-      );
+      round = await startRound(context.redis, roomId, (ended) => {
+        resolveRound(ended, context).catch((err) =>
+          logger.error({ err, roomId, roundId: ended.roundId }, "Lucky Number: resolve failed"),
+        );
+      });
     } catch (err) {
       logger.error({ err, roomId, userId }, "Lucky Number: failed to persist round");
       return { success: false, error: Errors.LUCKY_NUMBER_STATE_UNAVAILABLE };
@@ -98,41 +103,7 @@ export const luckyNumberStartHandler = createHandler(
   },
 );
 
-/**
- * Timer callback — the one place a round resolves. Winners are the seated
- * users whose pick equals `drawn` (nobody can pick yet in ticket 01, so this
- * is always empty until ticket 02 lands the pick handler).
- */
-function endRound(round: LuckyNumberRound, context: AppContext): void {
-  const winners = Object.entries(round.picks)
-    .filter(([, pick]) => pick === round.drawn)
-    .map(([userId]) => userId);
-
-  broadcastToRoom(
-    context.io,
-    round.roomId,
-    "luckyNumber:result",
-    {
-      roundId: round.roundId,
-      drawn: round.drawn,
-      picks: round.picks,
-      winners,
-      // Server-authoritative cooldown so the FE button window matches the gate.
-      cooldownMs: config.LUCKY_NUMBER_COOLDOWN_MS,
-    },
-    context.cascadeRelay,
-  );
-
-  finishRound(context.redis, round.roomId).catch((err) =>
-    logger.warn({ err, roomId: round.roomId }, "Lucky Number: cleanup failed"),
-  );
-
-  logger.info(
-    { roomId: round.roomId, roundId: round.roundId, drawn: round.drawn, winners },
-    "Lucky Number round resolved",
-  );
-}
-
 export const luckyNumberHandler = (socket: Socket, context: AppContext) => {
   socket.on("luckyNumber:start", luckyNumberStartHandler(socket, context));
+  socket.on("luckyNumber:pick", luckyNumberPickHandler(socket, context));
 };

@@ -41,6 +41,10 @@ export const Errors = {
   LUCKY_NUMBER_COOLDOWN: "lucky_number_cooldown",
   LUCKY_NUMBER_NOT_ENOUGH_SEATS: "lucky_number_not_enough_seats",
   LUCKY_NUMBER_STATE_UNAVAILABLE: "lucky_number_state_unavailable",
+  /** No live round, or `roundId` names a round that is not the live one (lucky-number/02). */
+  LUCKY_NUMBER_NO_ROUND: "lucky_number_no_round",
+  /** The round's `endsAt` has passed; the result is being resolved (lucky-number/02). */
+  LUCKY_NUMBER_ROUND_OVER: "lucky_number_round_over",
 
   // Seat
   SEAT_TAKEN: "Seat is already taken",

@@ -187,6 +187,9 @@ const configSchema = z.object({
   LUCKY_NUMBER_ROUND_MS: z.coerce.number().int().positive().default(10_000),
   LUCKY_NUMBER_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(15_000),
   LUCKY_NUMBER_MIN_SEATS: z.coerce.number().int().positive().default(2),
+  // lucky-number/02: picks ~1 per 300 ms per (sender, room); FE coalesces taps.
+  RATE_LIMIT_LUCKY_NUMBER_PICKS_PER_WINDOW: z.coerce.number().default(1),
+  RATE_LIMIT_LUCKY_NUMBER_PICKS_WINDOW_SECONDS: z.coerce.number().default(0.3),
   // DM Typing indicator: ~1 per 2s per (sender, thread) — dm-realtime-platform/04
   RATE_LIMIT_TYPING_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_TYPING_WINDOW_SECONDS: z.coerce.number().default(2),

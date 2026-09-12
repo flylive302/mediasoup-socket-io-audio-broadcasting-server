@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  LUCKY_NUMBER_MIN,
+  LUCKY_NUMBER_MAX,
+} from "@src/domains/lucky-number/lucky-number.random.js";
 import { config } from "@src/config/index.js";
 
 // Reusable validators
@@ -297,6 +301,13 @@ export const seatReactionSchema = z.object({
 // Lucky Number — owner/admin starts a round (lucky-number/01)
 export const luckyNumberStartSchema = z.object({
   roomId: roomIdSchema,
+});
+
+// Lucky Number — seated user picks 1–9 while a round is live (lucky-number/02)
+export const luckyNumberPickSchema = z.object({
+  roomId: roomIdSchema,
+  roundId: z.string().uuid(),
+  number: z.number().int().min(LUCKY_NUMBER_MIN).max(LUCKY_NUMBER_MAX),
 });
 
 // ─────────────────────────────────────────────────────────────────
