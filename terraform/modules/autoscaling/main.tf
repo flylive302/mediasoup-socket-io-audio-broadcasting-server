@@ -468,6 +468,7 @@ locals {
     image_tag                 = var.image_tag
     jwt_max_age_seconds       = var.jwt_max_age_seconds
     gift_allow_self_send      = var.gift_allow_self_send
+    lucky_number_enabled      = var.lucky_number_enabled
     laravel_api_timeout_ms    = var.laravel_api_timeout_ms
     ice_stun_urls             = var.ice_stun_urls
 

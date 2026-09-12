@@ -313,6 +313,10 @@ LARAVEL_API_TIMEOUT_MS=${laravel_api_timeout_ms}
 # self-gifting 03: flag is read by src/config GIFT_ALLOW_SELF_SEND (boolean).
 GIFT_ALLOW_SELF_SEND=${gift_allow_self_send}
 
+# Lucky Number mini-game
+# lucky-number 01/03: read by src/config LUCKY_NUMBER_ENABLED (boolean).
+LUCKY_NUMBER_ENABLED=${lucky_number_enabled}
+
 # MediaSoup
 MEDIASOUP_LISTEN_IP=0.0.0.0
 MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP

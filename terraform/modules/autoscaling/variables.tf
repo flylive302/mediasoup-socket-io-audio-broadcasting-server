@@ -586,6 +586,12 @@ variable "gift_allow_self_send" {
   default     = false
 }
 
+variable "lucky_number_enabled" {
+  description = "lucky-number 01/03: switches on the in-room Lucky Number mini-game (LUCKY_NUMBER_ENABLED). Default false = inert."
+  type        = bool
+  default     = false
+}
+
 variable "laravel_api_timeout_ms" {
   description = "Timeout for MSAB → Laravel API calls in milliseconds"
   type        = number

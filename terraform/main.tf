@@ -197,6 +197,7 @@ module "region_mumbai" {
   laravel_api_url                       = var.laravel_api_url
   jwt_max_age_seconds                   = var.jwt_max_age_seconds
   gift_allow_self_send                  = var.gift_allow_self_send
+  lucky_number_enabled                  = var.lucky_number_enabled
   laravel_api_timeout_ms                = var.laravel_api_timeout_ms
   ice_stun_urls                         = var.ice_stun_urls
   room_broadcast_threshold_up           = var.room_broadcast_threshold_up
@@ -306,6 +307,7 @@ module "region_frankfurt" {
   laravel_api_url                       = var.laravel_api_url
   jwt_max_age_seconds                   = var.jwt_max_age_seconds
   gift_allow_self_send                  = var.gift_allow_self_send
+  lucky_number_enabled                  = var.lucky_number_enabled
   laravel_api_timeout_ms                = var.laravel_api_timeout_ms
   ice_stun_urls                         = var.ice_stun_urls
   room_broadcast_threshold_up           = var.room_broadcast_threshold_up
@@ -395,6 +397,7 @@ module "region_singapore" {
   laravel_api_url                       = var.laravel_api_url
   jwt_max_age_seconds                   = var.jwt_max_age_seconds
   gift_allow_self_send                  = var.gift_allow_self_send
+  lucky_number_enabled                  = var.lucky_number_enabled
   laravel_api_timeout_ms                = var.laravel_api_timeout_ms
   ice_stun_urls                         = var.ice_stun_urls
   room_broadcast_threshold_up           = var.room_broadcast_threshold_up
