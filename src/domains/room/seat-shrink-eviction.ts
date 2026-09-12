@@ -35,6 +35,7 @@ import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
 import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 
 export interface EvictShrunkSeatsParams {
   roomId: string;
@@ -73,6 +74,9 @@ export async function evictShrunkSeats(params: EvictShrunkSeatsParams): Promise<
     // dj-talk-over/02: a shrink-evicted DJ's music must not keep flowing —
     // release the mutex + broadcast stop if they held it (no-op otherwise).
     await releaseMusicPlayerForUser(redis, io, roomId, userId, cascadeRelay);
+
+    // lucky-number/03: an evicted Seat can never win — drop the pick (REACT).
+    void dropLuckyNumberPick(redis, roomId, String(userId));
 
     // Standard room-wide seat-cleared, tagged so the FE's own-seat toast/teardown
     // (which already fires on any seat:cleared for the current user) yields to

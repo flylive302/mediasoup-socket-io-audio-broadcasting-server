@@ -25,11 +25,41 @@ export function computeWinners(
     .map(([userId]) => userId);
 }
 
+/**
+ * Safety net for lucky-number/03: keep only picks whose user is STILL seated.
+ * The seat-vacate paths already `dropPick`; this covers a dropped Redis write
+ * or a vacate that raced the timer. On a seat-read failure the pick is kept
+ * (never punish a player for our outage).
+ */
+async function keepSeatedPicks(
+  picks: Record<string, number>,
+  roomId: string,
+  context: AppContext,
+): Promise<Record<string, number>> {
+  const kept: Record<string, number> = {};
+  await Promise.all(
+    Object.entries(picks).map(async ([userId, pick]) => {
+      let seated = true;
+      try {
+        seated = (await context.seatRepository.getUserSeat(roomId, userId)) !== null;
+      } catch {
+        seated = true;
+      }
+      if (seated) kept[userId] = pick;
+    }),
+  );
+  return kept;
+}
+
 export async function resolveRound(
   round: LuckyNumberRound,
   context: AppContext,
 ): Promise<void> {
-  const picks = await collectPicks(context.redis, round);
+  const picks = await keepSeatedPicks(
+    await collectPicks(context.redis, round),
+    round.roomId,
+    context,
+  );
   const winners = computeWinners(picks, round.drawn);
 
   broadcastToRoom(

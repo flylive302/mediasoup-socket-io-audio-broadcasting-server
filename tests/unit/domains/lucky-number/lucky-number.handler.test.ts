@@ -218,8 +218,8 @@ describe("luckyNumber:start handler", () => {
     expect(broadcastToRoom).not.toHaveBeenCalled();
     expect(getLiveRound("room-1")).not.toBeNull();
 
-    vi.advanceTimersByTime(1);
-    await vi.runAllTicks();
+    // Async so the resolve chain (collectPicks → seat filter → broadcast) settles.
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(broadcastToRoom).toHaveBeenCalledTimes(1);
     expect(broadcastToRoom).toHaveBeenCalledWith(

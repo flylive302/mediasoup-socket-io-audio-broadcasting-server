@@ -21,6 +21,7 @@ import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js";
 import { Errors } from "@src/shared/errors.js";
 import { ensureWarm } from "@src/domains/gift/balanceSync.js";
+import { readLuckyNumberSnapshot } from "@src/domains/lucky-number/index.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
@@ -581,6 +582,13 @@ async function processJoin(
     .getActive()
     .catch(() => [] as unknown[]);
 
+  // lucky-number/03: live-round snapshot for late joiners / reconnects. Read
+  // from Redis so every instance of a cascaded room agrees. Skipped (no read)
+  // while the game is off; never throws.
+  const luckyNumber = config.LUCKY_NUMBER_ENABLED
+    ? await readLuckyNumberSnapshot(context.redis, roomId)
+    : null;
+
   return {
     rtpCapabilities,
     participants,
@@ -589,6 +597,7 @@ async function processJoin(
     existingProducers,
     musicPlayer,
     activeAppSlides,
+    luckyNumber,
     newCount,
     userId,
     reclaimedSeat: reclaim.reclaimed
@@ -787,6 +796,8 @@ export const joinRoomHandler = createHandler(
       activeAppSlides: result.activeAppSlides,
       // lucky-number/01: FE hides the start button when the game is off.
       luckyNumberEnabled: config.LUCKY_NUMBER_ENABLED,
+      // lucky-number/03: null unless a round is live right now.
+      luckyNumber: result.luckyNumber,
     } as HandlerResult;
   },
 );

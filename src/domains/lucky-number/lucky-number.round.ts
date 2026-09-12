@@ -118,6 +118,68 @@ export async function collectPicks(
   return picks;
 }
 
+/** What a late joiner / reconnecting client needs to render a live round (lucky-number/03). */
+export interface LuckyNumberSnapshot {
+  roundId: string;
+  endsAt: number;
+  /** userIds (string form) that have locked in a pick — numbers stay hidden. */
+  pickedUserIds: string[];
+}
+
+/**
+ * Live-round snapshot for the join ack. Reads Redis (not memory) so every
+ * instance of a cascaded room answers the same. `null` when no round is live,
+ * when the mirror has already expired, or when Redis fails — the joiner then
+ * simply sees no round, which is the safe default.
+ */
+export async function readSnapshot(
+  redis: Redis,
+  roomId: string,
+  now: number = Date.now(),
+): Promise<LuckyNumberSnapshot | null> {
+  const round = await readRoundMirror(redis, roomId);
+  if (!round || now >= round.endsAt) return null;
+  let pickedUserIds: string[] = Object.keys(round.picks);
+  try {
+    pickedUserIds = await redis.hkeys(luckyNumberPicksKey(roomId));
+  } catch {
+    // Fall through with the mirror's copy.
+  }
+  return { roundId: round.roundId, endsAt: round.endsAt, pickedUserIds };
+}
+
+/**
+ * Drop a user's pick because they left their Seat mid-round — a vacated Seat
+ * can never win. Cheap no-op when no round is live on this instance AND no
+ * picks hash exists. Never throws: the caller is a seat-vacate REACT step.
+ */
+export async function dropPick(redis: Redis, roomId: string, userId: string): Promise<void> {
+  const local = liveRounds.get(roomId);
+  if (local) delete local.round.picks[userId];
+  try {
+    await redis.hdel(luckyNumberPicksKey(roomId), userId);
+  } catch {
+    // Redis unreachable — the resolve-time seat filter is the safety net.
+  }
+}
+
+/**
+ * Room closed mid-round: disarm the timer and drop every key WITHOUT a
+ * result broadcast or cooldown (nobody is left to receive either). Never throws.
+ */
+export async function cancelRound(redis: Redis, roomId: string): Promise<void> {
+  const local = liveRounds.get(roomId);
+  if (local) {
+    clearTimeout(local.timer);
+    liveRounds.delete(roomId);
+  }
+  try {
+    await redis.del(luckyNumberRoundKey(roomId), luckyNumberPicksKey(roomId));
+  } catch {
+    // TTL covers the leftover mirror.
+  }
+}
+
 export async function isCoolingDown(redis: Redis, roomId: string): Promise<boolean> {
   return (await redis.exists(luckyNumberCooldownKey(roomId))) === 1;
 }

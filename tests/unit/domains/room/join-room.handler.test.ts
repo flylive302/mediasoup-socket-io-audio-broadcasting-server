@@ -24,16 +24,16 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   },
 }));
 
-vi.mock("@src/config/index.js", () => ({
-  config: {
-    INSTANCE_ID: "self",
-    PUBLIC_IP: "1.2.3.4",
-    PORT: 3030,
-    AWS_REGION: "us-east-1",
-    MEDIASOUP_ANNOUNCED_IP: null,
-    SEAT_RETENTION_GRACE_MS: 120_000,
-  },
+const mockConfig = vi.hoisted(() => ({
+  INSTANCE_ID: "self",
+  PUBLIC_IP: "1.2.3.4",
+  PORT: 3030,
+  AWS_REGION: "us-east-1",
+  MEDIASOUP_ANNOUNCED_IP: null as string | null,
+  SEAT_RETENTION_GRACE_MS: 120_000,
+  LUCKY_NUMBER_ENABLED: false,
 }));
+vi.mock("@src/config/index.js", () => ({ config: mockConfig }));
 
 const emitToRoomMock = vi.fn();
 vi.mock("@src/shared/room-emit.js", () => ({
@@ -145,6 +145,7 @@ describe("joinRoomHandler", () => {
     socket = createMockSocket();
     context = createMockContext();
     vi.clearAllMocks();
+    mockConfig.LUCKY_NUMBER_ENABLED = false;
     handler = joinRoomHandler(socket, context);
   });
 
@@ -170,7 +171,7 @@ describe("joinRoomHandler", () => {
       const ctx = contextWithBlockTtl(3600);
       const cb = vi.fn();
 
-      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+      await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
 
       // Literal "room_blocked" — the frontend matches on this exact string,
       // so asserting Errors.ROOM_BLOCKED would not pin the contract.
@@ -188,7 +189,7 @@ describe("joinRoomHandler", () => {
       const ctx = contextWithBlockTtl(-1);
       const cb = vi.fn();
 
-      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+      await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
 
       expect(cb).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -212,7 +213,7 @@ describe("joinRoomHandler", () => {
       const ctx = contextWithBlockTtl(-2);
       const cb = vi.fn();
 
-      await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+      await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
 
       expect(cb).toHaveBeenCalledWith(
         expect.objectContaining({ success: true }),
@@ -842,9 +843,58 @@ describe("joinRoomHandler — owner hand-over (keep-watching 20)", () => {
     };
     const cb = vi.fn();
 
-    await joinRoomHandler(socket, ctx)({ roomId: "room-1" }, cb);
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
 
     expect(cb).toHaveBeenCalledWith({ success: false, error: "room_handover" });
     expect(ctx.roomManager.getOrCreateRoom).not.toHaveBeenCalled();
+  });
+});
+
+// lucky-number/03: late joiner / reconnect snapshot in the join ack.
+describe("joinRoomHandler — lucky number snapshot (lucky-number/03)", () => {
+  it("includes the live snapshot when the flag is on and a round is live", async () => {
+    mockConfig.LUCKY_NUMBER_ENABLED = true;
+    const ctx = createMockContext();
+    const mirror = {
+      roundId: "round-1",
+      roomId: "room-1",
+      startedAt: Date.now(),
+      endsAt: Date.now() + 10_000,
+      picks: {},
+      drawn: 5,
+    };
+    ctx.redis = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(mirror)),
+      hkeys: vi.fn().mockResolvedValue(["7"]),
+    };
+    const cb = vi.fn();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: true,
+        luckyNumber: {
+          roundId: "round-1",
+          endsAt: mirror.endsAt,
+          pickedUserIds: ["7"],
+        },
+      }),
+    );
+  });
+
+  it("returns luckyNumber: null and never reads redis when the flag is off", async () => {
+    mockConfig.LUCKY_NUMBER_ENABLED = false;
+    const ctx = createMockContext();
+    const get = vi.fn();
+    ctx.redis = { get, hkeys: vi.fn() };
+    const cb = vi.fn();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, luckyNumber: null }),
+    );
+    expect(get).not.toHaveBeenCalled();
   });
 });

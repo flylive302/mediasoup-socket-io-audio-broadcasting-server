@@ -8,6 +8,7 @@ import { verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { isVipAntiKickProtected } from "@src/domains/seat/vip.guard.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { Errors } from "@src/shared/errors.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 
 export const removeSeatHandler = createHandler(
   "seat:remove",
@@ -59,6 +60,9 @@ export const removeSeatHandler = createHandler(
         context.cascadeRelay,
       );
     }
+
+    // lucky-number/03: a vacated Seat can never win — drop the pick (REACT).
+    void dropLuckyNumberPick(context.redis, roomId, targetUserIdStr);
 
     return { success: true };
   },

@@ -6,6 +6,7 @@ import { createHandler } from "@src/shared/handler.utils.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { reactError } from "@src/shared/react-error.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 
 export const leaveSeatHandler = createHandler(
   "seat:leave",
@@ -34,6 +35,9 @@ export const leaveSeatHandler = createHandler(
         context.cascadeRelay,
       );
     }
+
+    // lucky-number/03: a vacated Seat can never win — drop the pick (REACT).
+    void dropLuckyNumberPick(context.redis, roomId, userId);
 
     // BL-001 FIX: Record room activity to prevent auto-close during seat actions
     context.autoCloseService

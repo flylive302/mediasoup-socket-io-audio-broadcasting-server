@@ -17,6 +17,7 @@ import { logger } from "@src/infrastructure/logger.js";
 import { emitToRoom } from "@src/shared/room-emit.js";
 import { reactError } from "@src/shared/react-error.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 
@@ -148,6 +149,13 @@ export async function finalizeLeave(
     );
   }
   emitToRoom(socket, roomId, "room:userLeft", { userId }, cascadeRelay);
+
+  // lucky-number/03: whether the seat was released or merely reserved, the
+  // leaver is off their Seat for the rest of the round — drop the pick. A
+  // reconnect inside grace gets the snapshot and may pick again.
+  if (clearedIndices.length > 0) {
+    void dropLuckyNumberPick(context.redis, roomId, String(userId));
+  }
 
   // On disconnect the socket is already out of its rooms; this is a harmless
   // no-op there and the authoritative leave on the explicit path.

@@ -24,6 +24,7 @@ import { config } from "@src/config/index.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 
 export interface EjectRoomMemberDeps {
   io: Server;
@@ -74,6 +75,8 @@ export async function ejectRoomMember(
       { roomId, targetUserId, clearedSeatIndices: cleared },
       "Ejected user's seat cleared",
     );
+    // lucky-number/03: a vacated Seat can never win — drop the pick (REACT).
+    if (redis) void dropLuckyNumberPick(redis, roomId, targetUserIdStr);
   }
 
   // 2. Force every one of the target's sockets out of the Socket.IO room

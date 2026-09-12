@@ -12,6 +12,7 @@ import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
 import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
 
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 export const lockSeatHandler = createHandler(
   "seat:lock",
   seatLockSchema,
@@ -65,6 +66,9 @@ export const lockSeatHandler = createHandler(
       );
 
       const kickedUserId = Number(kicked);
+
+      // lucky-number/03: a kicked Seat can never win — drop the pick (REACT).
+      void dropLuckyNumberPick(context.redis, roomId, String(kicked));
 
       // Server-side producer close — don't rely on frontend.
       // dj-talk-over/02: close EVERY producer the kicked user holds (mic

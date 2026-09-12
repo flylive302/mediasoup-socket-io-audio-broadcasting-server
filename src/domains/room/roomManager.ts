@@ -21,6 +21,7 @@ import type { RoomModeService } from "./mode/room-mode.service.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import { evictShrunkSeats } from "./seat-shrink-eviction.js";
+import { cancelLuckyNumberRound } from "@src/domains/lucky-number/index.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -651,6 +652,9 @@ export class RoomManager {
     const cleanupOps: Promise<void>[] = [
       cluster.close(),
       this.stateRepo.delete(roomId),
+      // lucky-number/03: disarm a live round's timer + drop its keys (no result
+      // broadcast — the room is gone). Never rejects.
+      cancelLuckyNumberRound(this.redis, roomId),
     ];
     if (this.seatRepository) {
       cleanupOps.push(this.seatRepository.clearRoom(roomId));

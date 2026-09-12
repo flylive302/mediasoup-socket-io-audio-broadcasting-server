@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockDropLuckyNumberPick = vi.fn().mockResolvedValue(undefined);
+vi.mock("@src/domains/lucky-number/index.js", () => ({
+  dropLuckyNumberPick: (...args: unknown[]) => mockDropLuckyNumberPick(...args),
+}));
+
 import { finalizeLeave } from "@src/domains/room/leave-finalizer.js";
 import { PresenceTracker } from "@src/domains/room/presence-tracker.js";
 import type { Server } from "socket.io";
@@ -80,6 +86,7 @@ function harness(members: Set<string>, opts: HarnessOpts = {}) {
     presenceTracker,
     statusCoalescer: { submit },
     cascadeRelay: null,
+    redis: {},
     // realtime-22: absent by default (origin / single-instance → retention on);
     // set isEdgeRoom to model a cross-region edge falling back to immediate leave.
     cascadeCoordinator:
@@ -305,5 +312,34 @@ describe("finalizeLeave — stale socket while the user is live on a newer socke
     expect(h.leaveSeat).toHaveBeenCalled();
     expect(h.clearUserRoom).toHaveBeenCalledWith(LEAVER_ID);
     expect(emittedEvents(h.emit)).toContain("room:userLeft");
+  });
+});
+
+describe("finalizeLeave — drops the Lucky Number pick on seat loss (lucky-number/03)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("explicit leave with a released seat drops the pick", async () => {
+    await captureStatus(new Set([LEAVER, "sock-other"]), false, {
+      leaveResult: { success: true, seatIndex: 3, clearedSeatIndices: [3] },
+    });
+    expect(mockDropLuckyNumberPick).toHaveBeenCalledWith(
+      expect.anything(),
+      ROOM,
+      String(LEAVER_ID),
+    );
+  });
+
+  it("disconnect with a reserved seat drops the pick", async () => {
+    await captureStatus(new Set(["sock-other"]), true, { reservedIndices: [2] });
+    expect(mockDropLuckyNumberPick).toHaveBeenCalledWith(
+      expect.anything(),
+      ROOM,
+      String(LEAVER_ID),
+    );
+  });
+
+  it("does NOT drop the pick when the leaver held no seat", async () => {
+    await captureStatus(new Set([LEAVER, "sock-other"]), false);
+    expect(mockDropLuckyNumberPick).not.toHaveBeenCalled();
   });
 });
