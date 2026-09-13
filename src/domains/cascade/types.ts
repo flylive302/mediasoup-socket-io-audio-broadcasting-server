@@ -85,6 +85,8 @@ export interface OriginParticipant {
   vip_level: number;
   date_of_birth: string | null;
   isSpeaker: boolean;
+  /** room-role-badge: optional — an origin still on the previous release omits it. */
+  room_role?: "owner" | "admin" | "member" | null;
 }
 
 export interface OriginRoomSnapshot {

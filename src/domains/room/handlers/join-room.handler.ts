@@ -22,6 +22,11 @@ import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js"
 import { Errors } from "@src/shared/errors.js";
 import { ensureWarm } from "@src/domains/gift/balanceSync.js";
 import { readLuckyNumberSnapshot } from "@src/domains/lucky-number/index.js";
+import {
+  resolveJoinerRoomRole,
+  roomRoleFor,
+  type RoomRole,
+} from "@src/domains/room/room-role.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 import type { RoomMediaCluster } from "@src/domains/media/roomMediaCluster.js";
@@ -348,6 +353,8 @@ async function processJoin(
     vip_level: number;
     date_of_birth: string | null;
     isSpeaker: boolean;
+    /** room-role-badge: optional — cross-region origins on an older release omit it. */
+    room_role?: RoomRole | null | undefined;
     equipped_badges?: {
       slot_position: number;
       badge_id: number;
@@ -387,6 +394,7 @@ async function processJoin(
       vip_level: remoteUser.vip_level ?? 0,
       date_of_birth: remoteUser.date_of_birth ?? null,
       isSpeaker: false, // Will be updated below from local clientManager
+      room_role: roomRoleFor(rs.data, roomId),
       equipped_badges: remoteUser.equipped_badges,
     });
   }
@@ -671,6 +679,10 @@ function afterJoin(
       hosting_port: config.PORT,
     });
   }
+
+  // room-role-badge: resolve the joiner's rank in the background — the join
+  // never waits on Laravel; the badge arrives via room:userRole.
+  resolveJoinerRoomRole(socket, roomId, context);
 
   // gift-authority-tick-fanout 11: warm the joiner's ledger key when cold so
   // the first tap is not judged `cold`. Fire-and-forget; no-op when off.

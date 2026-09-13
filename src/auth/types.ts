@@ -4,6 +4,7 @@
  */
 import { z } from "zod";
 import type { RollingWindow } from "@src/shared/rollingWindow.js";
+import type { RoomRoleTag } from "@src/domains/room/room-role.js";
 
 /**
  * Zod schema for validating user data from JWT payload or API responses.
@@ -92,4 +93,12 @@ export interface AuthSocketData {
    * this socket was under just before it dropped.
    */
   inboundActivityWindow?: RollingWindow;
+
+  /**
+   * room-role-badge: this socket's rank in ONE room (seat/participant badge).
+   * Room-scoped on purpose — kept off `user` (the JWT contract, merged across
+   * every socket by profile sync) and tagged with its room so a socket that
+   * moves rooms never carries a stale rank. Read only via `roomRoleFor`.
+   */
+  roomRole?: RoomRoleTag;
 }

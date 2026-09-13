@@ -38,6 +38,11 @@ import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { UserRoomRepository } from "./user-room.repository.js";
 import { ejectRoomMember } from "@src/domains/room/ejectRoomMember.js";
 import {
+  ROOM_USER_ROLE_EVENT,
+  retagRoomRoleOnLocalSockets,
+  roleFromMembershipEvent,
+} from "@src/domains/room/room-role.js";
+import {
   buildFanoutClaimKey,
   claimFanoutEmit,
   releaseClaim,
@@ -357,6 +362,13 @@ export class EventRouter {
       // separately.
       if (event.event === RELAY_EVENTS.room.ROOM_MEMBER_REMOVED) {
         this.applyRoomBlock(event);
+      }
+
+      // REACT: room-role-badge — keep seat/participant rank badges current
+      // when membership changes mid-session. Room-broadcast copies only
+      // (event.room_id set); the user-targeted duplicates carry no room.
+      if (event.room_id !== null) {
+        this.syncRoomRole(event, String(event.room_id), shouldEmit);
       }
 
       // REACT: mirror an unblock — delete the Redis key so a natural rejoin
@@ -713,6 +725,33 @@ export class EventRouter {
    * (permanent flag set) writes with no TTL; otherwise `EX remaining_seconds`
    * so the key self-expires with no cleanup action.
    */
+  private syncRoomRole(
+    event: LaravelEvent,
+    roomId: string,
+    shouldEmit: boolean,
+  ): void {
+    const role = roleFromMembershipEvent(event.event, event.payload);
+    const userId = event.payload.user_id;
+    if (role === undefined || typeof userId !== "number") return;
+
+    // Every instance re-tags its own sockets (next join snapshot stays
+    // current); only the fan-out claim winner emits to the room.
+    if (shouldEmit) {
+      this.io.to(roomId).emit(ROOM_USER_ROLE_EVENT, { userId, role });
+    }
+    retagRoomRoleOnLocalSockets(
+      this.io,
+      this.userSocketRepo,
+      roomId,
+      userId,
+      role,
+    ).catch((err) =>
+      reactError(err, { roomId, userId }, "Failed to re-tag room role on sockets", {
+        logger: this.logger,
+      }),
+    );
+  }
+
   private applyRoomBlock(event: LaravelEvent): void {
     const payload = event.payload;
     const roomId = payload.room_id;

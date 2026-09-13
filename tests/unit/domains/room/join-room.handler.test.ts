@@ -129,6 +129,7 @@ function createMockContext(remoteSockets: unknown[] = []) {
     laravelClient: {
       updateRoomStatus: vi.fn().mockResolvedValue(undefined),
       assertRoomPin: vi.fn().mockResolvedValue(true),
+      getMemberRole: vi.fn().mockResolvedValue(null),
     },
     statusCoalescer: { submit: vi.fn() },
     redis: {},
@@ -309,6 +310,38 @@ describe("joinRoomHandler", () => {
       };
       expect(result.participants).toHaveLength(1);
       expect(result.participants[0]?.date_of_birth).toBe("1985-05-15");
+    });
+
+    // room-role-badge: each participant carries the rank tagged on their
+    // socket for THIS room; a tag from another room reads as no role.
+    it("includes room_role for this room only", async () => {
+      const ctx = createMockContext([
+        { id: "remote-1", data: { user: makeUser({ id: 98 }), roomRole: { roomId: "room-1", role: "admin" } } },
+        { id: "remote-2", data: { user: makeUser({ id: 99 }), roomRole: { roomId: "room-other", role: "owner" } } },
+      ]);
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      const result = cb.mock.calls[0]?.[0] as {
+        participants: Array<{ id: number; room_role: string | null }>;
+      };
+      expect(result.participants.find((p) => p.id === 98)?.room_role).toBe("admin");
+      // Unresolved for this room → key omitted, so clients keep a known rank.
+      expect(result.participants.find((p) => p.id === 99)?.room_role).toBeUndefined();
+    });
+
+    it("never waits on the role lookup to answer the join", async () => {
+      const ctx = createMockContext([]);
+      ctx.laravelClient.getMemberRole = vi.fn(() => new Promise(() => {}));
+      const h = joinRoomHandler(socket, ctx);
+      const cb = vi.fn();
+
+      await h({ roomId: "room-1" }, cb);
+
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(ctx.laravelClient.getMemberRole).toHaveBeenCalled();
     });
 
     // dj-talk-over/01: existingProducers must list ALL of a client's

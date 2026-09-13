@@ -174,6 +174,53 @@ describe("EventRouter", () => {
     router = new EventRouter(io, repo, clientManager, logger);
   });
 
+  // ─── room-role-badge: membership events keep rank badges current ────
+
+  describe("room role sync", () => {
+    it("re-tags the user's in-room sockets and emits room:userRole on a role change", async () => {
+      const sock = { rooms: new Set(["55"]), data: {} as Record<string, unknown> };
+      io.sockets.sockets = new Map([["s42", sock]]);
+      repo.getSocketIds.mockResolvedValue(["s42"]);
+
+      await router.route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_ROLE_CHANGED,
+          room_id: 55,
+          payload: { user_id: 42, previous_role: "member", new_role: "admin" },
+        }),
+      );
+      await flushPromises();
+
+      expect(io.to).toHaveBeenCalledWith("55");
+      expect(io._emitFn).toHaveBeenCalledWith("room:userRole", { userId: 42, role: "admin" });
+      expect(sock.data.roomRole).toEqual({ roomId: "55", role: "admin" });
+    });
+
+    it("clears the role when a member leaves", async () => {
+      await router.route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_LEFT,
+          room_id: 55,
+          payload: { user_id: 42 },
+        }),
+      );
+
+      expect(io._emitFn).toHaveBeenCalledWith("room:userRole", { userId: 42, role: null });
+    });
+
+    it("ignores the user-targeted copy (no room_id)", async () => {
+      await router.route(
+        createEvent({
+          event: RELAY_EVENTS.room.ROOM_MEMBER_ROLE_CHANGED,
+          user_id: 42,
+          payload: { user_id: 42, previous_role: "member", new_role: "admin" },
+        }),
+      );
+
+      expect(io._emitFn).not.toHaveBeenCalledWith("room:userRole", expect.anything());
+    });
+  });
+
   // ─── XP freshness: balance.updated patches sockets + persists ────
 
   describe("balance.updated XP sync", () => {

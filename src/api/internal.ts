@@ -26,6 +26,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
 import { reactError } from "@src/shared/react-error.js";
+import { roomRoleFor, type RoomRole } from "@src/domains/room/room-role.js";
 import { matchesRotatableKey, parsePreviousKeys } from "@src/shared/keyRotation.js";
 
 // ─── Request Body Types ──────────────────────────────────────────
@@ -226,6 +227,7 @@ export const createInternalRoutes = (
         vip_level: number;
         date_of_birth: string | null;
         isSpeaker: boolean;
+        room_role?: RoomRole | null | undefined;
       }> = [];
 
       for (const s of sockets) {
@@ -250,6 +252,7 @@ export const createInternalRoutes = (
           vip_level: u.vip_level ?? 0,
           date_of_birth: u.date_of_birth ?? null,
           isSpeaker: speakerUserIds.has(u.id),
+          room_role: roomRoleFor(s.data, roomId),
         });
       }
 
