@@ -195,6 +195,8 @@ variable "event_http_ingest_enabled" {
 variable "jwt_max_age_seconds" { type = number }
 variable "gift_allow_self_send" { type = bool }
 variable "lucky_number_enabled" { type = bool }
+variable "gift_flush_partitions" { type = number }
+variable "gift_pending_ttl_ms" { type = number }
 variable "laravel_api_timeout_ms" { type = number }
 variable "ice_stun_urls" { type = string }
 

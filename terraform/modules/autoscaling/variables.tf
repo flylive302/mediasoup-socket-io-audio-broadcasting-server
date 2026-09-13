@@ -592,6 +592,18 @@ variable "lucky_number_enabled" {
   default     = false
 }
 
+variable "gift_flush_partitions" {
+  description = "gift-batch-503 / keep-watching 23: GIFT_FLUSH_PARTITIONS baked into task env so a lost gift:flags Redis hash no longer reverts to 1. Default 1 = today's schema default (inert). Redis hash still wins at runtime."
+  type        = number
+  default     = 1
+}
+
+variable "gift_pending_ttl_ms" {
+  description = "gift-batch-503 / keep-watching 23: GIFT_PENDING_TTL_MS baked into task env so a lost gift:flags Redis hash no longer reverts to 30000. Default 30000 = schema default."
+  type        = number
+  default     = 30000
+}
+
 variable "laravel_api_timeout_ms" {
   description = "Timeout for MSAB → Laravel API calls in milliseconds"
   type        = number

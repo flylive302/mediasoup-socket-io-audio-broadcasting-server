@@ -317,6 +317,11 @@ GIFT_ALLOW_SELF_SEND=${gift_allow_self_send}
 # lucky-number 01/03: read by src/config LUCKY_NUMBER_ENABLED (boolean).
 LUCKY_NUMBER_ENABLED=${lucky_number_enabled}
 
+# Gift flush partitioning
+# gift-batch-503 / keep-watching 23: read by src/config GIFT_FLUSH_PARTITIONS / GIFT_PENDING_TTL_MS.
+GIFT_FLUSH_PARTITIONS=${gift_flush_partitions}
+GIFT_PENDING_TTL_MS=${gift_pending_ttl_ms}
+
 # MediaSoup
 MEDIASOUP_LISTEN_IP=0.0.0.0
 MEDIASOUP_ANNOUNCED_IP=$PUBLIC_IP
