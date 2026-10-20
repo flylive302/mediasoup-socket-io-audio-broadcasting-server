@@ -60,7 +60,7 @@ export interface EventRoutingResult {
  *
  * Adding a new event:
  * 1. Add the event string to the appropriate domain group below
- * 2. Create a doc in docs/Events/Relay/<Domain>/<event-name>/README.md
+ * 2. Document the group with a JSDoc block above it (payloads + targeting)
  * 3. Coordinate with Laravel to publish the event
  * 4. Coordinate with Frontend to handle the socket event
  */
@@ -197,6 +197,22 @@ export const RELAY_EVENTS = {
   },
 
   /**
+   * CP event (cp-event/11): realtime HINTS — the FE refetches via REST, so
+   * at-most-once delivery is fine. Payloads are defined by Laravel's
+   * CpEventEmitter. Pure pass-through, generic routing:
+   * - cp.pair.bound    {pair_id, partner_id}                              user_id-targeted (one emit per partner)
+   * - cp.pair.updated  {pair_id, points, lifetime_intimacy, weekly_score} user_id-targeted
+   * - cp.pair.broken   {pair_id, reason}                                  user_id-targeted
+   * - cp.week.closed   {week_key}                                         user_id/room_id both null → broadcast
+   */
+  cp: {
+    CP_PAIR_BOUND: "cp.pair.bound",
+    CP_PAIR_UPDATED: "cp.pair.updated",
+    CP_PAIR_BROKEN: "cp.pair.broken",
+    CP_WEEK_CLOSED: "cp.week.closed",
+  },
+
+  /**
    * Inbox: DM/thread realtime hints (dm-realtime-platform/02). All four DM
    * events are user-targeted (user_id envelope, recipient's private inbox).
    * These are Realtime Hints only (ADR 0021) — the FE still fetches/reconciles
@@ -233,7 +249,7 @@ export const RELAY_EVENTS = {
  * Adding a new event:
  * 1. Add to RELAY_EVENTS.<domain> above
  * 2. KNOWN_EVENT_SET auto-populates from RELAY_EVENTS
- * 3. Document in docs/Events/Relay/<Domain>/README.md
+ * 3. Document the group with a JSDoc block above it (payloads + targeting)
  */
 export const KNOWN_EVENT_SET: ReadonlySet<string> = new Set(
   Object.values(RELAY_EVENTS).flatMap((group) => Object.values(group)),

@@ -622,6 +622,36 @@ describe("EventRouter", () => {
       expect(io._toReturnValue.to).toHaveBeenCalledWith("socket-2");
       expect(io._toReturnValue.emit).toHaveBeenCalledWith("mission.progress.updated", event.payload);
     });
+
+    it.each([
+      ["cp.pair.bound", { pair_id: 5, partner_id: 9 }],
+      ["cp.pair.updated", { pair_id: 5, points: 100, lifetime_intimacy: 400, weekly_score: 250 }],
+      ["cp.pair.broken", { pair_id: 5, reason: "manual" }],
+    ])("allows %s to pass through and routes to the user's sockets", async (eventName, payload) => {
+      repo.getSocketIds.mockResolvedValue(["socket-1"]);
+
+      const event = createEvent({ event: eventName, user_id: 42, room_id: null, payload });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(repo.getSocketIds).toHaveBeenCalledWith(42);
+      expect(io.to).toHaveBeenCalledWith("socket-1");
+      expect(io._toReturnValue.emit).toHaveBeenCalledWith(eventName, payload);
+    });
+
+    it("allows cp.week.closed (user_id/room_id null) and broadcasts to all", async () => {
+      const event = createEvent({
+        event: "cp.week.closed",
+        user_id: null,
+        room_id: null,
+        payload: { week_key: "2026-W43" },
+      });
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(repo.getSocketIds).not.toHaveBeenCalled();
+      expect(io.emit).toHaveBeenCalledWith("cp.week.closed", event.payload);
+    });
   });
 
   // ─── dm-realtime-platform/02: Inbox DM/thread + official events ───
