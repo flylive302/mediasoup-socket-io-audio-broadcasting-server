@@ -68,6 +68,22 @@ describe("buildFfmpegArgs", () => {
     expect(joined).toContain("-map [a]");
   });
 
+  // cost-and-speed-tuning/02: the silence-tolerant graph is the safety net for DTX (ticket 03).
+  it.each([1, 2, 4])("N=%i: every input is gap-filled via aresample=async, normalize=0 kept", (n) => {
+    const args = buildFfmpegArgs(n, cfg());
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    for (let i = 0; i < n; i++) {
+      expect(graph).toContain(`[0:a:${i}]aresample=async=1:first_pts=0[`);
+    }
+    expect(graph.match(/aresample=async=1:first_pts=0/g)).toHaveLength(n);
+    if (n === 1) {
+      expect(graph).not.toContain("amix");
+    } else {
+      expect(graph).toContain(`amix=inputs=${n}:normalize=0:dropout_transition=0[a]`);
+      expect(graph).not.toMatch(/normalize=1/);
+    }
+  });
+
   it("emits fMP4 short-segment HLS with a master playlist and continued numbering", () => {
     const args = buildFfmpegArgs(2, cfg(42));
     const joined = args.join(" ");

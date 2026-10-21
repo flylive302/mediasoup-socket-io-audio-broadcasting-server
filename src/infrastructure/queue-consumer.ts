@@ -8,7 +8,8 @@
  * impossible to express, not merely discouraged.
  *
  * Transport semantics (how IngestOutcome maps onto the queue):
- *   ok / duplicate → DeleteMessage. Both are terminal: routed, or already
+ *   ok / duplicate → deleted (one DeleteMessageBatch per receive batch, issued
+ *                    after the batch is worked — ticket 10). Both are terminal: routed, or already
  *                    routed once (at-least-once redelivery is normal).
  *   invalid        → NOT deleted. A schema-invalid body will never succeed;
  *                    after maxReceiveCount (5, ticket 25) SQS dead-letters it
@@ -30,7 +31,7 @@
 import {
   SQSClient,
   ReceiveMessageCommand,
-  DeleteMessageCommand,
+  DeleteMessageBatchCommand,
   type Message,
 } from "@aws-sdk/client-sqs";
 import type { Redis } from "ioredis";
@@ -120,26 +121,43 @@ export class QueueConsumer {
       if (!messages?.length) continue;
 
       // Sequential on purpose — preserves FIFO group order within the batch.
+      // Terminal messages are collected and deleted in ONE batch call once the
+      // batch is worked (ticket 10). Every exit path below flushes first, so
+      // a stop() or capacity break still deletes what was already processed
+      // (as the per-message delete did) — only the failed/unreached messages
+      // redeliver.
+      const toDelete: Message[] = [];
       for (const message of messages) {
         // A stop() during the batch finishes the CURRENT message (routing is
         // in flight) but does not start the next — undeleted messages simply
         // redeliver after the visibility timeout. At-least-once, by design.
-        if (this.stopping) return;
-        const done = await this.processMessage(message);
+        if (this.stopping) {
+          await this.deleteBatch(toDelete);
+          return;
+        }
+        const outcome = await this.processMessage(message);
+        if (outcome === "delete") toDelete.push(message);
         // capacity: leave the rest of the batch undeleted and back off.
-        if (!done) {
+        if (outcome === "capacity") {
+          await this.deleteBatch(toDelete);
           await this.sleepUnlessStopping(1_000);
+          toDelete.length = 0;
           break;
         }
       }
+      await this.deleteBatch(toDelete);
     }
   }
 
   /**
    * Handle one message through the shared ingest seam.
-   * Returns false only for the capacity outcome (stop working the batch).
+   * "delete": terminal success (ok / duplicate) — caller batch-deletes it.
+   * "keep": leave undeleted for redelivery / DLQ.
+   * "capacity": leave undeleted AND stop working the batch.
    */
-  private async processMessage(message: Message): Promise<boolean> {
+  private async processMessage(
+    message: Message,
+  ): Promise<"delete" | "keep" | "capacity"> {
     let raw: unknown;
     try {
       raw = JSON.parse(message.Body ?? "");
@@ -150,7 +168,7 @@ export class QueueConsumer {
         { messageId: message.MessageId },
         "Queue consumer: message body is not JSON — leaving for DLQ",
       );
-      return true;
+      return "keep";
     }
 
     try {
@@ -163,16 +181,15 @@ export class QueueConsumer {
       switch (outcome.kind) {
         case "ok":
         case "duplicate":
-          await this.deleteMessage(message);
-          return true;
+          return "delete";
         case "invalid":
           this.logger.warn(
             { messageId: message.MessageId, errors: outcome.errors },
             "Queue consumer: schema-invalid envelope — leaving for DLQ",
           );
-          return true;
+          return "keep";
         case "capacity":
-          return false;
+          return "capacity";
       }
     } catch (err) {
       // Routing threw (claim already released by the seam): keep the message
@@ -181,23 +198,49 @@ export class QueueConsumer {
         { err, messageId: message.MessageId },
         "Queue consumer: routing failed — leaving message for redelivery",
       );
-      return true;
+      return "keep";
     }
   }
 
-  private async deleteMessage(message: Message): Promise<void> {
+  /**
+   * One DeleteMessageBatch for the successfully processed messages (≤10, the
+   * receive maximum). Failure of any kind = those messages redeliver and the
+   * dedup gate suppresses them: log per entry and continue, never throw.
+   */
+  private async deleteBatch(messages: Message[]): Promise<void> {
+    const entries = messages
+      .filter((m) => m.ReceiptHandle)
+      .map((m, i) => ({
+        Id: String(i),
+        ReceiptHandle: m.ReceiptHandle as string,
+      }));
+    if (entries.length === 0) return;
+    const byId = new Map(
+      messages
+        .filter((m) => m.ReceiptHandle)
+        .map((m, i) => [String(i), m] as const),
+    );
+
     try {
-      await this.client.send(
-        new DeleteMessageCommand({
+      const response = await this.client.send(
+        new DeleteMessageBatchCommand({
           QueueUrl: this.queueUrl,
-          ReceiptHandle: message.ReceiptHandle,
+          Entries: entries,
         }),
       );
+      for (const failed of response.Failed ?? []) {
+        this.logger.warn(
+          {
+            messageId: byId.get(failed.Id ?? "")?.MessageId,
+            code: failed.Code,
+            reason: failed.Message,
+          },
+          "Queue consumer: delete failed — dedup will absorb the redelivery",
+        );
+      }
     } catch (err) {
-      // Delete failure = the message redelivers and the dedup gate suppresses
-      // it. Log and continue — at-least-once absorbs this.
       this.logger.warn(
-        { err, messageId: message.MessageId },
+        { err, messageIds: messages.map((m) => m.MessageId) },
         "Queue consumer: delete failed — dedup will absorb the redelivery",
       );
     }

@@ -14,6 +14,13 @@
  *  - `amix=inputs=N:normalize=0` — `normalize=0` is mandatory: the default divides
  *    every input's gain by N, so one talker among 15 silent seats would play at
  *    1/15 volume. With normalize off each speaker keeps unity gain.
+ *  - Silence tolerance (cost-and-speed-tuning/02): every input passes through
+ *    `aresample=async=1:first_pts=0` before `amix`, so DTX gaps are filled with
+ *    silence. Verified with FFmpeg 7.0.2: DTX-like sparse RTP (1 packet / 0.4s or
+ *    1 / 2s) does NOT stall this graph. A TOTAL halt of one input's RTP (no packets
+ *    at all, e.g. a paused producer) still stalls amix — no filter-only graph fixes
+ *    that (anullsrc floor, apad, arealtime all re-tested and still stall), which is
+ *    why paused producers are excluded from the mix set / trigger a restart.
  *  - Short-segment HLS (~1s), NOT true LL-HLS partial segments: R2 is object
  *    storage, not an LL-HLS origin (no blocking playlist reload / chunked CMAF).
  *    ~1s segments → ~3–5s glass-to-glass, the realtime-09 "~2–5s" target.

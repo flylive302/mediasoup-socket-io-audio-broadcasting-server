@@ -21,6 +21,7 @@ import Fastify from "fastify";
 import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
+  DeleteMessageBatchCommand,
   type SQSClient,
 } from "@aws-sdk/client-sqs";
 import { createEventIngestRoutes, ingestEnvelope } from "@src/infrastructure/event-ingest.js";
@@ -53,8 +54,14 @@ function makeEnvelope(n: number) {
  * Fake SQS client: serves queued receive batches, then parks on a promise
  * that rejects when stop() aborts the long poll. Records deletes.
  */
-function makeFakeSqs(batches: unknown[][]) {
+function makeFakeSqs(
+  batches: unknown[][],
+  opts: { failIds?: string[]; throwOnBatchDelete?: boolean } = {},
+) {
   const deletes: string[] = [];
+  const batchDeleteCalls: { Id?: string; ReceiptHandle?: string }[][] = [];
+  const singleDeletes: string[] = [];
+  let receiveCount = 0;
   const pending = [...batches];
   const client = {
     send: vi.fn(
@@ -63,6 +70,7 @@ function makeFakeSqs(batches: unknown[][]) {
         options?: { abortSignal?: AbortSignal },
       ): Promise<unknown> => {
         if (command instanceof ReceiveMessageCommand) {
+          receiveCount++;
           const batch = pending.shift();
           if (batch) {
             return Promise.resolve({
@@ -81,16 +89,39 @@ function makeFakeSqs(batches: unknown[][]) {
           });
         }
         if (command instanceof DeleteMessageCommand) {
-          deletes.push(
-            (command as DeleteMessageCommand).input.ReceiptHandle ?? "",
-          );
+          singleDeletes.push(command.input.ReceiptHandle ?? "");
           return Promise.resolve({});
+        }
+        if (command instanceof DeleteMessageBatchCommand) {
+          const entries = command.input.Entries ?? [];
+          batchDeleteCalls.push(entries);
+          if (opts.throwOnBatchDelete) {
+            return Promise.reject(new Error("sqs down"));
+          }
+          const failIds = opts.failIds ?? [];
+          for (const e of entries) {
+            if (!failIds.includes(e.Id ?? "")) deletes.push(e.ReceiptHandle ?? "");
+          }
+          return Promise.resolve({
+            Successful: [],
+            Failed: failIds.map((Id) => ({
+              Id,
+              Code: "InternalError",
+              SenderFault: false,
+            })),
+          });
         }
         return Promise.resolve({});
       },
     ),
   } as unknown as SQSClient;
-  return { client, deletes };
+  return {
+    client,
+    deletes,
+    batchDeleteCalls,
+    singleDeletes,
+    receiveCount: () => receiveCount,
+  };
 }
 
 /** Run a consumer over the given batches until `until` holds, then stop it. */
@@ -336,5 +367,66 @@ describe("QueueConsumer transport semantics", () => {
     expect(
       createQueueConsumer({ eventRouter, logger: mockLogger }),
     ).toBeNull();
+  });
+  describe("batch delete (ticket 10)", () => {
+    function envelopes(n: number) {
+      return Array.from({ length: n }, (_, i) => makeEnvelope(i + 1));
+    }
+    async function runBatch(
+      fake: ReturnType<typeof makeFakeSqs>,
+      done: () => void,
+    ) {
+      const consumer = new QueueConsumer(QUEUE_URL, eventRouter, mockLogger, undefined, fake.client);
+      consumer.start();
+      await vi.waitFor(done);
+      await consumer.stop();
+    }
+
+    it("10 processed -> exactly 1 DeleteMessageBatch with 10 entries, 0 single deletes", async () => {
+      const fake = makeFakeSqs([envelopes(10)]);
+      await runBatch(fake, () => expect(fake.batchDeleteCalls).toHaveLength(1));
+      expect(fake.batchDeleteCalls[0]).toHaveLength(10);
+      expect(new Set(fake.batchDeleteCalls[0]!.map((e) => e.Id)).size).toBe(10);
+      expect(fake.singleDeletes).toHaveLength(0);
+    });
+
+    it("1 processing failure -> batch has 9 entries (failed one is not deleted)", async () => {
+      eventRouter.route
+        .mockResolvedValueOnce({ delivered: true, targetCount: 1 })
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValue({ delivered: true, targetCount: 1 });
+      const fake = makeFakeSqs([envelopes(10)]);
+      await runBatch(fake, () => expect(fake.batchDeleteCalls).toHaveLength(1));
+      expect(fake.batchDeleteCalls[0]).toHaveLength(9);
+      expect(fake.singleDeletes).toHaveLength(0);
+    });
+
+    it("2 Failed[] entries -> 2 warnings and the loop keeps polling", async () => {
+      mockLogger.warn.mockClear();
+      const fake = makeFakeSqs([envelopes(3), []], { failIds: ["0", "2"] });
+      await runBatch(fake, () => expect(fake.receiveCount()).toBeGreaterThanOrEqual(3));
+      const warnings = mockLogger.warn.mock.calls.filter(
+        (c: unknown[]) => c[1] === "Queue consumer: delete failed — dedup will absorb the redelivery",
+      );
+      expect(fake.batchDeleteCalls).toHaveLength(1);
+      expect(warnings).toHaveLength(2);
+    });
+
+    it("batch call throws -> logged, next receive still happens", async () => {
+      mockLogger.warn.mockClear();
+      const fake = makeFakeSqs([envelopes(2), envelopes(2)], { throwOnBatchDelete: true });
+      await runBatch(fake, () => expect(fake.batchDeleteCalls).toHaveLength(2));
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        "Queue consumer: delete failed — dedup will absorb the redelivery",
+      );
+    });
+
+    it("0 successes -> no delete call at all", async () => {
+      const fake = makeFakeSqs([[{ garbage: true }, { garbage: 2 }]]);
+      await runBatch(fake, () => expect(fake.receiveCount()).toBe(2));
+      expect(fake.batchDeleteCalls).toHaveLength(0);
+      expect(fake.singleDeletes).toHaveLength(0);
+    });
   });
 });
