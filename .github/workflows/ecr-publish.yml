@@ -38,6 +38,17 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # account-bans 18: tests/integration/auth/kick.redis.test.ts FAILS (not skips) when CI
+    # is set and no Redis answers, so every job that runs `npm test` needs this service.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +72,8 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          MSAB_TEST_REDIS_URL: redis://127.0.0.1:6379/15
 
   build-and-push:
     needs: ci

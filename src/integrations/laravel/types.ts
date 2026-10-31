@@ -161,6 +161,15 @@ export const RELAY_EVENTS = {
   auth: {
     REVOKE_TOKENS: "auth.revoke_tokens",
     FORCE_DISCONNECT: "auth.force_disconnect",
+    /**
+     * account-bans 18: the re-check kick for accounts seen on a newly blocked IP or
+     * device. Drops their sockets fleet-wide with NO client emit and the normal
+     * seat grace, so an innocent reconnects (and is re-checked by Laravel) and keeps
+     * their seat. Laravel ticket 17 sends this exact literal — both sides pin it.
+     * Deliberately not a flag on FORCE_DISCONNECT: an older MSAB would ignore the
+     * flag and show innocent neighbours the "account suspended" screen.
+     */
+    RECHECK_DISCONNECT: "auth.recheck_disconnect",
   },
 
   /**

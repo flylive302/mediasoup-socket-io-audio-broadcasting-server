@@ -92,9 +92,13 @@ function createMockIO() {
   // Chain .to() calls
   toReturnValue.to = vi.fn().mockReturnValue(toReturnValue);
 
+  const disconnectSocketsFn = vi.fn();
+
   return {
     to: vi.fn().mockReturnValue(toReturnValue),
+    in: vi.fn().mockReturnValue({ disconnectSockets: disconnectSocketsFn }),
     emit: vi.fn(),
+    _disconnectSocketsFn: disconnectSocketsFn,
     sockets: {
       sockets: new Map([["local-socket-1", {}]]),
       adapter: {
@@ -1397,31 +1401,67 @@ describe("fleet-wide fan-out claim (aws-production 22)", () => {
     expect(b.io.emit).not.toHaveBeenCalled();
   });
 
-  it("still runs per-instance side effects on the suppressed instance", async () => {
+  it("runs the force kick once, fleet-wide, on the claim winner only (account-bans 18)", async () => {
     const a = createInstance(redis);
     const b = createInstance(redis);
-    // force_disconnect: adapter emit is claimed, but disconnecting LOCAL
-    // sockets must happen on every instance holding one.
-    const socketB = { emit: vi.fn(), disconnect: vi.fn() };
-    b.io.sockets.sockets = new Map([["sock-b", socketB]]);
-    b.repo.getSocketIds.mockResolvedValue(["sock-b"]);
-    a.repo.getSocketIds.mockResolvedValue([]);
+    // The adapter path reaches every instance, so the suppressed instance must not
+    // emit auth:force_disconnect a second time.
+    a.repo.getSocketIds.mockResolvedValue(["sock-on-b"]);
+    b.repo.getSocketIds.mockResolvedValue(["sock-on-b"]);
 
     const event = createEvent({
       event: RELAY_EVENTS.auth.FORCE_DISCONNECT,
       user_id: 42,
       room_id: null,
-      payload: { reason: "suspended" },
+      payload: { reason: "blocked", blocked_until: null },
     });
 
     await a.router.route(event); // wins the claim
-    await b.router.route(event); // suppressed emit — local disconnect still runs
+    await b.router.route(event); // suppressed
 
-    expect(socketB.disconnect).toHaveBeenCalledWith(true);
-    expect(socketB.emit).toHaveBeenCalledWith(
-      "auth:force_disconnect",
-      expect.objectContaining({ reason: "suspended" }),
+    expect(a.io.to).toHaveBeenCalledWith(["sock-on-b"]);
+    expect(a.io._emitFn).toHaveBeenCalledWith("auth:force_disconnect", { reason: "blocked", blocked_until: null });
+    expect(a.io.in).toHaveBeenCalledWith(["sock-on-b"]);
+    expect(a.io._disconnectSocketsFn).toHaveBeenCalledWith(true);
+    expect(b.io.to).not.toHaveBeenCalled();
+    expect(b.io.in).not.toHaveBeenCalled();
+  });
+
+  it("re-check kick: disconnects fleet-wide with no client emit (account-bans 18)", async () => {
+    const a = createInstance(redis);
+    a.repo.getSocketIds.mockResolvedValue(["sock-1", "sock-2"]);
+
+    const event = createEvent({
+      event: RELAY_EVENTS.auth.RECHECK_DISCONNECT,
+      user_id: 42,
+      room_id: null,
+      payload: {},
+    });
+
+    const result = await a.router.route(event);
+
+    expect(result.delivered).toBe(true);
+    expect(a.io.in).toHaveBeenCalledWith(["sock-1", "sock-2"]);
+    expect(a.io._disconnectSocketsFn).toHaveBeenCalledWith(true);
+    expect(a.io.to).not.toHaveBeenCalled();
+    expect(a.io._emitFn).not.toHaveBeenCalled();
+  });
+
+  it("drops a re-check kick with no user_id instead of passing it through", async () => {
+    const a = createInstance(redis);
+
+    const result = await a.router.route(
+      createEvent({ event: RELAY_EVENTS.auth.RECHECK_DISCONNECT, user_id: null, room_id: null, payload: {} }),
     );
+
+    expect(result.delivered).toBe(false);
+    expect(a.io.emit).not.toHaveBeenCalled();
+    expect(a.io.to).not.toHaveBeenCalled();
+    expect(a.io.in).not.toHaveBeenCalled();
+  });
+
+  it("pins the re-check kick literal Laravel ticket 17 sends", () => {
+    expect(RELAY_EVENTS.auth.RECHECK_DISCONNECT).toBe("auth.recheck_disconnect");
   });
 
   it("fails open when the event has no correlation id", async () => {

@@ -37,6 +37,7 @@ import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import type { StatusCoalescer } from "@src/domains/room/status-coalescer.js";
 import type { UserRoomRepository } from "./user-room.repository.js";
 import { ejectRoomMember } from "@src/domains/room/ejectRoomMember.js";
+import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 import {
   ROOM_USER_ROLE_EVENT,
   retagRoomRoleOnLocalSockets,
@@ -121,6 +122,16 @@ export class EventRouter {
       return { delivered: false, targetCount: 0, error: "Unknown event" };
     }
 
+    // account-bans 18: the re-check kick is only ever per user; without one it must not
+    // fall through to a room / broadcast pass-through.
+    if (event.event === RELAY_EVENTS.auth.RECHECK_DISCONNECT && event.user_id === null) {
+      this.logger.warn(
+        { correlationId: event.correlation_id },
+        "auth.recheck_disconnect without user_id — dropped",
+      );
+      return { delivered: false, targetCount: 0, error: "Missing user_id" };
+    }
+
     const startTime = Date.now();
     const target = this.determineTarget(event);
     metrics.laravelEventsInFlight.inc();
@@ -177,7 +188,8 @@ export class EventRouter {
       switch (target.type) {
         case "user":
         case "user_in_room":
-          result = shouldEmit
+          // account-bans 18: the re-check kick never reaches the client as an event.
+          result = shouldEmit && event.event !== RELAY_EVENTS.auth.RECHECK_DISCONNECT
             ? await this.emitToUser(target.userId, event.event, event.payload)
             : { delivered: true, targetCount: 0 };
           break;
@@ -299,8 +311,11 @@ export class EventRouter {
         );
       }
 
-      // REACT: Force-disconnect all user sockets
+      // REACT: Force-disconnect all user sockets, fleet-wide (account-bans 18). The
+      // adapter path reaches every instance, so only the fan-out claim winner runs it —
+      // a second instance would emit auth:force_disconnect twice.
       if (
+        shouldEmit &&
         event.event === RELAY_EVENTS.auth.FORCE_DISCONNECT &&
         event.user_id !== null
       ) {
@@ -308,6 +323,15 @@ export class EventRouter {
           event.user_id,
           event.payload as unknown as ForceDisconnectPayload,
         );
+      }
+
+      // REACT: re-check kick (account-bans 18) — fleet-wide disconnect, no emit, seat grace kept.
+      if (
+        shouldEmit &&
+        event.event === RELAY_EVENTS.auth.RECHECK_DISCONNECT &&
+        event.user_id !== null
+      ) {
+        await this.recheckDisconnectUser(event.user_id);
       }
 
       // Post-relay side-effect: sync room settings (seatCount) to RoomState
@@ -907,36 +931,99 @@ export class EventRouter {
   }
 
   /**
-   * Disconnect all sockets for a user and notify the client.
-   * The client receives an 'auth:force_disconnect' event with the suspension
-   * details before the socket is closed, allowing the frontend to show a
-   * user-facing "Account Suspended" message.
+   * Force kick (Account Block, Sign out everywhere), fleet-wide (account-bans 18).
+   *
+   * Wayfinder 01: the old version only touched sockets local to the consuming
+   * instance, and in sqs mode exactly one instance consumes each event, so with two
+   * instances the kick missed about half the time. This uses the same Redis-adapter
+   * path as emitToUser: the socket ids from the per-user socket set, then
+   * `io.to(sids)` / `io.in(sids)`, which reach whichever instance holds each socket.
+   *
+   * 1. Free the seat with NO grace: `leaveSeat` clears every seat the user holds in
+   *    Redis (reserved or not) and seat:cleared goes out fleet-wide. Done first so the
+   *    seat is never shown as reserved.
+   * 2. Emit `auth:force_disconnect` with Laravel's payload unchanged (the app routes
+   *    on `reason`: `blocked` → /blocked, anything else → session ended).
+   * 3. Disconnect. Each socket then takes the ordinary disconnect path on the instance
+   *    that holds it (finalizeLeave: transports closed, roster, presence count,
+   *    lifecycle hooks such as the music player), which finds no seat left to reserve.
+   *    The emit and the disconnect request leave on the same adapter pub connection and
+   *    arrive on the same sub connection, so the emit is written before the close —
+   *    keep them on one adapter.
    */
   private async forceDisconnectUser(
     userId: number,
     payload: ForceDisconnectPayload,
   ): Promise<void> {
-    const socketIds = await this.userSocketRepo.getSocketIds(userId);
-    let disconnectedCount = 0;
+    const roomId = this.userRoomRepository
+      ? await this.userRoomRepository.getUserRoom(userId)
+      : null;
+    if (roomId !== null) {
+      await this.freeSeatOnKick(roomId, userId);
+    }
 
-    for (const sid of socketIds) {
-      const socket = this.io.sockets.sockets.get(sid);
-      if (socket) {
-        // Emit before disconnect so the client can react (show suspended page)
-        socket.emit("auth:force_disconnect", payload);
-        socket.disconnect(true);
-        disconnectedCount++;
-      }
+    const socketIds = await this.userSocketRepo.getSocketIds(userId);
+    if (socketIds.length > 0) {
+      this.io.to(socketIds).emit("auth:force_disconnect", payload);
+      this.io.in(socketIds).disconnectSockets(true);
     }
 
     this.logger.warn(
       {
         userId,
         socketCount: socketIds.length,
-        disconnectedCount,
+        roomId,
         reason: payload.reason,
       },
-      "User force-disconnected from all sockets",
+      "User force-disconnected fleet-wide",
     );
+  }
+
+  /**
+   * Re-check kick (IP / Device Block, account-bans 18): drop every socket of the user
+   * fleet-wide with no client emit and no seat clear. The ordinary disconnect path
+   * then reserves a seated user's slot for the normal grace, so an innocent account
+   * on the blocked IP or device reconnects — Laravel re-checks it on the MSAB token
+   * refresh — and keeps the seat. A blocked one is refused there and the grace lapses.
+   */
+  private async recheckDisconnectUser(userId: number): Promise<void> {
+    const socketIds = await this.userSocketRepo.getSocketIds(userId);
+
+    if (socketIds.length > 0) {
+      this.io.in(socketIds).disconnectSockets(true);
+    }
+
+    this.logger.info(
+      { userId, socketCount: socketIds.length },
+      "User re-check-disconnected fleet-wide",
+    );
+  }
+
+  /**
+   * The seat half of the force kick: release every seat the user holds, no grace, and
+   * tell the room. Never throws — a failed release must not stop the disconnect (the
+   * seat then lapses after the normal grace).
+   */
+  private async freeSeatOnKick(roomId: string, userId: number): Promise<void> {
+    if (!this.seatRepository) {
+      return;
+    }
+
+    try {
+      const seatResult = await this.seatRepository.leaveSeat(roomId, String(userId));
+      if (seatResult.success) {
+        const cleared = seatResult.clearedSeatIndices ?? [seatResult.seatIndex];
+        for (const seatIndex of cleared) {
+          this.io.to(roomId).emit("seat:cleared", { seatIndex, userId });
+        }
+        // lucky-number/03: a vacated Seat can never win — drop the pick. finalizeLeave
+        // only drops it when it clears the seat itself, and it finds none left (REACT).
+        void dropLuckyNumberPick(this.redis, roomId, String(userId));
+      }
+    } catch (err) {
+      reactError(err, { roomId, userId }, "Failed to free seat on force kick", {
+        logger: this.logger,
+      });
+    }
   }
 }

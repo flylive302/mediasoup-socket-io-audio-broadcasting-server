@@ -82,6 +82,18 @@ jobs:
     # On a push event `inputs` is empty, so this is always the build path.
     if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
     runs-on: ubuntu-latest
+    # account-bans 18: the Redis integration suites (gift ledger, fleet-wide kicks) skip
+    # silently without a Redis locally, but FAIL when CI is set and none answers - so the
+    # release gate needs the same service ci.yml has. Keep in step with ci.yml.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -105,6 +117,8 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          MSAB_TEST_REDIS_URL: redis://127.0.0.1:6379/15
 
   build-and-push:
     if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
