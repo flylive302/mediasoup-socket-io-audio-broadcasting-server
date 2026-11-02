@@ -188,12 +188,17 @@ jobs:
             sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Multi-arch: amd64 (c7i, current prod) + arm64 (c8g/Graviton, realtime-06).
-          # Pushes a manifest list so either instance arch pulls its native image.
-          # NOTE: the arm64 leg compiles the mediasoup C++ worker under QEMU on the
-          # amd64 runner — slow. If build time approaches the job limit, move the
-          # arm64 build to a native arm runner + `docker manifest` merge.
-          platforms: linux/amd64,linux/arm64
+          # amd64 ONLY (account-bans 21, 2026-11-02). Prod is c7i (x86_64) and
+          # terraform's `instance_architecture` defaults to amd64, so nothing pulls
+          # an arm64 image today. The arm64 leg compiled the mediasoup C++ worker
+          # under QEMU on this amd64 runner, twice (builder + prod-deps `npm ci`):
+          # run #246 sat in it for 2h38m and pushed nothing. GHA evicts cache
+          # entries unused for 7 days, so any release after a quiet week pays that
+          # full compile — retrying does not help.
+          # Before `instance_architecture` ever flips to arm64 (c8g / realtime-06),
+          # re-add arm64 as a NATIVE arm runner build + `docker manifest` merge,
+          # never back under QEMU here.
+          platforms: linux/amd64
 
       - name: Verify image in ECR
         run: |
