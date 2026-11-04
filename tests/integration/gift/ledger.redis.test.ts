@@ -162,6 +162,25 @@ describe("GiftLedger (real Redis)", () => {
     expect(await ledger.debit(u, "t4", 300, "{}", list)).toEqual({ status: "insufficient", spendable: 200 });
   });
 
+  it("ticket 19: a refusal settled WITH the response's refused-sender snapshot closes the loop in ONE reconcile — no stale-high window, no refresh", async ({ skip }) => {
+    if (skipUnlessRedis()) return skip();
+    const ledger = new GiftLedger(redis!);
+    const u = freshUser();
+    const list = listFor(u);
+    // Ledger believes 1000 @ v5; the backend really holds 200 @ v6 (a debit push was lost).
+    await ledger.reconcile(u, { db: 1000, version: 5 }, [], TTL);
+    expect(await ledger.debit(u, "t1", 300, "{}", list)).toMatchObject({ status: "ok", spendable: 700 });
+
+    // Backend refuses t1 (4002) and attaches refused_senders[{200, v6}]: release + snapshot together.
+    const settled = await ledger.reconcile(u, { db: 200, version: 6 }, ["t1"], TTL);
+    expect(settled).toMatchObject({ db: 200, pend: 0, spendable: 200 });
+    expect(await redis!.hexists(pendKey(u), "t1")).toBe(0);
+
+    // The very next tap is judged against the truth — the combo loop of ticket 18 never starts.
+    expect(await ledger.debit(u, "t2", 300, "{}", list)).toEqual({ status: "insufficient", spendable: 200 });
+    expect(await ledger.debit(u, "t3", 200, "{}", list)).toMatchObject({ status: "ok", spendable: 0 });
+  });
+
   it("expiry refunds reservations older than ttl and counts them", async ({ skip }) => {
     if (skipUnlessRedis()) return skip();
     const ledger = new GiftLedger(redis!);

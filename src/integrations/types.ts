@@ -28,6 +28,19 @@ export interface GiftTransaction {
 export const GIFT_BATCH_RETRY_CODE = 5030;
 
 /**
+ * Absolute balance snapshot as the backend emits it — decimal STRINGS
+ * (`balance.updated` payload minus `version`). The backend `balance_version`
+ * that produced it travels BESIDE this object, never inside it (shared
+ * contract fixture tests/fixtures/contracts/gift-balance-contract.json).
+ */
+export interface SenderBalanceFields {
+  coins: string;
+  diamonds: string;
+  wealth_xp: string;
+  charm_xp: string;
+}
+
+/**
  * Response from Laravel batch gift processing endpoint
  * Per MSAB_PROTOCOL_REFERENCE.md Section 2
  */
@@ -47,16 +60,27 @@ export interface BatchProcessingResult {
   processed?: Array<{
     transaction_ids: string[];
     sender_id: number;
-    balance: {
-      coins: string;
-      diamonds: string;
-      wealth_xp: string;
-      charm_xp: string;
-      /** gift-authority-tick-fanout 06: backend `balance_version` for this snapshot. */
-      version?: number;
-    };
+    balance: SenderBalanceFields;
+    /**
+     * gift-authority-tick-fanout 06: backend `balance_version` for this
+     * snapshot — a sibling of `balance`. Ticket 19: it was typed and read
+     * inside `balance` from ticket 11 on, so the batch snapshot was never
+     * applied; see batchSnapshot.ts.
+     */
+    version?: number;
     /** 06: true when every id in the group was a replay of an earlier booking. */
     already_booked?: boolean;
+  }>;
+  /**
+   * gift-authority-tick-fanout 19: one snapshot per sender whose group the
+   * backend refused with a balance-suspect code (4002 / 5000), read in the
+   * same query as `processed[]`; never carries booked ids. Optional so an
+   * older backend stays valid — ticket 18's forceRefresh then covers it.
+   */
+  refused_senders?: Array<{
+    sender_id: number;
+    balance: SenderBalanceFields;
+    version?: number;
   }>;
   /**
    * gift-backlog-and-lag 03: true when Laravel's `GIFT_LUCKY_INLINE` flag is

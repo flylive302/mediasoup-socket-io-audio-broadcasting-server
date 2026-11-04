@@ -56,6 +56,10 @@ import {
   FORCE_REFRESH_MIN_INTERVAL_MS,
 } from "@src/domains/gift/balanceSync.js";
 
+import { batchSnapshotsBySender } from "@src/domains/gift/batchSnapshot.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 const okReconcile = { db: 100, pend: 0, spendable: 100, seq: 1, expiredCount: 0 };
 
 function wire() {
@@ -110,6 +114,17 @@ describe("balanceSync (ticket 11)", () => {
     it("parses the wire shape (string coins, int version)", () => {
       expect(toSnapshot({ coins: "1234", version: 5 })).toEqual({ db: 1234, version: 5 });
       expect(toSnapshot({ coins: "1234.75", version: "5" })).toEqual({ db: 1234, version: 5 });
+    });
+
+    it("ticket 19: a contract-fixture batch entry parses to a real snapshot (booked and refused)", () => {
+      const fixture = JSON.parse(
+        readFileSync(resolve(__dirname, "../../../fixtures/contracts/gift-balance-contract.json"), "utf8"),
+      );
+      const snapshots = batchSnapshotsBySender(fixture.batch_response);
+      expect(toSnapshot(snapshots.get(1))).toEqual({ db: 49000, version: 1 });
+      expect(toSnapshot(snapshots.get(2))).toEqual({ db: 0, version: 3 });
+      // The pre-19 read: `balance` alone (no version) is NOT a snapshot.
+      expect(toSnapshot(fixture.batch_response.processed[0].balance)).toBeNull();
     });
 
     it("returns null without a version (older backend) or with junk coins", () => {

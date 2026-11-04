@@ -20,6 +20,7 @@ import {
   type ReconcileSource,
 } from "./balanceSync.js";
 import { deliverLuckyRoomResult } from "./luckyDelivery.js";
+import { batchSnapshotsBySender } from "./batchSnapshot.js";
 import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 
 /**
@@ -833,13 +834,9 @@ export class GiftBuffer {
         ids.push(t.transaction_id);
         settledBySender.set(t.sender_id, ids);
       }
-      const snapshotBySender = new Map<number, { coins: string; version?: number }>();
-      for (const entry of result.processed ?? []) {
-        const prev = snapshotBySender.get(entry.sender_id);
-        if (!prev || (entry.balance.version ?? -1) > (prev.version ?? -1)) {
-          snapshotBySender.set(entry.sender_id, entry.balance);
-        }
-      }
+      // ticket 19: usable snapshots only (top-level `version`), from booked
+      // AND refused groups — a sender in the map needs no refresh.
+      const snapshotBySender = batchSnapshotsBySender(result);
       const enforcing = balanceAuthorityEnforcing();
       if (!enforcing) this.emitSenderBalances(result, transactions);
       if (enforcing) {
@@ -857,7 +854,8 @@ export class GiftBuffer {
         }
         if (staleSenders.has(senderId)) {
           // ticket 18: the backend refused a tap this ledger accepted, and the
-          // response carries no snapshot for this sender — so the reconcile
+          // response carries no usable snapshot for this sender (an older
+          // backend without `refused_senders`, ticket 19) — so the reconcile
           // above released the holds onto a `db` we now KNOW is too high. Left
           // alone, every following tap of the combo passes the gate and is
           // refused again (the shown-unpaid loop). Re-read the truth once the
@@ -928,6 +926,7 @@ export class GiftBuffer {
     ledger: { spendable: number; seq: number } | null = null,
   ): void {
     try {
+      const pushed = new Set<number>();
       for (const entry of result.processed ?? []) {
         if (onlySenderId !== null && entry.sender_id !== onlySenderId) continue;
         const source = transactions.find((t) =>
@@ -936,7 +935,29 @@ export class GiftBuffer {
         if (!source?.sender_socket_id) continue;
 
         // ticket 12: redis mode rewrites coins → spendable (+ seq).
-        this.io.to(source.sender_socket_id).emit("balance.updated", rewriteBalancePush(entry.balance, ledger));
+        this.io
+          .to(source.sender_socket_id)
+          .emit("balance.updated", rewriteBalancePush({ ...entry.balance, version: entry.version }, ledger));
+        pushed.add(entry.sender_id);
+      }
+
+      // ticket 19: a sender whose taps were ALL refused has no processed
+      // entry and, until now, got only gift:error — never a corrected number.
+      // In redis mode the reconcile just applied the response's
+      // refused_senders snapshot, so push the resulting spendable to the
+      // refused tap's socket. Skipped outside redis mode (ledger null): the
+      // backend's own queued push still reaches the client there.
+      if (ledger === null) return;
+      for (const entry of result.refused_senders ?? []) {
+        if (onlySenderId !== null && entry.sender_id !== onlySenderId) continue;
+        if (pushed.has(entry.sender_id)) continue;
+        const source = transactions.find((t) => t.sender_id === entry.sender_id);
+        if (!source?.sender_socket_id) continue;
+
+        this.io
+          .to(source.sender_socket_id)
+          .emit("balance.updated", rewriteBalancePush({ ...entry.balance, version: entry.version }, ledger));
+        pushed.add(entry.sender_id);
       }
     } catch (error) {
       this.logger.warn(
@@ -958,8 +979,9 @@ const BALANCE_SUSPECT_FAILURE_CODES: ReadonlySet<number> = new Set([4002, 5000])
 
 /**
  * GATE (pure) — ticket 18: senders whose taps the backend refused with a
- * balance-suspect code AND for whom the same response carries no `processed`
- * snapshot (a snapshot already resets `db` to the truth).
+ * balance-suspect code AND for whom the same response carries no usable
+ * snapshot — neither in `processed[]` nor (ticket 19) in `refused_senders[]`
+ * (a snapshot already resets `db` to the truth in the same reconcile).
  */
 export function sendersNeedingRefresh(
   result: Pick<BatchProcessingResult, "failed">,

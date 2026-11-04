@@ -552,16 +552,17 @@ describe("GiftBuffer", () => {
 
     it("waits for the reconcile, then emits balance.updated with coins = spendable and seq", async () => {
       mockRedis._claimItems = [makeGiftJSON()];
-      const balance = { coins: "49500", diamonds: "10", wealth_xp: "1", charm_xp: "0", version: 7 };
+      const balance = { coins: "49500", diamonds: "10", wealth_xp: "1", charm_xp: "0" };
       mockLaravel.processGiftBatch.mockResolvedValue({
-        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance, version: 7 }],
       });
       mockReconcileBalance.mockResolvedValue({ db: 49500, pend: 500, spendable: 49000, seq: 12, expiredCount: 0 });
 
       await buffer.stop();
       await vi.runAllTicks();
 
-      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...balance, coins: "49000", seq: 12 });
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, { ...balance, version: 7 }, ["tx-1"], "batch");
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...balance, version: 7, coins: "49000", seq: 12 });
     });
 
     it("counts gift_shown_unpaid_total{code} for each backend failure after acceptance", async () => {
@@ -648,10 +649,10 @@ describe("GiftBuffer", () => {
         makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 }),
         makeGiftJSON({ transaction_id: "tx-2", sender_id: 7 }),
       ];
-      const balance = { coins: "100", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 9 };
+      const balance = { coins: "100", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
       mockLaravel.processGiftBatch.mockResolvedValue({
         failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
-        processed: [{ transaction_ids: ["tx-1"], sender_id: 7, balance }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 7, balance, version: 9 }],
       });
       await buffer.stop();
       await vi.runAllTicks();
@@ -667,7 +668,8 @@ describe("GiftBuffer", () => {
         failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
         processed: [{
           transaction_ids: ["tx-1"], sender_id: 7,
-          balance: { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 2 },
+          balance: { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0" },
+          version: 2,
         }],
       });
       await buffer.stop();
@@ -699,6 +701,106 @@ describe("GiftBuffer", () => {
     });
   });
 
+  // ─── ticket 19: the response's own snapshot corrects the ledger ────
+
+  describe("batch snapshot from the response (ticket 19)", () => {
+    beforeEach(() => {
+      mockEnforcing = true;
+      mockForceRefresh.mockClear();
+    });
+    afterEach(() => { mockEnforcing = false; });
+
+    const fields = { coins: "200", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
+
+    it("refused_senders snapshot → one reconcile with the released ids AND the snapshot, no forceRefresh, balance.updated to the refused tap's socket", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7, sender_socket_id: "sock-7" })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+        processed: [],
+        refused_senders: [{ sender_id: 7, balance: fields, version: 6 }],
+      });
+      mockReconcileBalance.mockResolvedValueOnce({ db: 200, pend: 0, spendable: 200, seq: 9, expiredCount: 0 });
+
+      await buffer.stop();
+      await vi.runAllTicks();
+
+      expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
+      expect(mockReconcileBalance).toHaveBeenCalledWith(7, { ...fields, version: 6 }, ["tx-1"], "batch");
+      expect(mockForceRefresh).not.toHaveBeenCalled();
+      expect(mockIo.to).toHaveBeenCalledWith("sock-7");
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...fields, version: 6, coins: "200", seq: 9 });
+    });
+
+    it("processed[] carries version BESIDE balance (the contract shape) → that version reaches the reconcile", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 1, already_booked: false, balance: fields, version: 3 }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, { ...fields, version: 3 }, ["tx-1"], "batch");
+    });
+
+    it("a processed entry with no usable version (older backend) is NO snapshot: null reconcile, and a 4002 still refreshes", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 7 }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 7, balance: fields }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockReconcileBalance).toHaveBeenCalledWith(7, null, ["tx-1", "tx-2"], "batch");
+      expect(mockForceRefresh).toHaveBeenCalledWith(7);
+    });
+
+    it("the same sender booked AND refused in one batch: the newest version wins, pushed once, no refresh", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 7, sender_socket_id: "sock-7" }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 7, sender_socket_id: "sock-7" }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 7, balance: fields, version: 4 }],
+        refused_senders: [{ sender_id: 7, balance: { ...fields, coins: "150" }, version: 5 }],
+      });
+      mockReconcileBalance.mockResolvedValueOnce({ db: 150, pend: 0, spendable: 150, seq: 2, expiredCount: 0 });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
+      expect(mockReconcileBalance).toHaveBeenCalledWith(7, { ...fields, coins: "150", version: 5 }, ["tx-1", "tx-2"], "batch");
+      expect(mockForceRefresh).not.toHaveBeenCalled();
+      const pushes = mockIo._emit.mock.calls.filter(([event]) => event === "balance.updated");
+      expect(pushes).toHaveLength(1);
+    });
+
+    it("refused_senders absent (older backend) → ticket 18's forceRefresh still fires", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockReconcileBalance).toHaveBeenCalledWith(7, null, ["tx-1"], "batch");
+      expect(mockForceRefresh).toHaveBeenCalledWith(7);
+    });
+
+    it("outside redis mode a refused-only sender gets no MSAB push (the backend's own push covers it)", async () => {
+      mockEnforcing = false;
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7, sender_socket_id: "sock-7" })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+        refused_senders: [{ sender_id: 7, balance: fields, version: 6 }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockIo._emit).not.toHaveBeenCalledWith("balance.updated", expect.anything());
+    });
+  });
+
   describe("refresh is off outside redis mode (ticket 18)", () => {
     it("shadow/off: a 4002 never triggers a refresh", async () => {
       mockForceRefresh.mockClear();
@@ -719,20 +821,20 @@ describe("GiftBuffer", () => {
         makeGiftJSON({ transaction_id: "tx-2", sender_id: 1 }),
         makeGiftJSON({ transaction_id: "tx-3", sender_id: 2, sender_socket_id: "sock-2" }),
       ];
-      const b1old = { coins: "900", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 4 };
-      const b1new = { coins: "800", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 5 };
+      const b1old = { coins: "900", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
+      const b1new = { coins: "800", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
       mockLaravel.processGiftBatch.mockResolvedValue({
         failed: [{ transaction_id: "tx-3", code: 4002, reason: "insufficient" }],
         processed: [
-          { transaction_ids: ["tx-1"], sender_id: 1, balance: b1old },
-          { transaction_ids: ["tx-2"], sender_id: 1, balance: b1new },
+          { transaction_ids: ["tx-1"], sender_id: 1, balance: b1old, version: 4 },
+          { transaction_ids: ["tx-2"], sender_id: 1, balance: b1new, version: 5 },
         ],
       });
 
       await buffer.stop();
 
       expect(mockReconcileBalance).toHaveBeenCalledTimes(2);
-      expect(mockReconcileBalance).toHaveBeenCalledWith(1, b1new, ["tx-1", "tx-2"], "batch");
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, { ...b1new, version: 5 }, ["tx-1", "tx-2"], "batch");
       expect(mockReconcileBalance).toHaveBeenCalledWith(2, null, ["tx-3"], "batch");
     });
 
@@ -748,27 +850,27 @@ describe("GiftBuffer", () => {
         makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 }),
         makeGiftJSON({ transaction_id: "tx-2", sender_id: 2 }),
       ];
-      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
       mockLaravel.processGiftBatch
         .mockRejectedValueOnce(new Error("batch down"))
-        .mockResolvedValueOnce({ failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }] })
+        .mockResolvedValueOnce({ failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance, version: 1 }] })
         .mockRejectedValueOnce(new Error("still down"));
 
       await buffer.stop();
 
       expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
-      expect(mockReconcileBalance).toHaveBeenCalledWith(1, balance, ["tx-1"], "fallback");
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, { ...balance, version: 1 }, ["tx-1"], "fallback");
     });
 
     it("a throwing reconcile never breaks the flush or the balance emit", async () => {
       mockRedis._claimItems = [makeGiftJSON()];
       mockReconcileBalance.mockImplementation(() => { throw new Error("boom"); });
-      const balance = { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      const balance = { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
       mockLaravel.processGiftBatch.mockResolvedValue({
-        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+        failed: [], processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance, version: 1 }],
       });
       await buffer.stop();
-      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", balance);
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...balance, version: 1 });
       expect(mockRedis._pipeline.rpush).not.toHaveBeenCalled();
     });
   });
@@ -827,10 +929,10 @@ describe("GiftBuffer", () => {
         makeGiftJSON({ transaction_id: "tx-1", sender_id: 1 }),
         makeGiftJSON({ transaction_id: "tx-2", sender_id: 2 }),
       ];
-      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 1 };
+      const balance = { coins: "10", diamonds: "0", wealth_xp: "0", charm_xp: "0" };
       mockLaravel.processGiftBatch.mockResolvedValue({
         failed: [{ transaction_id: "tx-2", code: 5030, reason: "Batch time budget exhausted; retry" }],
-        processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 1, balance, version: 1 }],
       });
 
       await buffer.stop();
@@ -845,7 +947,7 @@ describe("GiftBuffer", () => {
       // Not terminal: no gift:error for the sender, and its reservation stays.
       expect(mockIo._emit).not.toHaveBeenCalledWith("gift:error", expect.anything());
       expect(mockReconcileBalance).toHaveBeenCalledTimes(1);
-      expect(mockReconcileBalance).toHaveBeenCalledWith(1, balance, ["tx-1"], "batch");
+      expect(mockReconcileBalance).toHaveBeenCalledWith(1, { ...balance, version: 1 }, ["tx-1"], "batch");
       // The booked tap is still counted as a success, the retried one separately.
       expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({ status: "retry" }, 1);
       expect(metrics.giftsProcessed.inc).toHaveBeenCalledWith({ status: "success" }, 1);
