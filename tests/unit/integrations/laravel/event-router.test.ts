@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@src/config/index.js", () => ({
   config: {
@@ -57,6 +57,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     laravelEventsStaleRejected: { inc: vi.fn() },
     laravelEventsFanoutSuppressed: { inc: vi.fn() },
     roomBlockMirror: { inc: vi.fn() },
+    giftLuckyResultLatencySeconds: { observe: vi.fn() },
   },
 }));
 
@@ -351,6 +352,148 @@ describe("EventRouter", () => {
       expect(io.to).not.toHaveBeenCalledWith("123");
       expect(result.delivered).toBe(true);
       expect(result.targetCount).toBe(0);
+    });
+  });
+
+  // ─── gift-cashback-latency 01: tap → sender-sees-result (path="queued") ─
+
+  describe("lucky:result latency observation (gift-cashback-latency 01)", () => {
+    const NOW = 1_700_000_010_000;
+
+    let dateNowSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(NOW);
+      repo.getSocketIds.mockResolvedValue(["s1"]);
+    });
+
+    // Restore only the Date spy — restoreAllMocks would also wipe the
+    // module-level vi.fn() implementations this file relies on.
+    afterEach(() => {
+      dateNowSpy.mockRestore();
+    });
+
+    it("observes giftLuckyResultLatencySeconds{path=queued} = (emitTime - tapped_at)/1000 and passes tapped_at through", async () => {
+      const payload = { multiplier: 3, coins_won: 300, tapped_at: NOW - 2500 };
+      const event = createEvent({ event: "lucky:result", user_id: 42, room_id: null, payload });
+
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(io._toReturnValue.emit).toHaveBeenCalledWith("lucky:result", payload);
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledTimes(1);
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledWith({ path: "queued" }, 2.5);
+    });
+
+    it("observes for a user_in_room target too (sender-scoped to a room)", async () => {
+      const event = createEvent({
+        event: "lucky:result",
+        user_id: 42,
+        room_id: 7,
+        payload: { multiplier: 2, tapped_at: NOW - 1000 },
+      });
+
+      await router.route(event);
+
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledWith({ path: "queued" }, 1);
+    });
+
+    it("does not observe when tapped_at is absent, but still delivers", async () => {
+      const event = createEvent({
+        event: "lucky:result",
+        user_id: 42,
+        room_id: null,
+        payload: { multiplier: 3, coins_won: 300 },
+      });
+
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe a future-dated or non-numeric tapped_at", async () => {
+      for (const tapped_at of [NOW + 1, "1700000009000", null]) {
+        const event = createEvent({
+          event: "lucky:result",
+          user_id: 42,
+          room_id: null,
+          payload: { multiplier: 3, tapped_at },
+        });
+        const result = await router.route(event);
+        expect(result.delivered).toBe(true);
+      }
+
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe for lucky:no-draw or lucky:room-result even with tapped_at", async () => {
+      await router.route(
+        createEvent({
+          event: "lucky:no-draw",
+          user_id: 42,
+          room_id: null,
+          payload: { reason: "capped", tapped_at: NOW - 1000 },
+        }),
+      );
+      await router.route(
+        createEvent({
+          event: "lucky:room-result",
+          user_id: null,
+          room_id: 123,
+          payload: { winnerId: 9, tapped_at: NOW - 1000 },
+        }),
+      );
+
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe when nothing was emitted: sender has no sockets", async () => {
+      repo.getSocketIds.mockResolvedValue([]);
+      const event = createEvent({
+        event: "lucky:result",
+        user_id: 42,
+        room_id: null,
+        payload: { multiplier: 3, tapped_at: NOW - 1000 },
+      });
+
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(false);
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe when the fan-out claim is lost (another instance emitted)", async () => {
+      const redis = { set: vi.fn().mockResolvedValue(null) } as any; // NX SET fails → claim lost
+      const r = new EventRouter(io, repo, clientManager, logger, redis);
+      const event = createEvent({
+        event: "lucky:result",
+        user_id: 42,
+        room_id: null,
+        payload: { multiplier: 3, tapped_at: NOW - 1000 },
+      });
+
+      await r.route(event);
+
+      expect(io._toReturnValue.emit).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("a throwing observation never fails routing", async () => {
+      vi.mocked(metrics.giftLuckyResultLatencySeconds.observe).mockImplementationOnce(() => {
+        throw new Error("metrics fault");
+      });
+      const event = createEvent({
+        event: "lucky:result",
+        user_id: 42,
+        room_id: null,
+        payload: { multiplier: 3, tapped_at: NOW - 1000 },
+      });
+
+      const result = await router.route(event);
+
+      expect(result.delivered).toBe(true);
+      expect(result.error).toBeUndefined();
     });
   });
 

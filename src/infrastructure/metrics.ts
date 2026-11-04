@@ -254,6 +254,23 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-cashback-latency 01 (D0): tap → sender-sees-lucky-result, observed when
+  // MSAB emits `lucky:result` to the sender (see domains/gift/luckyLatency.ts).
+  // Unlike the two buffer/POST histograms above this is NOT a single-process
+  // interval: `tapped_at` is MSAB's own `Date.now()` from the gift gate, round-
+  // tripped through Laravel unchanged (never a Laravel clock), but the emitting
+  // instance can differ from the stamping one, so cross-box NTP skew (ms)
+  // applies. Negative deltas are skipped, not observed.
+  giftLuckyResultLatencySeconds: new Histogram({
+    name: "flylive_gift_lucky_result_latency_seconds",
+    help: "Time from the accepted tap (gift gate) to MSAB emitting lucky:result to the sender",
+    labelNames: ["path"] as const, // inline (batch response), queued (Laravel relay)
+    // Reaches 60s because the queued path rides job queues that can back up
+    // at peak; the inline target is ~1-1.5s so the low buckets stay dense.
+    buckets: [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 10, 20, 30, 60],
+    registers: [metricsRegistry],
+  }),
+
   // Laravel API calls — observability-audio-quality 14: emitted from LaravelClient's
   // post()/get() private helpers, which every call to the API already passes through.
   //

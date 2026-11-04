@@ -50,6 +50,7 @@ import {
 } from "@src/infrastructure/event-dedup.js";
 import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush } from "@src/domains/gift/balanceSync.js";
 import { deliverLuckyRoomResult } from "@src/domains/gift/luckyDelivery.js";
+import { observeLuckyResultLatency } from "@src/domains/gift/luckyLatency.js";
 import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
 /** Payload for auth.force_disconnect relay event */
@@ -246,6 +247,21 @@ export class EventRouter {
       // ─── REACT Stage: Post-relay side-effects (fire-and-forget) ───────────
       // These are the REACT layer of the INTENT → GATE → EXECUTE → REACT pipeline.
       // They run after the main relay (EXECUTE) and must be non-blocking.
+
+      // REACT: gift-cashback-latency 01 — tap → sender-sees-result, queued path.
+      // Only the sender-targeted `lucky:result` (not `lucky:no-draw` /
+      // `lucky:room-result`), only when THIS instance actually emitted it
+      // (fan-out claim winner, sender had live sockets). The emitting instance
+      // may differ from the one whose gate stamped `tapped_at`, so cross-box
+      // NTP skew applies; luckyLatency.ts skips negatives. Never throws.
+      if (
+        shouldEmit &&
+        result.delivered &&
+        event.event === RELAY_EVENTS.lucky.LUCKY_RESULT &&
+        (target.type === "user" || target.type === "user_in_room")
+      ) {
+        observeLuckyResultLatency("queued", event.payload);
+      }
 
       // REACT: sync socket.data.user when VIP status changes
       if (

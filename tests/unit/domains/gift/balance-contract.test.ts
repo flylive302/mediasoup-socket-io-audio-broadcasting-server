@@ -8,6 +8,7 @@
  * asserted.
  */
 import { describe, it, expect } from "vitest";
+import { luckyTapToEmitSeconds } from "@src/domains/gift/luckyLatency.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { batchSnapshotsBySender } from "@src/domains/gift/batchSnapshot.js";
@@ -63,5 +64,11 @@ describe("gift balance contract fixture", () => {
 
   it.skipIf(!existsSync(backend))("is identical to the backend copy", () => {
     expect(JSON.parse(readFileSync(backend, "utf8"))).toEqual(fixture);
+  });
+
+  it("gift-cashback-latency 01: lucky_result_payload carries tapped_at as epoch ms the latency GATE accepts", () => {
+    const payload = fixture.lucky_result_payload;
+    expect(Number.isInteger(payload.tapped_at)).toBe(true);
+    expect(luckyTapToEmitSeconds(payload, payload.tapped_at + 1500)).toBe(1.5);
   });
 });

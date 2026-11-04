@@ -1,5 +1,5 @@
 {
-  "_comment": "gift-authority-tick-fanout/06 — shared backend<->room-server contract. Backend: tests/Feature/Gift/GiftBalanceContractTest.php asserts live output matches. Room server: copied in by ticket 10 and asserted there. Balance fields are decimal STRINGS; version is an integer that only increases per user and sits BESIDE balance, never inside it (ticket 19). ticket 19: refused_senders[] carries the same snapshot for every sender whose group was refused with 4002/5000 — never in processed[].",
+  "_comment": "gift-authority-tick-fanout/06 — shared backend<->room-server contract. Backend: tests/Feature/Gift/GiftBalanceContractTest.php asserts live output matches. Room server: copied in by ticket 10 and asserted there. Balance fields are decimal STRINGS; version is an integer that only increases per user and sits BESIDE balance, never inside it (ticket 19). ticket 19: refused_senders[] carries the same snapshot for every sender whose group was refused with 4002/5000 — never in processed[]. gift-cashback-latency 01: lucky_result_payload is the `lucky:result` sender payload (also the `sender` of an inline lucky[] entry, kind=result); tapped_at is an integer epoch-MILLISECONDS stamp of the oldest tap the result covers, minted by the room server gate and OMITTED (never null) when unknown — the room server observes tap→emit latency only when it is present.",
   "batch_response": {
     "processed_count": 1,
     "failed": [
@@ -38,5 +38,13 @@
     "wealth_xp": "1000.0000",
     "charm_xp": "0.0000",
     "version": 1
+  },
+  "lucky_result_payload": {
+    "multiplier": 2.5,
+    "coins_won": 2500,
+    "tier_name": "Lucky",
+    "gift_name": "Lucky Rose",
+    "reference_id": "tx-1",
+    "tapped_at": 1762300000000
   }
 }

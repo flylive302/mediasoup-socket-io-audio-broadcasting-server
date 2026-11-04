@@ -20,6 +20,7 @@ import {
   type ReconcileSource,
 } from "./balanceSync.js";
 import { deliverLuckyRoomResult } from "./luckyDelivery.js";
+import { observeLuckyResultLatency } from "./luckyLatency.js";
 import { batchSnapshotsBySender } from "./batchSnapshot.js";
 import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 
@@ -905,6 +906,9 @@ export class GiftBuffer {
         target = target.to(socketIds[i]!);
       }
       target.emit(entry.kind === "result" ? "lucky:result" : "lucky:no-draw", entry.sender);
+      // gift-cashback-latency 01: tap → sender-sees-result, `result` only (a
+      // no-draw is not a result the sender is waiting to see). Never throws.
+      if (entry.kind === "result") observeLuckyResultLatency("inline", entry.sender);
     }).catch((error) => {
       this.logger.warn(
         { error, senderId: entry.sender_id, kind: entry.kind },

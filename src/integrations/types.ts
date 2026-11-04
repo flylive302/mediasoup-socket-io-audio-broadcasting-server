@@ -108,8 +108,20 @@ export interface LuckyInlineEntry {
   sender_id: number;
   room_id: number;
   kind: "result" | "no-draw";
-  sender: Record<string, unknown>;
-  room: Record<string, unknown> | null;
+  sender: Record<string, unknown> & LuckyTappedAt;
+  room: (Record<string, unknown> & LuckyTappedAt) | null;
+}
+
+/**
+ * gift-cashback-latency 01: `tapped_at` rides on the `lucky:result`,
+ * `lucky:no-draw` and `lucky:room-result` payloads (inline `sender` / `room`
+ * above and the queued relay alike). Epoch ms of the earliest tap's accept
+ * time in the burst, minted by MSAB's own gift gate. ABSENT when Laravel does
+ * not know it. MSAB passes it through to clients unchanged and only reads it
+ * to observe `flylive_gift_lucky_result_latency_seconds` (luckyLatency.ts).
+ */
+export interface LuckyTappedAt {
+  tapped_at?: number;
 }
 
 /**

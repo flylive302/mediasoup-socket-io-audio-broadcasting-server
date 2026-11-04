@@ -68,6 +68,7 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
     giftDeadLetterHighWater: { inc: vi.fn() },
     giftDeadLetterTrimmed: { inc: vi.fn() },
     giftLuckyInlineTotal: { inc: vi.fn() },
+    giftLuckyResultLatencySeconds: { observe: vi.fn() },
   },
 }));
 
@@ -378,6 +379,24 @@ describe("GiftBuffer", () => {
   // real histograms in metrics.ts have the right Prometheus name, buckets or
   // labels. This test bypasses just that one mock via vi.importActual to check
   // the real definitions, without touching the vi.mock/spy setup above.
+  it("registers the real giftLuckyResultLatencySeconds histogram by name with a path label and the documented buckets", async () => {
+    const actual = await vi.importActual<typeof import("@src/infrastructure/metrics.js")>(
+      "@src/infrastructure/metrics.js",
+    );
+
+    actual.metrics.giftLuckyResultLatencySeconds.observe({ path: "inline" }, 0.7);
+    actual.metrics.giftLuckyResultLatencySeconds.observe({ path: "queued" }, 3.2);
+    const text = await actual.metricsRegistry.getSingleMetricAsString(
+      "flylive_gift_lucky_result_latency_seconds",
+    );
+    expect(text).toContain("# TYPE flylive_gift_lucky_result_latency_seconds histogram");
+    expect(text).toContain('path="inline"');
+    expect(text).toContain('path="queued"');
+    for (const bucket of [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 10, 20, 30, 60]) {
+      expect(text).toContain(`le="${bucket}"`);
+    }
+  });
+
   it("defines the real giftBufferWaitSeconds / giftBatchPostSeconds histograms with the documented name, buckets and attempt/outcome labels", async () => {
     const actual = await vi.importActual<typeof import("@src/infrastructure/metrics.js")>(
       "@src/infrastructure/metrics.js",
@@ -533,6 +552,93 @@ describe("GiftBuffer", () => {
 
       expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:result", expect.anything());
       expect(mockEnqueueLucky).not.toHaveBeenCalled();
+    });
+
+    // ─── gift-cashback-latency 01: tap → sender-sees-result (path="inline") ──
+
+    it("observes giftLuckyResultLatencySeconds{path=inline} for a `result` entry, equal to (emitTime - sender.tapped_at)/1000", async () => {
+      const emitTime = 1_700_000_010_000;
+      vi.setSystemTime(emitTime);
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(
+        luckyResult({ sender: { multiplier: 2, coins_won: 100, tapped_at: emitTime - 1500 } }),
+      );
+
+      await buffer.stop();
+
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledTimes(1);
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledWith({ path: "inline" }, 1.5);
+      // tapped_at is passed through to the client unchanged.
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:result", {
+        multiplier: 2,
+        coins_won: 100,
+        tapped_at: emitTime - 1500,
+      });
+    });
+
+    it("does not observe latency for a `no-draw` entry even when it carries tapped_at", async () => {
+      const emitTime = 1_700_000_010_000;
+      vi.setSystemTime(emitTime);
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(
+        luckyResult({
+          kind: "no-draw",
+          sender: { reason: "cooldown", tapped_at: emitTime - 1000 },
+          room: null,
+        }),
+      );
+
+      await buffer.stop();
+
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:no-draw", {
+        reason: "cooldown",
+        tapped_at: emitTime - 1000,
+      });
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe latency when a `result` entry has no tapped_at (absent key)", async () => {
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(luckyResult());
+
+      await buffer.stop();
+
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:result", { multiplier: 2, coins_won: 100 });
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("does not observe latency for a future-dated or non-numeric tapped_at, and still emits", async () => {
+      const emitTime = 1_700_000_010_000;
+      vi.setSystemTime(emitTime);
+
+      for (const tapped_at of [emitTime + 5000, "1700000009000", null, Number.NaN]) {
+        mockIo._emit.mockClear();
+        mockRedis._claimItems = [makeGiftJSON()];
+        mockLaravel.processGiftBatch.mockResolvedValue(
+          luckyResult({ sender: { multiplier: 2, tapped_at } }),
+        );
+        await buffer.stop();
+        expect(mockIo._emit).toHaveBeenCalledWith("lucky:result", expect.anything());
+      }
+
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
+    });
+
+    it("a throwing latency observation never blocks the emit or fails the batch", async () => {
+      const emitTime = 1_700_000_010_000;
+      vi.setSystemTime(emitTime);
+      vi.mocked(metrics.giftLuckyResultLatencySeconds.observe).mockImplementationOnce(() => {
+        throw new Error("metrics fault");
+      });
+      mockRedis._claimItems = [makeGiftJSON()];
+      mockLaravel.processGiftBatch.mockResolvedValue(
+        luckyResult({ sender: { multiplier: 2, tapped_at: emitTime - 100 } }),
+      );
+
+      await expect(buffer.stop()).resolves.toBeUndefined();
+
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:result", expect.anything());
+      expect(mockIo._emit).toHaveBeenCalledWith("lucky:room-result", expect.anything());
     });
 
     it("never fails the batch when the inline delivery throws", async () => {
