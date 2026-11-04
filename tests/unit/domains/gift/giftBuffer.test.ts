@@ -26,9 +26,11 @@ const PENDING_TTL_MS = 30_000;
 // ticket 05: mutable so partition tests can flip it at runtime.
 let flushPartitions = 1;
 const mockReconcileBalance = vi.fn().mockResolvedValue(null);
+const mockForceRefresh = vi.fn().mockResolvedValue(true);
 let mockEnforcing = false;
 vi.mock("@src/domains/gift/balanceSync.js", () => ({
   reconcileBalance: (...a: unknown[]) => mockReconcileBalance(...a),
+  forceRefresh: (...a: unknown[]) => mockForceRefresh(...a),
   balanceAuthorityEnforcing: () => mockEnforcing,
   rewriteBalancePush: (payload: Record<string, unknown>, l: { spendable: number; seq: number } | null) =>
     l ? { ...payload, coins: String(l.spendable), seq: l.seq } : payload,
@@ -571,6 +573,142 @@ describe("GiftBuffer", () => {
       const { metrics } = await import("@src/infrastructure/metrics.js");
       expect(vi.mocked(metrics.giftShownUnpaidTotal.inc)).toHaveBeenCalledWith({ code: "4003" });
       expect(mockIo._emit).toHaveBeenCalledWith("gift:error", expect.objectContaining({ transactionId: "tx-1", code: 4003 }));
+    });
+  });
+
+  // ─── ticket 18: backend refusal must not leave a stale-high ledger ──
+
+  describe("refresh after backend refusal (ticket 18)", () => {
+    beforeEach(() => {
+      mockEnforcing = true;
+      mockForceRefresh.mockClear();
+    });
+    afterEach(() => { mockEnforcing = false; });
+
+    it("4002 with no snapshot for the sender → forceRefresh(sender) AFTER the hold release lands", async () => {
+      const order: string[] = [];
+      mockReconcileBalance.mockImplementationOnce(async () => {
+        order.push("reconcile");
+        return { db: 1000, pend: 0, spendable: 1000, seq: 3, expiredCount: 0 };
+      });
+      mockForceRefresh.mockImplementationOnce(async () => {
+        order.push("refresh");
+        return true;
+      });
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+      });
+
+      await buffer.stop();
+      await vi.runAllTicks();
+
+      expect(mockReconcileBalance).toHaveBeenCalledWith(7, null, ["tx-1"], "batch");
+      expect(mockForceRefresh).toHaveBeenCalledTimes(1);
+      expect(mockForceRefresh).toHaveBeenCalledWith(7);
+      expect(order).toEqual(["reconcile", "refresh"]);
+    });
+
+    it("5000 (may follow a committed debit) also refreshes", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 5000, reason: "Gift failed. Please try again." }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).toHaveBeenCalledWith(7);
+    });
+
+    it("one refresh per sender even when many of their taps were refused", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 7 }),
+        makeGiftJSON({ transaction_id: "tx-3", sender_id: 7 }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: ["tx-1", "tx-2", "tx-3"].map((id) => ({ transaction_id: id, code: 4002, reason: "Insufficient coins" })),
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("policy refusal (4003/4004) says nothing about the balance → no refresh", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4004, reason: "Gift not found or inactive" }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).not.toHaveBeenCalled();
+    });
+
+    it("sender also has a processed snapshot in the same response → snapshot is the truth, no refresh", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 7 }),
+      ];
+      const balance = { coins: "100", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 9 };
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
+        processed: [{ transaction_ids: ["tx-1"], sender_id: 7, balance }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).not.toHaveBeenCalled();
+    });
+
+    it("only the refused sender is refreshed, not the others in the batch", async () => {
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 }),
+        makeGiftJSON({ transaction_id: "tx-2", sender_id: 8, sender_socket_id: "sock-8" }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-2", code: 4002, reason: "Insufficient coins" }],
+        processed: [{
+          transaction_ids: ["tx-1"], sender_id: 7,
+          balance: { coins: "1", diamonds: "0", wealth_xp: "0", charm_xp: "0", version: 2 },
+        }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).toHaveBeenCalledTimes(1);
+      expect(mockForceRefresh).toHaveBeenCalledWith(8);
+    });
+
+    it("per-item fallback path refreshes too", async () => {
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch
+        .mockRejectedValueOnce(new Error("Gift batch failed: Service Unavailable"))
+        .mockResolvedValueOnce({
+          failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+        });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).toHaveBeenCalledWith(7);
+    });
+
+    it("a failing refresh is logged, never thrown into the flush", async () => {
+      mockForceRefresh.mockRejectedValueOnce(new Error("redis down"));
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+      });
+      await expect(buffer.stop()).resolves.toBeUndefined();
+      await vi.runAllTicks();
+    });
+  });
+
+  describe("refresh is off outside redis mode (ticket 18)", () => {
+    it("shadow/off: a 4002 never triggers a refresh", async () => {
+      mockForceRefresh.mockClear();
+      mockRedis._claimItems = [makeGiftJSON({ transaction_id: "tx-1", sender_id: 7 })];
+      mockLaravel.processGiftBatch.mockResolvedValue({
+        failed: [{ transaction_id: "tx-1", code: 4002, reason: "Insufficient coins" }],
+      });
+      await buffer.stop();
+      await vi.runAllTicks();
+      expect(mockForceRefresh).not.toHaveBeenCalled();
     });
   });
 

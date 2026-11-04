@@ -141,6 +141,27 @@ describe("GiftLedger (real Redis)", () => {
     expect(dup.seq).toBe(settled.seq + 1);
   });
 
+  it("ticket 18: a refusal settled with NO snapshot re-opens a stale-high balance; a newer refresh snapshot closes the loop", async ({ skip }) => {
+    if (skipUnlessRedis()) return skip();
+    const ledger = new GiftLedger(redis!);
+    const u = freshUser();
+    const list = listFor(u);
+    // Ledger believes 1000 @ v5; the backend really holds 200 @ v6 (a debit push was lost).
+    await ledger.reconcile(u, { db: 1000, version: 5 }, [], TTL);
+
+    // The loop: accept → backend 4002 → release without snapshot → spendable back to 1000 → accept again.
+    for (const tx of ["t1", "t2", "t3"]) {
+      expect(await ledger.debit(u, tx, 300, "{}", list)).toMatchObject({ status: "ok" });
+      const released = await ledger.reconcile(u, null, [tx], TTL);
+      expect(released).toMatchObject({ db: 1000, pend: 0, spendable: 1000 });
+    }
+
+    // The fix: forceRefresh reads the backend's truth and RECONCILE applies it (newer version).
+    const refreshed = await ledger.reconcile(u, { db: 200, version: 6 }, [], TTL);
+    expect(refreshed).toMatchObject({ db: 200, pend: 0, spendable: 200 });
+    expect(await ledger.debit(u, "t4", 300, "{}", list)).toEqual({ status: "insufficient", spendable: 200 });
+  });
+
   it("expiry refunds reservations older than ttl and counts them", async ({ skip }) => {
     if (skipUnlessRedis()) return skip();
     const ledger = new GiftLedger(redis!);

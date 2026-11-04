@@ -12,7 +12,13 @@ import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
 import { giftFlushPartitions, giftPendingTtlMs } from "./flags.js";
-import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush, type ReconcileSource } from "./balanceSync.js";
+import {
+  balanceAuthorityEnforcing,
+  forceRefresh,
+  reconcileBalance,
+  rewriteBalancePush,
+  type ReconcileSource,
+} from "./balanceSync.js";
 import { deliverLuckyRoomResult } from "./luckyDelivery.js";
 import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 
@@ -841,10 +847,25 @@ export class GiftBuffer {
         // shown to the room unpaid — count it; the reconcile above refunds.
         for (const f of result.failed) metrics.giftShownUnpaidTotal.inc({ code: String(f.code) });
       }
+      const staleSenders = enforcing
+        ? sendersNeedingRefresh(result, transactions, snapshotBySender)
+        : new Set<number>();
       for (const [senderId, ids] of settledBySender) {
         const p = reconcileBalance(senderId, snapshotBySender.get(senderId) ?? null, ids, source);
         if (enforcing) {
           void p.then((ledger) => this.emitSenderBalances(result, transactions, senderId, ledger));
+        }
+        if (staleSenders.has(senderId)) {
+          // ticket 18: the backend refused a tap this ledger accepted, and the
+          // response carries no snapshot for this sender — so the reconcile
+          // above released the holds onto a `db` we now KNOW is too high. Left
+          // alone, every following tap of the combo passes the gate and is
+          // refused again (the shown-unpaid loop). Re-read the truth once the
+          // release has landed; forceRefresh is throttled per user, and the
+          // monotonic RECONCILE applies it only if its version is newer.
+          void p.then(() => forceRefresh(senderId)).catch((error) => {
+            this.logger.warn({ error, senderId }, "Gift ledger refresh after backend refusal failed");
+          });
         }
       }
     } catch (error) {
@@ -924,4 +945,33 @@ export class GiftBuffer {
       );
     }
   }
+}
+
+/**
+ * Backend refusal codes that mean "the ledger's `db` may be wrong": 4002 =
+ * the backend's balance was lower than the ledger thought; 5000 = an internal
+ * failure that can follow a COMMITTED debit (post-commit dispatch threw), so
+ * the backend may have charged while the ledger released the hold. Policy
+ * refusals (4003/4004…) say nothing about the balance and never refresh.
+ */
+const BALANCE_SUSPECT_FAILURE_CODES: ReadonlySet<number> = new Set([4002, 5000]);
+
+/**
+ * GATE (pure) — ticket 18: senders whose taps the backend refused with a
+ * balance-suspect code AND for whom the same response carries no `processed`
+ * snapshot (a snapshot already resets `db` to the truth).
+ */
+export function sendersNeedingRefresh(
+  result: Pick<BatchProcessingResult, "failed">,
+  transactions: ReadonlyArray<Pick<GiftTransaction, "transaction_id" | "sender_id">>,
+  snapshotBySender: ReadonlyMap<number, unknown>,
+): Set<number> {
+  const senderByTx = new Map(transactions.map((t) => [t.transaction_id, t.sender_id]));
+  const out = new Set<number>();
+  for (const f of result.failed) {
+    if (!BALANCE_SUSPECT_FAILURE_CODES.has(Number(f.code))) continue;
+    const senderId = senderByTx.get(f.transaction_id);
+    if (senderId !== undefined && !snapshotBySender.has(senderId)) out.add(senderId);
+  }
+  return out;
 }
