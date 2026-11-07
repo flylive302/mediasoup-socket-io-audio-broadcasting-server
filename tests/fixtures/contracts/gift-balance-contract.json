@@ -1,5 +1,5 @@
 {
-  "_comment": "gift-authority-tick-fanout/06 — shared backend<->room-server contract. Backend: tests/Feature/Gift/GiftBalanceContractTest.php asserts live output matches. Room server: copied in by ticket 10 and asserted there. Balance fields are decimal STRINGS; version is an integer that only increases per user and sits BESIDE balance, never inside it (ticket 19). ticket 19: refused_senders[] carries the same snapshot for every sender whose group was refused with 4002/5000 — never in processed[]. gift-cashback-latency 01: lucky_result_payload is the `lucky:result` sender payload (also the `sender` of an inline lucky[] entry, kind=result); tapped_at is an integer epoch-MILLISECONDS stamp of the oldest tap the result covers, minted by the room server gate and OMITTED (never null) when unknown — the room server observes tap→emit latency only when it is present.",
+  "_comment": "gift-authority-tick-fanout/06 — shared backend<->room-server contract. Backend: tests/Feature/Gift/GiftBalanceContractTest.php asserts live output matches. Room server: copied in by ticket 10 and asserted there. Balance fields are decimal STRINGS; version is an integer that only increases per user and sits BESIDE balance, never inside it (ticket 19). ticket 19: refused_senders[] carries the same snapshot for every sender whose group was refused with 4002/5000 — never in processed[]. gift-cashback-latency 01: lucky_result_payload is the `lucky:result` sender payload (also the `sender` of an inline lucky[] entry, kind=result); tapped_at is an integer epoch-MILLISECONDS stamp of the oldest tap the result covers, minted by the room server gate and OMITTED (never null) when unknown — the room server observes tap→emit latency only when it is present. gift-cashback-latency 04: inline_lucky_batch_response is a batch response whose lucky burst settled INLINE after the money committed (GIFT_LUCKY_INLINE_DRAW_BUDGET_MS): top-level lucky_inline is true (the room server ignores lucky[] without it), each lucky[] entry's sender/room payloads are emitted verbatim as lucky:result / lucky:room-result, and processed[].balance is the POST-WIN snapshot (debit and cashback both applied, version bumped by each).",
   "batch_response": {
     "processed_count": 1,
     "failed": [
@@ -29,6 +29,53 @@
           "charm_xp": "0.0000"
         },
         "version": 3
+      }
+    ]
+  },
+  "inline_lucky_batch_response": {
+    "processed_count": 1,
+    "failed": [],
+    "processed": [
+      {
+        "transaction_ids": ["tx-1"],
+        "sender_id": 1,
+        "already_booked": false,
+        "balance": {
+          "coins": "51500.0000",
+          "diamonds": "0.0000",
+          "wealth_xp": "1000.0000",
+          "charm_xp": "0.0000"
+        },
+        "version": 2
+      }
+    ],
+    "refused_senders": [],
+    "lucky_inline": true,
+    "lucky": [
+      {
+        "transaction_ids": ["tx-1"],
+        "sender_id": 1,
+        "room_id": 3,
+        "kind": "result",
+        "sender": {
+          "multiplier": 2.5,
+          "coins_won": 2500,
+          "tier_name": "Lucky",
+          "gift_name": "Lucky Rose",
+          "reference_id": "tx-1",
+          "tapped_at": 1762300000000
+        },
+        "room": {
+          "sender_id": 1,
+          "gift_id": 5,
+          "gift_name": "Lucky Rose",
+          "multiplier": 2.5,
+          "coins_won": 2500,
+          "tier_name": "Lucky",
+          "room_id": 3,
+          "has_slide": false,
+          "tapped_at": 1762300000000
+        }
       }
     ]
   },

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Redis } from "ioredis";
 import type { Logger } from "@src/infrastructure/logger.js";
 
@@ -81,6 +83,11 @@ import {
 import { metrics } from "@src/infrastructure/metrics.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/** Shared backend<->room-server contract fixture (byte-identical in both repos). */
+const contract = JSON.parse(
+  readFileSync(resolve(__dirname, "../../../fixtures/contracts/gift-balance-contract.json"), "utf8"),
+);
 
 function createMockRedis() {
   const pipeline = {
@@ -552,6 +559,76 @@ describe("GiftBuffer", () => {
 
       expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:result", expect.anything());
       expect(mockEnqueueLucky).not.toHaveBeenCalled();
+    });
+
+    // ─── gift-cashback-latency 04: the shared contract fixture, end to end ──
+
+    it("contract fixture inline_lucky_batch_response: lucky:result to the sender, lucky:room-result to the room, post-win balance applied", async () => {
+      // `expected` is the untouched fixture; the buffer is fed a deep clone so
+      // the deep-equals below cannot pass by object identity.
+      const expected = contract.inline_lucky_batch_response;
+      const response = structuredClone(expected);
+      const entry = expected.lucky[0];
+      const booked = expected.processed[0];
+      vi.setSystemTime(entry.sender.tapped_at + 1500);
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: entry.transaction_ids[0], sender_id: entry.sender_id }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue(response);
+
+      await buffer.stop();
+
+      const emitsOf = (event: string) =>
+        mockIo._emit.mock.calls.filter(([name]: [string]) => name === event);
+
+      // Sender leg: every socket of the sender gets the fixture's `sender` payload, once.
+      expect(mockUserSocketRepo.getSocketIds).toHaveBeenCalledWith(entry.sender_id);
+      expect(mockIo.to).toHaveBeenCalledWith("sock-1");
+      expect(emitsOf("lucky:result")).toStrictEqual([["lucky:result", entry.sender]]);
+
+      // Room leg: the fixture's `room` payload, ticker off -> direct emit to room_id.
+      expect(mockIo.to).toHaveBeenCalledWith(String(entry.room_id));
+      expect(emitsOf("lucky:room-result")).toStrictEqual([["lucky:room-result", entry.room]]);
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+
+      // Metrics: one inline `result`; tapped_at (epoch ms) passes the real latency GATE.
+      expect(metrics.giftLuckyInlineTotal.inc).toHaveBeenCalledTimes(1);
+      expect(metrics.giftLuckyInlineTotal.inc).toHaveBeenCalledWith({ kind: "result" });
+      expect(metrics.giftLuckyResultLatencySeconds.observe).toHaveBeenCalledWith({ path: "inline" }, 1.5);
+
+      // Money: processed[].balance is the POST-WIN snapshot; it must reach the
+      // ledger (real batchSnapshotsBySender) and the sender's balance push.
+      expect(mockReconcileBalance).toHaveBeenCalledWith(
+        entry.sender_id,
+        { ...booked.balance, version: booked.version },
+        entry.transaction_ids,
+        "batch",
+      );
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", { ...booked.balance, version: booked.version });
+    });
+
+    it("contract fixture without lucky_inline -> no lucky emit at all (the backend must keep sending the flag)", async () => {
+      const response = structuredClone(contract.inline_lucky_batch_response);
+      const entry = response.lucky[0];
+      delete response.lucky_inline;
+      expect(response.lucky).toHaveLength(1); // lucky[] is still there; only the flag is gone
+      mockRedis._claimItems = [
+        makeGiftJSON({ transaction_id: entry.transaction_ids[0], sender_id: entry.sender_id }),
+      ];
+      mockLaravel.processGiftBatch.mockResolvedValue(response);
+
+      await buffer.stop();
+
+      // The batch WAS processed (balance push still goes out) ...
+      expect(mockLaravel.processGiftBatch).toHaveBeenCalledTimes(1);
+      expect(mockIo._emit).toHaveBeenCalledWith("balance.updated", expect.anything());
+      // ... but lucky[] without the flag is ignored.
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:result", expect.anything());
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:no-draw", expect.anything());
+      expect(mockIo._emit).not.toHaveBeenCalledWith("lucky:room-result", expect.anything());
+      expect(mockEnqueueLucky).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyInlineTotal.inc).not.toHaveBeenCalled();
+      expect(metrics.giftLuckyResultLatencySeconds.observe).not.toHaveBeenCalled();
     });
 
     // ─── gift-cashback-latency 01: tap → sender-sees-result (path="inline") ──

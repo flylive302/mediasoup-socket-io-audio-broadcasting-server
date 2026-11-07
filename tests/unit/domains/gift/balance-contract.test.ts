@@ -12,6 +12,7 @@ import { luckyTapToEmitSeconds } from "@src/domains/gift/luckyLatency.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { batchSnapshotsBySender } from "@src/domains/gift/batchSnapshot.js";
+import { toSnapshot } from "@src/domains/gift/balanceSync.js";
 
 const local = resolve(__dirname, "../../../fixtures/contracts/gift-balance-contract.json");
 const backend = resolve(__dirname, "../../../../../backend/tests/Fixtures/contracts/gift-balance-contract.json");
@@ -52,6 +53,34 @@ describe("gift balance contract fixture", () => {
     expect(snapshots.get(booked.sender_id)).toEqual({ ...booked.balance, version: booked.version });
     expect(snapshots.get(refused.sender_id)).toEqual({ ...refused.balance, version: refused.version });
     expect(snapshots.size).toBe(2);
+  });
+
+  it("gift-cashback-latency 04: inline_lucky_batch_response's POST-WIN snapshot (debit + cashback applied) reaches the ledger through the real parsers", () => {
+    // The inline lucky draw settles before the batch response is built, so
+    // processed[].balance is the post-win number (51 500 here, not the
+    // post-debit 49 000 of batch_response). If MSAB failed to read it, the
+    // RECONCILE would release the holds onto a stale `db` and spendable would
+    // dip below what the sender just won.
+    const inline = fixture.inline_lucky_batch_response;
+    const booked = inline.processed[0];
+    const snapshots = batchSnapshotsBySender(inline);
+
+    expect(snapshots.size).toBe(1);
+    const wire = snapshots.get(1);
+    expect(wire).toEqual({ ...booked.balance, version: booked.version });
+    // The exact object giftBuffer hands to reconcileBalance() -> toSnapshot().
+    expect(toSnapshot(wire)).toEqual({ db: 51500, version: 2 });
+  });
+
+  it("gift-cashback-latency 04: inline_lucky_batch_response carries lucky_inline plus a lucky[] entry whose sender payload is the lucky_result_payload", () => {
+    const inline = fixture.inline_lucky_batch_response;
+    expect(inline.lucky_inline).toBe(true);
+    expect(inline.lucky).toHaveLength(1);
+    const entry = inline.lucky[0];
+    expect(entry.kind).toBe("result");
+    expect(inline.processed[0].transaction_ids).toEqual(entry.transaction_ids);
+    expect(inline.processed[0].sender_id).toBe(entry.sender_id);
+    expect(entry.sender).toEqual(fixture.lucky_result_payload);
   });
 
   it("balance.updated payload carries version alongside the absolute snapshot", () => {
