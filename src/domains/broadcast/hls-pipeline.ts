@@ -16,8 +16,10 @@
  *    1/15 volume. With normalize off each speaker keeps unity gain.
  *  - Silence tolerance (cost-and-speed-tuning/02): every input passes through
  *    `aresample=async=1:first_pts=0` before `amix`, so DTX gaps are filled with
- *    silence. Verified with FFmpeg 7.0.2: DTX-like sparse RTP (1 packet / 0.4s or
- *    1 / 2s) does NOT stall this graph. A TOTAL halt of one input's RTP (no packets
+ *    silence. Verified on FFmpeg 7.0.2 and the prod image's apt 5.1.9
+ *    (docs/issues/cost-and-speed-tuning/assets-02-dtx-repro/): DTX-like sparse RTP
+ *    (1 packet / 0.4s or 1 / 2s), every input sparse at once, and 40 ms Opus
+ *    packets do NOT stall this graph. A TOTAL halt of one input's RTP (no packets
  *    at all, e.g. a paused producer) still stalls amix — no filter-only graph fixes
  *    that (anullsrc floor, apad, arealtime all re-tested and still stall), which is
  *    why paused producers are excluded from the mix set / trigger a restart.

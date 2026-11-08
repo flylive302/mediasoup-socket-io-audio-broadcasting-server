@@ -27,8 +27,15 @@ export const mediasoupConfig = {
         channels: 2,
         parameters: {
           useinbandfec: 1, // Forward error correction
-          usedtx: 0, // Disable discontinuous transmission (keep alive)
-          minptime: 10, // Low latency packets (10ms)
+          // Discontinuous transmission advertised (cost-and-speed-tuning 03).
+          // The client mic producer turns it on via `opusDtx: true` and music
+          // keeps it off — the producer's own codec parameters are what
+          // mediasoup and consumers act on, so this is the default, not a
+          // switch. It was 0 because DTX froze the HLS amix; ticket 02
+          // hardened the mix graph and proved it on the prod FFmpeg 5.1.9
+          // (docs/issues/cost-and-speed-tuning/assets-02-dtx-repro/).
+          usedtx: 1,
+          minptime: 10, // Lowest packet duration a client may use (10ms); the mic asks for 40
           "sprop-stereo": 1,
         },
       },
