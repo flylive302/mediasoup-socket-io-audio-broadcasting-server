@@ -22,6 +22,7 @@ import { RoomBlockRepository } from "@src/domains/room/room-block.repository.js"
 import { Errors } from "@src/shared/errors.js";
 import { ensureWarm } from "@src/domains/gift/balanceSync.js";
 import { readLuckyNumberSnapshot } from "@src/domains/lucky-number/index.js";
+import { getVideoPlayerState } from "@src/domains/video-player/index.js";
 import {
   resolveJoinerRoomRole,
   roomRoleFor,
@@ -597,6 +598,15 @@ async function processJoin(
     ? await readLuckyNumberSnapshot(context.redis, roomId)
     : null;
 
+  // room-video-player/02: Room Video Snapshot for late joiners. Origin's wins for
+  // edges (an origin on the previous release omits the field → null). No Redis
+  // read at all while the flag is off.
+  const videoPlayer = !config.VIDEO_PLAYER_ENABLED
+    ? null
+    : originSnapshot
+      ? (originSnapshot.videoPlayer ?? null)
+      : await getVideoPlayerState(context.redis, roomId);
+
   return {
     rtpCapabilities,
     participants,
@@ -606,6 +616,7 @@ async function processJoin(
     musicPlayer,
     activeAppSlides,
     luckyNumber,
+    videoPlayer,
     newCount,
     userId,
     reclaimedSeat: reclaim.reclaimed
@@ -810,6 +821,10 @@ export const joinRoomHandler = createHandler(
       luckyNumberEnabled: config.LUCKY_NUMBER_ENABLED,
       // lucky-number/03: null unless a round is live right now.
       luckyNumber: result.luckyNumber,
+      // room-video-player/02: FE hides every video entry point when false.
+      videoPlayerEnabled: config.VIDEO_PLAYER_ENABLED,
+      // room-video-player/02: null unless a Room Video is live right now.
+      videoPlayer: result.videoPlayer,
     } as HandlerResult;
   },
 );

@@ -1,6 +1,7 @@
 /**
  * Cascade Types — Shared types for SFU cascade cross-region coordination
  */
+import type { VideoSnapshot } from "@src/domains/video-player/video-player.redis.js";
 
 // ─── Pipe Negotiation ───────────────────────────────────────────
 
@@ -100,4 +101,9 @@ export interface OriginRoomSnapshot {
     position: number;
     isPaused: boolean;
   } | null;
+  /**
+   * room-video-player/02: the Room Video Snapshot (origin wins). Optional — an
+   * origin still on the previous release omits it. Null when the flag is off.
+   */
+  videoPlayer?: VideoSnapshot | null;
 }

@@ -187,6 +187,9 @@ const configSchema = z.object({
   LUCKY_NUMBER_ROUND_MS: z.coerce.number().int().positive().default(10_000),
   LUCKY_NUMBER_COOLDOWN_MS: z.coerce.number().int().nonnegative().default(15_000),
   LUCKY_NUMBER_MIN_SEATS: z.coerce.number().int().positive().default(2),
+  // Room Video (room-video-player/02). Ships INERT: absent ⇒ false ⇒ every
+  // videoPlayer:* handler refuses and the join ack never reads Redis for it.
+  VIDEO_PLAYER_ENABLED: booleanEnvSchema,
   // lucky-number/02: picks ~1 per 300 ms per (sender, room); FE coalesces taps.
   RATE_LIMIT_LUCKY_NUMBER_PICKS_PER_WINDOW: z.coerce.number().default(1),
   RATE_LIMIT_LUCKY_NUMBER_PICKS_WINDOW_SECONDS: z.coerce.number().default(0.3),

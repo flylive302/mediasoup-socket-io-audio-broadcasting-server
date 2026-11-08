@@ -46,6 +46,13 @@ export const Errors = {
   /** The round's `endsAt` has passed; the result is being resolved (lucky-number/02). */
   LUCKY_NUMBER_ROUND_OVER: "lucky_number_round_over",
 
+  // Room Video (room-video-player/02) — machine-readable, FE maps to copy
+  VIDEO_PLAYER_DISABLED: "video_player_disabled",
+  /** `source.kind='url'` failed the https / ≤ 2048-char rule. */
+  VIDEO_SOURCE_INVALID: "video_source_invalid",
+  /** The media slot is held by another user; ack `data: { heldBy, userId }`. */
+  MEDIA_SLOT_BUSY: "media_slot_busy",
+
   // Seat
   SEAT_TAKEN: "Seat is already taken",
   SEAT_LOCKED: "Seat is locked",

@@ -487,6 +487,12 @@ variable "lucky_number_enabled" {
   default     = false
 }
 
+variable "video_player_enabled" {
+  description = "room-video-player 02: switches on the in-room Room Video (VIDEO_PLAYER_ENABLED). Default false = inert; flip = var change + rolling refresh."
+  type        = bool
+  default     = false
+}
+
 variable "gift_flush_partitions" {
   description = "gift-batch-503 / keep-watching 23: GIFT_FLUSH_PARTITIONS baked into task env so a lost gift:flags Redis hash no longer reverts to 1. Default 1 = today's schema default (inert). Redis hash still wins at runtime."
   type        = number

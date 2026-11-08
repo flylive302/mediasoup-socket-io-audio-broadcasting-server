@@ -20,6 +20,7 @@ import type { CascadeRelay } from "@src/domains/cascade/cascade-relay.js";
 import type { CascadeCoordinator } from "@src/domains/cascade/cascade-coordinator.js";
 import type { SeatRepository } from "@src/domains/seat/seat.repository.js";
 import { getMusicPlayerState } from "@src/domains/audio-player/index.js";
+import { getVideoPlayerState } from "@src/domains/video-player/index.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { retryAsync } from "@src/shared/retry.js";
 import { metrics } from "@src/infrastructure/metrics.js";
@@ -287,9 +288,11 @@ export const createInternalRoutes = (
         const state = await roomManager.state.get(roomId);
         const seatCount = Number(request.query.seatCount) || state?.seatCount || 15;
 
-        const [seatsRaw, musicPlayer] = await Promise.all([
+        const [seatsRaw, musicPlayer, videoPlayer] = await Promise.all([
           seatRepository.getSeats(roomId, seatCount),
           getMusicPlayerState(redis, roomId),
+          // room-video-player/02: no Redis read while the flag is off.
+          config.VIDEO_PLAYER_ENABLED ? getVideoPlayerState(redis, roomId) : Promise.resolve(null),
         ]);
 
         const seats: { seatIndex: number; userId: number; isMuted: boolean }[] = [];
@@ -310,6 +313,7 @@ export const createInternalRoutes = (
           lockedSeats,
           seatCount,
           musicPlayer,
+          videoPlayer,
         };
       },
     );

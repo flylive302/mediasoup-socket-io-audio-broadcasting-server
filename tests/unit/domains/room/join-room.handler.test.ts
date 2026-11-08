@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockEnsureWarm = vi.fn().mockResolvedValue(undefined);
 vi.mock("@src/domains/gift/balanceSync.js", () => ({
@@ -32,6 +32,7 @@ const mockConfig = vi.hoisted(() => ({
   MEDIASOUP_ANNOUNCED_IP: null as string | null,
   SEAT_RETENTION_GRACE_MS: 120_000,
   LUCKY_NUMBER_ENABLED: false,
+  VIDEO_PLAYER_ENABLED: false,
 }));
 vi.mock("@src/config/index.js", () => ({ config: mockConfig }));
 
@@ -738,6 +739,35 @@ describe("joinRoomHandler", () => {
       const result = cb.mock.calls[0]?.[0] as { rtpCapabilities: unknown };
       expect(result.rtpCapabilities).toEqual(edgeCaps);
     });
+
+    // room-video-player/02: origin's Room Video Snapshot wins on an edge.
+    it.each([
+      ["origin's Snapshot", { controllerUserId: 3, revision: 4 }],
+      ["null when an older origin omits the field", undefined],
+    ])("edge join ack carries %s as videoPlayer (flag on)", async (_label, originVideo) => {
+      mockConfig.VIDEO_PLAYER_ENABLED = true;
+      const { ctx } = makeStaleEdgeContext({
+        originParticipants: [],
+        originSnapshot: {
+          seats: [],
+          lockedSeats: [],
+          seatCount: 15,
+          musicPlayer: null,
+          ...(originVideo !== undefined && { videoPlayer: originVideo }),
+        },
+      });
+      const get = vi.fn().mockResolvedValue(JSON.stringify({ controllerUserId: 99 }));
+      ctx.redis = { ...ctx.redis, get };
+      const cb = vi.fn();
+
+      await joinRoomHandler(socket, ctx)({ roomId: "room-12" }, cb);
+      mockConfig.VIDEO_PLAYER_ENABLED = false;
+
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, videoPlayerEnabled: true, videoPlayer: originVideo ?? null }),
+      );
+      expect(get).not.toHaveBeenCalledWith("room:room-12:videoState");
+    });
   });
 
   // aws-production/38-B: seats[] (Redis, always complete) render with no
@@ -929,5 +959,64 @@ describe("joinRoomHandler — lucky number snapshot (lucky-number/03)", () => {
       expect.objectContaining({ success: true, luckyNumber: null }),
     );
     expect(get).not.toHaveBeenCalled();
+  });
+});
+
+// room-video-player/02: Room Video Snapshot + flag echo in the join ack.
+describe("joinRoomHandler — Room Video snapshot (room-video-player/02)", () => {
+  afterEach(() => {
+    mockConfig.VIDEO_PLAYER_ENABLED = false;
+  });
+
+  it("includes the stored Snapshot and videoPlayerEnabled: true when the flag is on", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+    const ctx = createMockContext();
+    const snapshot = {
+      controllerUserId: 7,
+      source: { kind: "youtube", videoId: "dQw4w9WgXcQ" },
+      paused: false,
+      positionAtTs: 12,
+      serverTs: 1_731_068_400_123,
+      revision: 3,
+    };
+    const get = vi.fn(async (key: string) =>
+      key === "room:room-1:videoState" ? JSON.stringify(snapshot) : null,
+    );
+    ctx.redis = { get, hkeys: vi.fn() };
+    const cb = vi.fn();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, videoPlayerEnabled: true, videoPlayer: snapshot }),
+    );
+  });
+
+  it("returns videoPlayer: null when the flag is on and no video is live", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+    const ctx = createMockContext();
+    ctx.redis = { get: vi.fn().mockResolvedValue(null), hkeys: vi.fn() };
+    const cb = vi.fn();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, videoPlayerEnabled: true, videoPlayer: null }),
+    );
+  });
+
+  it("returns videoPlayer: null, videoPlayerEnabled: false and never reads the key when the flag is off", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = false;
+    const ctx = createMockContext();
+    const get = vi.fn().mockResolvedValue(null);
+    ctx.redis = { get, hkeys: vi.fn() };
+    const cb = vi.fn();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, videoPlayerEnabled: false, videoPlayer: null }),
+    );
+    expect(get).not.toHaveBeenCalledWith("room:room-1:videoState");
   });
 });

@@ -56,11 +56,12 @@ import { Errors } from "@src/shared/errors.js";
  *     seat reaction        1/1.5s = 0.67/s
  *     DM typing             1/2s = 0.5/s
  *     audioPlayer:stateUpdate      = 0.5/s (frontend setInterval, 2000ms)
+ *     videoPlayer:heartbeat        = 0.5/s (room-video-player/02, Controller only, 2000ms)
  *                                  ─────────
- *                            total ≈ 13.7/s
+ *                            total ≈ 14.2/s
  *   SOCKET_EVENT_BUDGET_REFILL_PER_SECOND=20 clears both:
  *     20 / 5.5  (ticket's stated single-handler floor) ≈ 3.6x headroom
- *     20 / 13.7 (realistic all-streams-at-once ceiling) ≈ 1.5x headroom
+ *     20 / 14.2 (realistic all-streams-at-once ceiling) ≈ 1.4x headroom
  *   A lower refill (e.g. 10) clears the ticket's stated floor alone but
  *   leaves under 1.3x on the realistic aggregate — thin enough that a truly
  *   enthusiastic gifting-while-chatting session could drain the CAPACITY=100

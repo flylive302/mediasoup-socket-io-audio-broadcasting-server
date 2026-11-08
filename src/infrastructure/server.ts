@@ -232,10 +232,11 @@ export async function bootstrapServer(): Promise<BootstrapResult> {
       cascadeCoordinator,
       io,
       seatRepository: appContext.seatRepository,
-      // DURABLE: the only Redis read here is `getMusicPlayerState`, and
-      // `room:{id}:musicPlayer`/`musicState` are WRITTEN on the durable client by
-      // audio-player.handler.ts. On a cache store this cross-instance cascade read
-      // would always see null.
+      // DURABLE: the only Redis reads here are `getMusicPlayerState` and
+      // `getVideoPlayerState`; `room:{id}:musicPlayer`/`musicState` and
+      // `room:{id}:videoPlayer`/`videoState` are WRITTEN on the durable client by
+      // the audio-player / video-player handlers. On a cache store this
+      // cross-instance cascade read would always see null.
       redis: durableClient,
     }),
     { prefix: "/" },

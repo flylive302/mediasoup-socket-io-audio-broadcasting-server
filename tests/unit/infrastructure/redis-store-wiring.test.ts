@@ -94,9 +94,11 @@ describe("aws-platform-build/21 — Redis store wiring in server.ts", () => {
     expect(queueConsumerBlock).toContain("redis: durableClient");
   });
 
-  it("reads music-player state from the store that writes it", () => {
-    // audio-player.handler.ts writes room:{id}:musicPlayer / :musicState on the
-    // durable client. The cascade internal API reads them back cross-instance.
+  it("reads music- and video-player state from the store that writes it", () => {
+    // audio-player.handler.ts writes room:{id}:musicPlayer / :musicState and
+    // video-player.redis.ts (room-video-player/02) writes room:{id}:videoPlayer /
+    // :videoState on the durable client. The cascade internal API reads all four
+    // back cross-instance.
     const internalRoutesBlock = source.slice(
       source.indexOf("createInternalRoutes({"),
       source.indexOf("{ prefix: \"/\" }"),
@@ -104,5 +106,21 @@ describe("aws-platform-build/21 — Redis store wiring in server.ts", () => {
 
     expect(internalRoutesBlock).toContain("redis: durableClient");
     expect(internalRoutesBlock).not.toContain("redis: pubClient");
+  });
+
+  it("keeps the video-player keys on the durable client (room-video-player/02)", () => {
+    // The two video keys are a mutex and the late-joiner Snapshot: an evicted
+    // mutex lets a second Controller in; an evicted Snapshot shows joiners no
+    // video. Every Redis call in the domain goes through the `redis` it is
+    // handed, and the handler hands it `context.redis` (durable) — never
+    // `redisCache`.
+    const domainDir = fileURLToPath(new URL("../../../src/domains/video-player/", import.meta.url));
+    const redisSrc = readFileSync(`${domainDir}video-player.redis.ts`, "utf8");
+    const handlerSrc = readFileSync(`${domainDir}video-player.handler.ts`, "utf8");
+
+    expect(redisSrc).toContain("`room:${roomId}:videoPlayer`");
+    expect(redisSrc).toContain("`room:${roomId}:videoState`");
+    expect(handlerSrc).toContain("context.redis");
+    expect(handlerSrc).not.toContain("redisCache");
   });
 });

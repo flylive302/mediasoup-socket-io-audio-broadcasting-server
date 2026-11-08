@@ -317,6 +317,10 @@ GIFT_ALLOW_SELF_SEND=${gift_allow_self_send}
 # lucky-number 01/03: read by src/config LUCKY_NUMBER_ENABLED (boolean).
 LUCKY_NUMBER_ENABLED=${lucky_number_enabled}
 
+# Room Video (watch together)
+# room-video-player 02: read by src/config VIDEO_PLAYER_ENABLED (boolean).
+VIDEO_PLAYER_ENABLED=${video_player_enabled}
+
 # Gift flush partitioning
 # gift-batch-503 / keep-watching 23: read by src/config GIFT_FLUSH_PARTITIONS / GIFT_PENDING_TTL_MS.
 GIFT_FLUSH_PARTITIONS=${gift_flush_partitions}

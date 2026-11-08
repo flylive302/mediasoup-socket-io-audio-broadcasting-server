@@ -401,6 +401,51 @@ export const audioPlayerStateUpdateSchema = z.object({
 });
 
 // ─────────────────────────────────────────────────────────────────
+// Video Player Schemas (room-video-player/02)
+// Structure only. Semantic URL rules (https, length) are a handler GATE that
+// runs AFTER the feature-flag gate, so a flag-off box answers
+// VIDEO_PLAYER_DISABLED rather than INVALID_PAYLOAD for a well-formed request.
+// The `max(8192)` here is a size backstop, not the 2048 product rule.
+// ─────────────────────────────────────────────────────────────────
+
+const videoSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("youtube"),
+    videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/),
+  }),
+  z.object({
+    kind: z.literal("url"),
+    url: z.string().min(1).max(8192),
+    // Required: the client infers it (one implementation, frontend utils/video-source).
+    container: z.enum(["mp4", "hls"]),
+  }),
+]);
+
+const videoPositionSchema = z.number().finite().min(0);
+
+export const videoPlayerPlaySchema = z.object({
+  roomId: roomIdSchema,
+  source: videoSourceSchema,
+  title: z.string().min(1).max(200).optional(),
+  durationSec: z.number().finite().positive().optional(),
+});
+
+export const videoPlayerPositionSchema = z.object({
+  roomId: roomIdSchema,
+  positionSec: videoPositionSchema,
+});
+
+export const videoPlayerHeartbeatSchema = z.object({
+  roomId: roomIdSchema,
+  positionSec: videoPositionSchema,
+  paused: z.boolean(),
+});
+
+export const videoPlayerRoomOnlySchema = z.object({
+  roomId: roomIdSchema,
+});
+
+// ─────────────────────────────────────────────────────────────────
 // DM Typing Indicator Schemas (dm-realtime-platform/04)
 // Ephemeral client→MSAB→peer relay; no persistence, no backend involvement.
 // ─────────────────────────────────────────────────────────────────
