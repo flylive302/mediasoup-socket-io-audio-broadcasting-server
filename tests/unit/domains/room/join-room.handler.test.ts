@@ -1018,5 +1018,21 @@ describe("joinRoomHandler — Room Video snapshot (room-video-player/02)", () =>
       expect.objectContaining({ success: true, videoPlayerEnabled: false, videoPlayer: null }),
     );
     expect(get).not.toHaveBeenCalledWith("room:room-1:videoState");
+    expect(cb.mock.calls[0]?.[0]).not.toHaveProperty("serverNow");
+  });
+
+  // room-video-player/06: the late joiner's clock-offset anchor.
+  it("stamps serverNow (this server's clock at reply time) when the flag is on", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+    const ctx = createMockContext();
+    ctx.redis = { get: vi.fn().mockResolvedValue(null), hkeys: vi.fn() };
+    const cb = vi.fn();
+    const before = Date.now();
+
+    await joinRoomHandler(createMockSocket(), ctx)({ roomId: "room-1" }, cb);
+
+    const serverNow = cb.mock.calls[0]?.[0]?.serverNow as number;
+    expect(serverNow).toBeGreaterThanOrEqual(before);
+    expect(serverNow).toBeLessThanOrEqual(Date.now());
   });
 });

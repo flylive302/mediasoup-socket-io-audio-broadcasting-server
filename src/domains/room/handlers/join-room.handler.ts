@@ -825,6 +825,12 @@ export const joinRoomHandler = createHandler(
       videoPlayerEnabled: config.VIDEO_PLAYER_ENABLED,
       // room-video-player/02: null unless a Room Video is live right now.
       videoPlayer: result.videoPlayer,
+      // room-video-player/06: this server's clock (epoch ms) at reply time — the
+      // late joiner's first clock-offset sample. The Snapshot's own `serverTs` is
+      // the last write (up to a heartbeat old while playing, arbitrary when
+      // paused), so it cannot anchor the offset; without this a phone whose clock
+      // is off would land on the wrong second. Flag-gated like the rest.
+      ...(config.VIDEO_PLAYER_ENABLED && { serverNow: Date.now() }),
     } as HandlerResult;
   },
 );
