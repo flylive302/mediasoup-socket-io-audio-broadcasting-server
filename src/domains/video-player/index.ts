@@ -7,3 +7,8 @@
  */
 export { videoPlayerHandler, releaseVideoPlayerForUser } from "./video-player.handler.js";
 export { getVideoPlayerState, type VideoSnapshot } from "./video-player.redis.js";
+export {
+  videoPlayerLifecycle,
+  releaseVideoOnRoomLeave,
+  clearVideoPlayerForRoom,
+} from "./video-player.lifecycle.js";

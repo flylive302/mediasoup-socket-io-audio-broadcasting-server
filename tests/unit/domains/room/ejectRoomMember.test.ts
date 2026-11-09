@@ -7,13 +7,20 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@src/config/index.js", () => ({
-  config: {
-    AWS_REGION: "test-region",
-    PUBLIC_IP: null,
-    MEDIASOUP_ANNOUNCED_IP: null,
-    PORT: 3030,
-  },
+const mockConfig = vi.hoisted(() => ({
+  AWS_REGION: "test-region",
+  PUBLIC_IP: null,
+  MEDIASOUP_ANNOUNCED_IP: null,
+  PORT: 3030,
+  VIDEO_PLAYER_ENABLED: false,
+}));
+vi.mock("@src/config/index.js", () => ({ config: mockConfig }));
+
+// room-video-player/03: the video release itself is covered by the video-player
+// handler tests; here only "does a kick release the Controller's video" matters.
+const releaseVideoMock = vi.hoisted(() => vi.fn().mockResolvedValue(true));
+vi.mock("@src/domains/video-player/index.js", () => ({
+  releaseVideoPlayerForUser: (...args: unknown[]) => releaseVideoMock(...args),
 }));
 vi.mock("@src/infrastructure/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -190,5 +197,42 @@ describe("ejectRoomMember — producer + music cleanup (dj-talk-over/02)", () =>
     };
 
     await expect(ejectRoomMember(deps as any, "room-1", userId)).resolves.not.toThrow();
+  });
+});
+
+describe("ejectRoomMember — Room Video release (room-video-player/03)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.VIDEO_PLAYER_ENABLED = false;
+  });
+
+  function deps(userId: number) {
+    const io = makeIo(makeTargetSocket(userId));
+    return {
+      io,
+      seatRepository: { leaveSeat: vi.fn().mockResolvedValue({ success: false }) },
+      clientManager: { getClient: vi.fn().mockReturnValue(undefined), clearClientRoom: vi.fn() },
+      roomStateRepo: { adjustParticipantCount: vi.fn().mockResolvedValue(0) },
+      statusCoalescer: { submit: vi.fn() },
+      userRoomRepository: { clearUserRoom: vi.fn().mockResolvedValue(undefined) },
+      logger: makeLogger(),
+      redis: makeMusicRedis(null),
+      cascadeRelay: null,
+      getRoom: vi.fn(),
+    };
+  }
+
+  it("releases the kicked user's Room Video (no live-socket guard) when the flag is on", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+    const d = deps(42);
+
+    await ejectRoomMember(d as any, "room-1", 42);
+
+    expect(releaseVideoMock).toHaveBeenCalledWith(d.redis, d.io, "room-1", 42, null);
+  });
+
+  it("never touches video when the flag is absent", async () => {
+    await ejectRoomMember(deps(42) as any, "room-1", 42);
+    expect(releaseVideoMock).not.toHaveBeenCalled();
   });
 });

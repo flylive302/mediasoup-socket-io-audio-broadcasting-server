@@ -10,6 +10,7 @@
  * room — still receiving its broadcasts and holding its seat).
  */
 import { finalizeLeave } from "./leave-finalizer.js";
+import { releaseVideoOnRoomLeave } from "@src/domains/video-player/index.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 
@@ -19,4 +20,8 @@ export async function performRoomLeave(
   roomId: string,
 ): Promise<void> {
   await finalizeLeave(socket, context, roomId, { viaDisconnect: false });
+  // room-video-player/03: a Controller who leaves (or switches rooms) ends the
+  // Room Video. Here, not in finalizeLeave — that also runs on disconnect, which
+  // the video lifecycle hook covers. Never throws.
+  await releaseVideoOnRoomLeave(socket, context, roomId);
 }

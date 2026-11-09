@@ -134,11 +134,11 @@ async function withAuthCheck(
 // Three tiers of authorization are intentionally maintained:
 //
 // 1. verifyRoomOwner (strict) — Owner-only actions:
-//    - assign-seat, remove-seat, audioPlayer:takeover
+//    - assign-seat, remove-seat, audioPlayer:takeover, videoPlayer:takeover
 //    - These alter the room's seating arrangement and should only be done by the room creator.
 //
 // 2. verifyRoomManager (permissive) — Owner OR Admin, no victim:
-//    - unlock-seat, invite, audioPlayer:play
+//    - unlock-seat, invite, audioPlayer:play, videoPlayer:play
 //    - Answers only "may this user moderate at all". Correct for actions that
 //      change a slot or the room, not a specific person.
 //

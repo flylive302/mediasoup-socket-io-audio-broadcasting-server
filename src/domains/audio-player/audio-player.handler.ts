@@ -8,9 +8,16 @@
  *
  * The waiting-queue machinery (FIFO enqueue, atomic release+grant, promote,
  * ghost-skip grant chain, grace timer) lives in ./audio-player.queue.ts.
+ *
+ * room-video-player/03: music and the Room Video share ONE media slot. With
+ * VIDEO_PLAYER_ENABLED on, the acquire script also checks the video mutex
+ * (foreign video → MEDIA_SLOT_BUSY, my own video → released) and the owner's
+ * takeover clears any video. Flag off ⇒ the script never reads the video keys.
+ * The scripts live in video-player/media-slot.redis.ts.
  */
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
+import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import {
   audioPlayerPlaySchema,
@@ -34,34 +41,16 @@ import {
   grantChain,
   hasLiveSocketInRoom,
 } from "./audio-player.queue.js";
-
-/**
- * music-dj-queue/01: Stale-proof slot acquisition (atomic).
- *
- * Always returns the RESULTING holder id, so the caller's success test is
- * simply `result === myId`. One script covers three cases:
- *   - free slot (GET null)        → acquire
- *   - reuse-if-mine (GET == myId) → re-SET (refreshes TTL, never MUSIC_ALREADY_PLAYING on track change)
- *   - CAS steal (GET == stealHolder, passed only after a JS liveness check
- *                proved that holder has zero live sockets in the room)
- * Otherwise the current (live, different) holder id is returned unchanged →
- * denial. Passing stealHolder="" disables the steal branch (phase-1 call).
- *
- * Race safety: the steal is a compare-and-set — two admins who both observe the
- * same dead holder cannot both win. The first CAS overwrites the key with its
- * own id; the second sees `cur` = the winner's id (≠ stealHolder, ≠ its own id)
- * and is denied. No check-then-set window exists because the compare and the
- * set are one Redis round-trip inside the script.
- */
-const ACQUIRE_MUSIC_SLOT_LUA = `
-local cur = redis.call('GET', KEYS[1])
-if (not cur) or (cur == ARGV[1]) or (ARGV[2] ~= '' and cur == ARGV[2]) then
-  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
-  return ARGV[1]
-else
-  return cur
-end
-`;
+import {
+  acquireMusicSlotOnce,
+  clearVideoSlot,
+  type MusicSlotResult,
+} from "@src/domains/video-player/media-slot.redis.js";
+import {
+  acquireWithStaleSteal,
+  announceVideoStoppedByMusic,
+  slotBusyAck,
+} from "@src/domains/video-player/media-slot.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Handlers
@@ -94,7 +83,10 @@ const playHandler = createHandler(
     // slot (holder with zero live sockets in this room). Only a live, different
     // holder denies.
     let acquired = await acquireMusicSlot(context, roomId, userId);
-    if (!acquired) {
+    // room-video-player/03: a Room Video holds the media slot — refuse outright.
+    // The waiting queue lines up behind a DJ, never behind a video.
+    if (!acquired.acquired && acquired.heldBy === "video") return slotBusyAck(acquired);
+    if (!acquired.acquired) {
       // music-dj-queue/04: OTA compat — bundles that don't opt in get today's
       // exact behavior (no queue write, plain MUSIC_ALREADY_PLAYING).
       if (!enqueue) {
@@ -115,8 +107,10 @@ const playHandler = createHandler(
         // the key), so a false here MUST deny — falling through would broadcast
         // "playing" for a user who no longer holds the mutex.
         acquired = await acquireMusicSlot(context, roomId, userId);
-        if (!acquired) {
-          return { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
+        if (!acquired.acquired) {
+          return acquired.heldBy === "video"
+            ? slotBusyAck(acquired)
+            : { success: false, error: Errors.MUSIC_ALREADY_PLAYING };
         }
       } else {
         // music-dj-queue/05: a different head was promoted in the race window —
@@ -138,6 +132,14 @@ const playHandler = createHandler(
       position: 0,
     });
     await context.redis.setex(musicStateKey(roomId), MUSIC_PLAYER_TTL_SECONDS, state);
+
+    // room-video-player/03: the acquire released a Room Video (mine, or a
+    // proven-dead Controller's) — clear it for the room before music starts.
+    if (acquired.releasedVideo !== null) {
+      await announceVideoStoppedByMusic(
+        context.io, context.clientManager, roomId, Number(acquired.releasedVideo), userId, context.cascadeRelay,
+      );
+    }
 
     // Broadcast to all room members (including sender for UI confirmation)
     broadcastToRoom(
@@ -223,6 +225,18 @@ const takeoverHandler = createHandler(
       );
       if (socketIds.length > 0) {
         context.io.to(socketIds).emit("audioPlayer:revoked", { roomId, byUserId: userId });
+      }
+    }
+
+    // room-video-player/03: one media slot — the owner's music also ends any
+    // Room Video. Cleared AFTER the music SET: a video acquire racing in between
+    // sees the owner's music and is refused, so both are never held at once.
+    if (config.VIDEO_PLAYER_ENABLED) {
+      const clearedVideo = await clearVideoSlot(context.redis, roomId);
+      if (clearedVideo !== null) {
+        await announceVideoStoppedByMusic(
+          context.io, context.clientManager, roomId, Number(clearedVideo), userId, context.cascadeRelay,
+        );
       }
     }
 
@@ -382,49 +396,26 @@ export async function userHasLiveSocketInRoom(
 }
 
 /**
- * music-dj-queue/01: acquire the room's music slot, stale-proof.
- *
- * Phase 1 (atomic): free-slot OR reuse-if-mine. Returns the resulting holder.
- * Phase 2 (only when denied by a DIFFERENT holder): check fleet-wide liveness
- * via `userHasLiveSocketInRoom` (local clientManager fast-path, then the
- * Socket.IO adapter cross-instance). If the holder has no live socket in the
- * room anywhere, CAS-steal the slot. A live different holder is the only denial.
+ * music-dj-queue/01: acquire the room's music slot, stale-proof — one atomic
+ * script per attempt (media-slot.redis.ts):
+ *   - free slot, reuse-if-mine (refreshes the TTL so a track change never
+ *     self-denies), or CAS-steal a holder proven dead;
+ *   - room-video-player/03, flag on: the video mutex is checked in the same
+ *     script — a foreign video denies, my own video is released.
+ * A denial by a DIFFERENT holder triggers the fleet-wide liveness check
+ * (`userHasLiveSocketInRoom`: local clientManager fast-path, then the Socket.IO
+ * adapter cross-instance); only a holder with no live socket in the room
+ * anywhere is stolen, via a CAS that loses to any rival who got there first.
  */
 async function acquireMusicSlot(
   context: AppContext,
   roomId: string,
   userId: number,
-): Promise<boolean> {
-  const key = musicPlayerKey(roomId);
-  const me = String(userId);
-  const ttl = String(MUSIC_PLAYER_TTL_SECONDS);
-
-  // Phase 1 — free slot or reuse-if-mine (steal branch disabled with "").
-  const holder = (await context.redis.eval(
-    ACQUIRE_MUSIC_SLOT_LUA,
-    1,
-    key,
-    me,
-    "",
-    ttl,
-  )) as string;
-  if (holder === me) return true;
-
-  // Denied by a different holder — steal only if they have no live socket in the
-  // room ANYWHERE in the fleet (this room's users can sit on other MSAB
-  // instances behind the LB). Local check first, then cross-instance.
-  if (await userHasLiveSocketInRoom(context, Number(holder), roomId)) return false;
-
-  // Phase 2 — CAS steal: succeeds only if `holder` is STILL the dead holder.
-  const stolen = (await context.redis.eval(
-    ACQUIRE_MUSIC_SLOT_LUA,
-    1,
-    key,
-    me,
-    holder,
-    ttl,
-  )) as string;
-  return stolen === me;
+): Promise<MusicSlotResult> {
+  return acquireWithStaleSteal(
+    (steal) => acquireMusicSlotOnce(context.redis, roomId, userId, steal, config.VIDEO_PLAYER_ENABLED),
+    (holder) => userHasLiveSocketInRoom(context, Number(holder), roomId),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// room-video-player/02 — handler seam: captured socket.on registrations with
+// room-video-player/02 + 03 — handler seam: captured socket.on registrations with
 // mocked Redis, room-emit, seat.owner and config. The Lua bodies themselves run
 // against a real Redis in tests/integration/video-player/video-state.redis.test.ts.
 
@@ -22,9 +22,16 @@ vi.mock("@src/shared/room-emit.js", () => ({
 }));
 
 const verifyRoomManagerMock = vi.fn();
+const verifyRoomOwnerMock = vi.fn();
 vi.mock("@src/domains/seat/seat.owner.js", () => ({
   verifyRoomManager: (...args: unknown[]) => verifyRoomManagerMock(...args),
-  verifyRoomOwner: vi.fn(),
+  verifyRoomOwner: (...args: unknown[]) => verifyRoomOwnerMock(...args),
+}));
+
+// Fleet-wide view used by the targeted `revoked` emits (03). Default: nobody remote.
+const fetchSocketsSafeMock = vi.fn();
+vi.mock("@src/shared/fetch-sockets-safe.js", () => ({
+  fetchSocketsSafe: (...args: unknown[]) => fetchSocketsSafeMock(...args),
 }));
 
 const userHasLiveSocketInRoomMock = vi.fn();
@@ -51,14 +58,25 @@ function storedSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function setup(opts: { inRoom?: boolean } = {}) {
+/** Acquire-script replies (media-slot.redis.ts). */
+const acquired = (stored: unknown, releasedMusic = "", previousVideo = "") => [
+  "ok",
+  JSON.stringify(stored),
+  releasedMusic,
+  previousVideo,
+];
+const busy = (kind: "music" | "video", holder: string) => ["busy", kind, holder];
+
+function setup(opts: { inRoom?: boolean; socketsByUser?: Record<number, string[]> } = {}) {
   const socket = { id: "socket-1", data: { user: { id: ME } }, on: vi.fn() } as any;
+  const emit = vi.fn();
   const context = {
     clientManager: {
       getClient: vi.fn().mockReturnValue(opts.inRoom === false ? null : { roomId: ROOM }),
+      getSocketIdsByUserInRoom: vi.fn((uid: number) => opts.socketsByUser?.[uid] ?? []),
     },
     redis: { eval: vi.fn(), get: vi.fn(), set: vi.fn(), del: vi.fn() },
-    io: {},
+    io: { to: vi.fn().mockReturnValue({ emit }) },
     cascadeRelay: null,
   } as any;
   videoPlayerHandler(socket, context);
@@ -71,11 +89,17 @@ function setup(opts: { inRoom?: boolean } = {}) {
       return cb.mock.calls[0]?.[0];
     };
   };
-  return { socket, context, handler };
+  return { socket, context, handler, emit };
+}
+
+/** Targeted emits recorded as [socketIds, event, payload]. */
+function targeted(context: any, emit: ReturnType<typeof vi.fn>) {
+  return emit.mock.calls.map((call: unknown[], i: number) => [context.io.to.mock.calls[i][0], ...call]);
 }
 
 const ALL_EVENTS: Array<[string, Record<string, unknown>]> = [
   ["videoPlayer:play", { roomId: ROOM, source: YT }],
+  ["videoPlayer:takeover", { roomId: ROOM, source: YT }],
   ["videoPlayer:pause", { roomId: ROOM, positionSec: 5 }],
   ["videoPlayer:resume", { roomId: ROOM, positionSec: 5 }],
   ["videoPlayer:seek", { roomId: ROOM, positionSec: 5 }],
@@ -88,7 +112,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockConfig.VIDEO_PLAYER_ENABLED = true;
   verifyRoomManagerMock.mockResolvedValue({ allowed: true });
+  verifyRoomOwnerMock.mockResolvedValue({ allowed: true });
   userHasLiveSocketInRoomMock.mockResolvedValue(true);
+  fetchSocketsSafeMock.mockResolvedValue([]);
 });
 
 describe("videoPlayer:* — flag absent", () => {
@@ -102,6 +128,7 @@ describe("videoPlayer:* — flag absent", () => {
     expect(context.redis.eval).not.toHaveBeenCalled();
     expect(context.redis.get).not.toHaveBeenCalled();
     expect(verifyRoomManagerMock).not.toHaveBeenCalled();
+    expect(verifyRoomOwnerMock).not.toHaveBeenCalled();
     expect(broadcastToRoomMock).not.toHaveBeenCalled();
   });
 });
@@ -152,10 +179,10 @@ describe("videoPlayer:play — GATE order and acquire", () => {
     ).toEqual({ success: false, error: Errors.INVALID_PAYLOAD });
   });
 
-  it("acquires both keys in one script and broadcasts the stored Snapshot to the room", async () => {
-    const { context, handler } = setup();
+  it("acquires in one script that checks both mutexes and broadcasts the stored Snapshot", async () => {
+    const { context, handler, emit } = setup();
     const stored = storedSnapshot({ title: "Trailer", durationSec: 120 });
-    context.redis.eval.mockResolvedValue([String(ME), JSON.stringify(stored)]);
+    context.redis.eval.mockResolvedValue(acquired(stored));
 
     const ack = await handler("videoPlayer:play")({
       roomId: ROOM,
@@ -165,14 +192,19 @@ describe("videoPlayer:play — GATE order and acquire", () => {
     });
 
     expect(ack).toEqual({ success: true });
-    const [, numKeys, mutexKey, stateKey, me, steal, ttl, draftJson] = context.redis.eval.mock.calls[0];
-    expect([numKeys, mutexKey, stateKey, me, steal, ttl]).toEqual([
-      2,
+    const [, numKeys, ...rest] = context.redis.eval.mock.calls[0];
+    const draftJson = rest[8];
+    expect([numKeys, ...rest.slice(0, 8), rest[9]]).toEqual([
+      4,
       "room:room-1:videoPlayer",
       "room:room-1:videoState",
+      "room:room-1:musicPlayer",
+      "room:room-1:musicState",
       "10",
-      "",
+      "", // no video steal
+      "", // no music steal
       "7200",
+      "0", // not forced
     ]);
     expect(JSON.parse(draftJson)).toMatchObject({
       controllerUserId: ME,
@@ -182,6 +214,7 @@ describe("videoPlayer:play — GATE order and acquire", () => {
       paused: false,
       positionAtTs: 0,
     });
+    expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
     expect(broadcastToRoomMock).toHaveBeenCalledWith(
       context.io,
       ROOM,
@@ -189,18 +222,19 @@ describe("videoPlayer:play — GATE order and acquire", () => {
       { roomId: ROOM, snapshot: stored },
       null,
     );
+    expect(emit).not.toHaveBeenCalled(); // nobody displaced
   });
 
   it("accepts an https HLS link", async () => {
     const { context, handler } = setup();
     const source = { kind: "url", url: "https://cdn.example.com/live/index.m3u8", container: "hls" };
-    context.redis.eval.mockResolvedValue([String(ME), JSON.stringify(storedSnapshot({ source }))]);
+    context.redis.eval.mockResolvedValue(acquired(storedSnapshot({ source })));
     expect(await handler("videoPlayer:play")({ roomId: ROOM, source })).toEqual({ success: true });
   });
 
   it("refuses with MEDIA_SLOT_BUSY when another live user holds the video", async () => {
     const { context, handler } = setup();
-    context.redis.eval.mockResolvedValue(["77"]);
+    context.redis.eval.mockResolvedValue(busy("video", "77"));
     userHasLiveSocketInRoomMock.mockResolvedValue(true);
 
     const ack = await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
@@ -218,18 +252,19 @@ describe("videoPlayer:play — GATE order and acquire", () => {
   it("CAS-steals a slot whose holder has no live socket in the room", async () => {
     const { context, handler } = setup();
     context.redis.eval
-      .mockResolvedValueOnce(["77"])
-      .mockResolvedValueOnce([String(ME), JSON.stringify(storedSnapshot({ revision: 9 }))]);
+      .mockResolvedValueOnce(busy("video", "77"))
+      .mockResolvedValueOnce(acquired(storedSnapshot({ revision: 9 }), "", "77"));
     userHasLiveSocketInRoomMock.mockResolvedValue(false);
 
     expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
-    expect(context.redis.eval.mock.calls[1][5]).toBe("77"); // steal ARGV
+    expect(context.redis.eval.mock.calls[1][7]).toBe("77"); // video steal ARGV
+    expect(context.redis.eval.mock.calls[1][8]).toBe(""); // music steal untouched
     expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
   });
 
   it("reports busy when the steal CAS loses to a rival", async () => {
     const { context, handler } = setup();
-    context.redis.eval.mockResolvedValueOnce(["77"]).mockResolvedValueOnce(["88"]);
+    context.redis.eval.mockResolvedValueOnce(busy("video", "77")).mockResolvedValueOnce(busy("video", "88"));
     userHasLiveSocketInRoomMock.mockResolvedValue(false);
 
     const ack = await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
@@ -352,4 +387,147 @@ describe("videoPlayer:stop / ended", () => {
       expect(broadcastToRoomMock).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("videoPlayer:play — one media slot with music (03)", () => {
+  it("refuses MEDIA_SLOT_BUSY {heldBy:'music'} while another live user holds the music", async () => {
+    const { context, handler, emit } = setup();
+    context.redis.eval.mockResolvedValue(busy("music", "55"));
+
+    const ack = await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(ack).toEqual({ success: false, error: Errors.MEDIA_SLOT_BUSY, data: { heldBy: "music", userId: 55 } });
+    expect(userHasLiveSocketInRoomMock).toHaveBeenCalledWith(context, 55, ROOM);
+    expect(context.redis.eval).toHaveBeenCalledTimes(1);
+    expect(broadcastToRoomMock).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("starting a video while holding the music yourself stops your music first, then starts the video", async () => {
+    const { context, handler, emit } = setup({ socketsByUser: { [ME]: ["socket-1"] } });
+    const stored = storedSnapshot();
+    context.redis.eval.mockResolvedValue(acquired(stored, String(ME)));
+
+    expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+
+    expect(broadcastToRoomMock.mock.calls.map((c) => [c[2], c[3]])).toEqual([
+      ["audioPlayer:stateChanged", { state: "stopped", userId: ME, title: null, duration: 0, position: 0 }],
+      ["videoPlayer:stateChanged", { roomId: ROOM, snapshot: stored }],
+    ]);
+    // The DJ's own sockets get `revoked`: the frontend ignores stateChanged about
+    // itself, so this is what stops its music producer.
+    expect(targeted(context, emit)).toEqual([
+      [["socket-1"], "audioPlayer:revoked", { roomId: ROOM, byUserId: ME, reason: "video" }],
+    ]);
+  });
+
+  it("steals the music slot from a DJ with no live socket and tells the room the music stopped", async () => {
+    const { context, handler } = setup();
+    context.redis.eval
+      .mockResolvedValueOnce(busy("music", "55"))
+      .mockResolvedValueOnce(acquired(storedSnapshot(), "55"));
+    userHasLiveSocketInRoomMock.mockResolvedValue(false);
+
+    expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+    expect(context.redis.eval.mock.calls[1][7]).toBe(""); // video steal
+    expect(context.redis.eval.mock.calls[1][8]).toBe("55"); // music steal
+    expect(broadcastToRoomMock.mock.calls[0]?.[3]).toMatchObject({ state: "stopped", userId: 55 });
+  });
+
+  it("steals a dead Controller then a dead DJ — three attempts, both steals carried", async () => {
+    const { context, handler } = setup();
+    context.redis.eval
+      .mockResolvedValueOnce(busy("video", "77"))
+      .mockResolvedValueOnce(busy("music", "55"))
+      .mockResolvedValueOnce(acquired(storedSnapshot(), "55", "77"));
+    userHasLiveSocketInRoomMock.mockResolvedValue(false);
+
+    expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+    expect(context.redis.eval).toHaveBeenCalledTimes(3);
+    expect(context.redis.eval.mock.calls[2].slice(7, 9)).toEqual(["77", "55"]);
+  });
+
+  it("targets the displaced DJ fleet-wide: local sockets plus the adapter's view, deduplicated", async () => {
+    const { context, handler, emit } = setup({ socketsByUser: { 55: ["local-55"] } });
+    fetchSocketsSafeMock.mockResolvedValue([
+      { id: "local-55", data: { user: { id: 55 } } },
+      { id: "remote-55", data: { user: { id: 55 } } },
+      { id: "remote-99", data: { user: { id: 99 } } },
+    ]);
+    context.redis.eval
+      .mockResolvedValueOnce(busy("music", "55"))
+      .mockResolvedValueOnce(acquired(storedSnapshot(), "55"));
+    userHasLiveSocketInRoomMock.mockResolvedValue(false);
+
+    await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(targeted(context, emit)).toEqual([
+      [["local-55", "remote-55"], "audioPlayer:revoked", { roomId: ROOM, byUserId: ME, reason: "video" }],
+    ]);
+  });
+});
+
+describe("videoPlayer:takeover — owner force-take (03)", () => {
+  it("refuses an admin (verifyRoomOwner tier) and touches nothing", async () => {
+    verifyRoomOwnerMock.mockResolvedValue({ allowed: false, error: Errors.NOT_AUTHORIZED });
+    const { context, handler } = setup();
+
+    expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({
+      success: false,
+      error: Errors.NOT_AUTHORIZED,
+    });
+    expect(verifyRoomOwnerMock).toHaveBeenCalledWith(ROOM, String(ME), context);
+    expect(verifyRoomManagerMock).not.toHaveBeenCalled();
+    expect(context.redis.eval).not.toHaveBeenCalled();
+  });
+
+  it("refuses a socket that is not in the room before the owner check", async () => {
+    const { handler } = setup({ inRoom: false });
+    expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({
+      success: false,
+      error: Errors.NOT_IN_ROOM,
+    });
+    expect(verifyRoomOwnerMock).not.toHaveBeenCalled();
+  });
+
+  it("applies the same Source rules as play", async () => {
+    const { context, handler } = setup();
+    const ack = await handler("videoPlayer:takeover")({
+      roomId: ROOM,
+      source: { kind: "url", url: "http://cdn.example.com/a.mp4", container: "mp4" },
+    });
+    expect(ack).toEqual({ success: false, error: Errors.VIDEO_SOURCE_INVALID });
+    expect(context.redis.eval).not.toHaveBeenCalled();
+  });
+
+  it("forces the acquire, revokes the displaced Controller AND the displaced DJ, then starts the owner's video", async () => {
+    const { context, handler, emit } = setup({ socketsByUser: { 77: ["s-77"], 55: ["s-55"] } });
+    const stored = storedSnapshot({ revision: 12 });
+    context.redis.eval.mockResolvedValue(acquired(stored, "55", "77"));
+
+    expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+
+    const args = context.redis.eval.mock.calls[0];
+    expect(args.slice(7, 9)).toEqual(["", ""]); // no steals — force needs none
+    expect(args[11]).toBe("1"); // forced
+    expect(userHasLiveSocketInRoomMock).not.toHaveBeenCalled();
+    expect(targeted(context, emit)).toEqual([
+      [["s-55"], "audioPlayer:revoked", { roomId: ROOM, byUserId: ME, reason: "video" }],
+      [["s-77"], "videoPlayer:revoked", { roomId: ROOM, byUserId: ME, reason: "takeover" }],
+    ]);
+    expect(broadcastToRoomMock.mock.calls.map((c) => c[2])).toEqual([
+      "audioPlayer:stateChanged",
+      "videoPlayer:stateChanged",
+    ]);
+    expect(broadcastToRoomMock.mock.calls[1]?.[3]).toEqual({ roomId: ROOM, snapshot: stored });
+  });
+
+  it("taking over your own video revokes nobody", async () => {
+    const { context, handler, emit } = setup({ socketsByUser: { [ME]: ["socket-1"] } });
+    context.redis.eval.mockResolvedValue(acquired(storedSnapshot(), "", String(ME)));
+
+    expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+    expect(emit).not.toHaveBeenCalled();
+    expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
+  });
 });

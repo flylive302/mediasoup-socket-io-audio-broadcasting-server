@@ -20,7 +20,7 @@ import { audioPlayerHandler } from "./audio-player/index.js";
 import { inboxTypingHandler } from "./inbox-typing/index.js";
 import { presenceHandler } from "./presence/index.js";
 import { luckyNumberHandler } from "./lucky-number/index.js";
-import { videoPlayerHandler } from "./video-player/index.js";
+import { videoPlayerHandler, videoPlayerLifecycle } from "./video-player/index.js";
 
 // LT-5: Lifecycle hooks for domain-specific disconnect cleanup
 import { registerLifecycle } from "@src/shared/lifecycle.js";
@@ -47,6 +47,7 @@ export const domains: DomainRegistration[] = [
  * Called once at module load time.
  */
 registerLifecycle(audioPlayerLifecycle);
+registerLifecycle(videoPlayerLifecycle);
 
 /**
  * Register all domain handlers for a socket connection

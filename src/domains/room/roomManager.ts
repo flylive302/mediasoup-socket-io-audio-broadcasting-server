@@ -22,6 +22,7 @@ import { metrics } from "@src/infrastructure/metrics.js";
 import type { ClientManager } from "@src/client/clientManager.js";
 import { evictShrunkSeats } from "./seat-shrink-eviction.js";
 import { cancelLuckyNumberRound } from "@src/domains/lucky-number/index.js";
+import { clearVideoPlayerForRoom } from "@src/domains/video-player/index.js";
 
 export class RoomManager {
   private readonly rooms = new Map<string, RoomMediaCluster>();
@@ -655,6 +656,8 @@ export class RoomManager {
       // lucky-number/03: disarm a live round's timer + drop its keys (no result
       // broadcast — the room is gone). Never rejects.
       cancelLuckyNumberRound(this.redis, roomId),
+      // room-video-player/03: drop the Room Video keys (flag-gated). Never rejects.
+      clearVideoPlayerForRoom(this.redis, roomId),
     ];
     if (this.seatRepository) {
       cleanupOps.push(this.seatRepository.clearRoom(roomId));
@@ -756,7 +759,11 @@ export class RoomManager {
     // path), so there is nothing to release; deleting it would only risk wiping a
     // live sibling's fresh claim (split-brain surface). `claimOwnership` already
     // recovers a dead owner's key on the next re-open.
-    const cleanupOps: Promise<void>[] = [this.stateRepo.delete(roomId)];
+    const cleanupOps: Promise<void>[] = [
+      this.stateRepo.delete(roomId),
+      // room-video-player/03: an orphan's Room Video dies with it. Never rejects.
+      clearVideoPlayerForRoom(this.redis, roomId),
+    ];
     if (this.seatRepository) {
       cleanupOps.push(this.seatRepository.clearRoom(roomId));
     }

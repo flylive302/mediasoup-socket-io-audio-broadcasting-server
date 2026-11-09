@@ -8,8 +8,13 @@
  * (verifyRoomManager reads Redis), so a flag-off box is fully inert.
  *
  * Fan-out: one `videoPlayer:stateChanged {roomId, snapshot}` to the whole room
- * (sender included) on play / pause / resume / seek / stop / ended. The 2 s
- * heartbeat is NOT relayed — clients extrapolate from positionAtTs + elapsed.
+ * (sender included) on play / takeover / pause / resume / seek / stop / ended.
+ * The 2 s heartbeat is NOT relayed — clients extrapolate from positionAtTs + elapsed.
+ *
+ * Media slot (03): play refuses with MEDIA_SLOT_BUSY while another user holds
+ * the music or the video; the owner's takeover overwrites both. Whoever is
+ * displaced hears it on their own sockets (`audioPlayer:revoked` /
+ * `videoPlayer:revoked`). Release paths beyond stop/ended: video-player.lifecycle.ts.
  */
 import type { Server, Socket } from "socket.io";
 import type { Redis } from "ioredis";
@@ -19,6 +24,7 @@ import { config } from "@src/config/index.js";
 import { logger } from "@src/infrastructure/logger.js";
 import {
   videoPlayerPlaySchema,
+  videoPlayerTakeoverSchema,
   videoPlayerPositionSchema,
   videoPlayerHeartbeatSchema,
   videoPlayerRoomOnlySchema,
@@ -26,16 +32,23 @@ import {
 import { createHandler } from "@src/shared/handler.utils.js";
 import { broadcastToRoom } from "@src/shared/room-emit.js";
 import { Errors } from "@src/shared/errors.js";
-import { verifyRoomManager } from "@src/domains/seat/seat.owner.js";
+import { verifyRoomManager, verifyRoomOwner } from "@src/domains/seat/seat.owner.js";
 import { userHasLiveSocketInRoom } from "@src/domains/audio-player/index.js";
 import { checkVideoSource } from "./video-player.gates.js";
 import {
-  acquireVideoSlotOnce,
   updateVideoState,
   releaseVideoSlot,
   type PausedMode,
   type VideoSnapshot,
+  type VideoSource,
 } from "./video-player.redis.js";
+import { acquireVideoSlotOnce, NO_STEAL, type VideoSlotResult } from "./media-slot.redis.js";
+import {
+  acquireWithStaleSteal,
+  announceMusicStoppedByVideo,
+  emitToUserInRoom,
+  slotBusyAck,
+} from "./media-slot.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Handlers
@@ -58,26 +71,51 @@ const playHandler = createHandler(
     const sourceError = checkVideoSource(source);
     if (sourceError) return { success: false, error: sourceError };
 
-    const draft: Omit<VideoSnapshot, "revision"> = {
-      controllerUserId: userId,
-      source,
-      ...(title !== undefined && { title }),
-      ...(durationSec !== undefined && { durationSec }),
-      paused: false,
-      positionAtTs: 0,
-      serverTs: Date.now(),
-    };
-    const result = await acquireVideoSlot(context, roomId, userId, draft);
-    if (!result.acquired) {
-      return {
-        success: false,
-        error: Errors.MEDIA_SLOT_BUSY,
-        data: { heldBy: "video", userId: Number(result.holder) },
-      };
-    }
+    const draft = newDraft(userId, source, title, durationSec);
+    const result = await acquireWithStaleSteal(
+      (steal) => acquireVideoSlotOnce(context.redis, roomId, userId, draft, steal),
+      (holder) => userHasLiveSocketInRoom(context, Number(holder), roomId),
+    );
+    if (!result.acquired) return slotBusyAck(result);
 
+    await announceSlotTaken(context, roomId, userId, result);
     broadcastSnapshot(context.io, roomId, result.snapshot, context.cascadeRelay);
     logger.info({ roomId, userId, kind: source.kind, revision: result.snapshot.revision }, "Room Video started");
+    return { success: true };
+  },
+);
+
+/**
+ * videoPlayer:takeover — the room OWNER force-takes the media slot (admins get
+ * NOT_AUTHORIZED, the verifyRoomOwner tier). Overwrites any Controller, releases
+ * any music, revokes whoever was displaced, then starts the owner's Source.
+ */
+const takeoverHandler = createHandler(
+  "videoPlayer:takeover",
+  videoPlayerTakeoverSchema,
+  async (payload, socket, context) => {
+    const { roomId, source, title, durationSec } = payload;
+    const userId = socket.data.user.id;
+
+    if (!config.VIDEO_PLAYER_ENABLED) return { success: false, error: Errors.VIDEO_PLAYER_DISABLED };
+    if (!isInRoom(socket, context, roomId)) return { success: false, error: Errors.NOT_IN_ROOM };
+
+    const authorization = await verifyRoomOwner(roomId, String(userId), context);
+    if (!authorization.allowed) return { success: false, error: authorization.error };
+
+    const sourceError = checkVideoSource(source);
+    if (sourceError) return { success: false, error: sourceError };
+
+    const draft = newDraft(userId, source, title, durationSec);
+    const result = await acquireVideoSlotOnce(context.redis, roomId, userId, draft, NO_STEAL, true);
+    if (!result.acquired) return slotBusyAck(result); // unreachable: a forced acquire always wins
+
+    await announceSlotTaken(context, roomId, userId, result);
+    broadcastSnapshot(context.io, roomId, result.snapshot, context.cascadeRelay);
+    logger.info(
+      { roomId, userId, displacedVideo: result.previousVideo, releasedMusic: result.releasedMusic },
+      "Room Video force-taken by owner",
+    );
     return { success: true };
   },
 );
@@ -150,21 +188,45 @@ function isInRoom(socket: Socket, context: AppContext, roomId: string): boolean 
   return context.clientManager.getClient(socket.id)?.roomId === roomId;
 }
 
+function newDraft(
+  userId: number,
+  source: VideoSource,
+  title: string | undefined,
+  durationSec: number | undefined,
+): Omit<VideoSnapshot, "revision"> {
+  return {
+    controllerUserId: userId,
+    source,
+    ...(title !== undefined && { title }),
+    ...(durationSec !== undefined && { durationSec }),
+    paused: false,
+    positionAtTs: 0,
+    serverTs: Date.now(),
+  };
+}
+
 /**
- * Stale-proof acquire (same shape as the music slot): free-or-mine first; on a
- * denial, steal only when the holder has no live socket in the room anywhere in
- * the fleet, via a CAS that loses to any rival who got there first.
+ * Tell whoever the acquire displaced, before the new Snapshot goes out: a DJ
+ * whose music was released (the starter themself included — see
+ * announceMusicStoppedByVideo), and a different previous Controller.
  */
-async function acquireVideoSlot(
+async function announceSlotTaken(
   context: AppContext,
   roomId: string,
   userId: number,
-  draft: Omit<VideoSnapshot, "revision">,
-) {
-  const first = await acquireVideoSlotOnce(context.redis, roomId, userId, "", draft);
-  if (first.acquired) return first;
-  if (await userHasLiveSocketInRoom(context, Number(first.holder), roomId)) return first;
-  return acquireVideoSlotOnce(context.redis, roomId, userId, first.holder, draft);
+  result: Extract<VideoSlotResult, { acquired: true }>,
+): Promise<void> {
+  if (result.releasedMusic !== null) {
+    await announceMusicStoppedByVideo(
+      context.io, context.clientManager, roomId, Number(result.releasedMusic), userId, context.cascadeRelay,
+    );
+  }
+  if (result.previousVideo !== null && result.previousVideo !== String(userId)) {
+    await emitToUserInRoom(
+      context.io, context.clientManager, Number(result.previousVideo), roomId, "videoPlayer:revoked",
+      { roomId, byUserId: userId, reason: "takeover" },
+    );
+  }
 }
 
 function broadcastSnapshot(
@@ -178,8 +240,8 @@ function broadcastSnapshot(
 
 /**
  * Release the Room Video iff `userId` is the Controller, and tell the room.
- * No-op (false) otherwise. Shared by stop / ended now; ticket 03's disconnect,
- * room:leave, ejection and room-close paths call it too (no socket needed).
+ * No-op (false) otherwise. Shared by stop / ended, the disconnect and
+ * room:leave paths (video-player.lifecycle.ts) and ejection (no socket needed).
  */
 export async function releaseVideoPlayerForUser(
   redis: Redis,
@@ -201,6 +263,7 @@ export async function releaseVideoPlayerForUser(
 
 export const videoPlayerHandler = (socket: Socket, context: AppContext): void => {
   socket.on("videoPlayer:play", playHandler(socket, context));
+  socket.on("videoPlayer:takeover", takeoverHandler(socket, context));
   socket.on("videoPlayer:pause", pauseHandler(socket, context));
   socket.on("videoPlayer:resume", resumeHandler(socket, context));
   socket.on("videoPlayer:seek", seekHandler(socket, context));

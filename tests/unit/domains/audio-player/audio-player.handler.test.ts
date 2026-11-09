@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock config + logger BEFORE importing the handler — `src/config` validates
 // env via Zod at module load and `process.env` is empty in CI.
-vi.mock("@src/config/index.js", () => ({ config: {} }));
+// room-video-player/03: mutable so the media-slot tests can switch the flag on.
+const mockConfig = vi.hoisted(() => ({}) as { VIDEO_PLAYER_ENABLED?: boolean });
+vi.mock("@src/config/index.js", () => ({ config: mockConfig }));
 vi.mock("@src/infrastructure/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -37,6 +39,11 @@ import {
 import { audioPlayerLifecycle } from "@src/domains/audio-player/audio-player.lifecycle.js";
 import { Errors } from "@src/shared/errors.js";
 
+// room-video-player/03: the acquire script (video-player/media-slot.redis.ts)
+// replies {'ok', releasedVideo} or {'busy', kind, holder}.
+const ACQUIRED = ["ok", ""];
+const busyMusic = (holder: string) => ["busy", "music", holder];
+
 function createMockSocket(userId: number) {
   return {
     id: "socket-1",
@@ -57,7 +64,7 @@ function createMockContext(clientRoomId: string | null) {
       setex: vi.fn().mockResolvedValue("OK"),
       get: vi.fn().mockResolvedValue(null),
       del: vi.fn().mockResolvedValue(1),
-      // Default: acquire succeeds (script returns the requesting userId).
+      // Each test sets the acquire reply: ACQUIRED or busyMusic(holder).
       eval: vi.fn(),
     },
     // Cross-instance liveness lookup (music-dj-queue/01) — default: no remote
@@ -119,7 +126,7 @@ describe("audioPlayer:play — MSAB play role gate", () => {
     verifyRoomManagerMock.mockResolvedValue({ allowed: true });
     const socket = createMockSocket(10);
     const context = createMockContext("room-1");
-    context.redis.eval.mockResolvedValue("10"); // slot acquired
+    context.redis.eval.mockResolvedValue(ACQUIRED); // slot acquired
     const handler = getPlayHandler(socket, context);
 
     const cb = vi.fn();
@@ -140,7 +147,7 @@ describe("audioPlayer:play — MSAB play role gate", () => {
     verifyRoomManagerMock.mockResolvedValue({ allowed: true });
     const socket = createMockSocket(20);
     const context = createMockContext("room-1");
-    context.redis.eval.mockResolvedValue("20"); // slot acquired
+    context.redis.eval.mockResolvedValue(ACQUIRED); // slot acquired
     const handler = getPlayHandler(socket, context);
 
     const cb = vi.fn();
@@ -190,8 +197,8 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
   it("reuse-if-mine: holder == requester → success, TTL refreshed, no liveness check", async () => {
     const socket = createMockSocket(10);
     const context = createMockContext("room-1");
-    // Phase-1 script re-SETs and returns the requester's own id.
-    context.redis.eval.mockResolvedValue("10");
+    // Phase-1 script re-SETs and reports ok.
+    context.redis.eval.mockResolvedValue(ACQUIRED);
     const handler = getPlayHandler(socket, context);
 
     const cb = vi.fn();
@@ -201,11 +208,15 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
     expect(context.redis.eval).toHaveBeenCalledTimes(1);
     expect(context.redis.eval).toHaveBeenCalledWith(
       expect.any(String),
-      1,
+      3,
       "room:room-1:musicPlayer",
+      "room:room-1:videoPlayer",
+      "room:room-1:videoState",
       "10",
       "", // steal branch disabled on phase 1
       "7200",
+      "0", // slot rule off — VIDEO_PLAYER_ENABLED absent (config mocked as {})
+      "",
     );
     expect(context.clientManager.getSocketIdsByUserInRoom).not.toHaveBeenCalled();
     expect(broadcastToRoomMock).toHaveBeenCalled();
@@ -217,7 +228,7 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
     // next/prev/auto-advance re-acquires their own slot.
     const socket = createMockSocket(10);
     const context = createMockContext("room-1");
-    context.redis.eval.mockResolvedValue("10");
+    context.redis.eval.mockResolvedValue(ACQUIRED);
     const handler = getPlayHandler(socket, context);
 
     const cb = vi.fn();
@@ -230,7 +241,7 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
   it("live-holder denial: different holder with a live socket in the room → denied, no steal", async () => {
     const socket = createMockSocket(20); // requester
     const context = createMockContext("room-1");
-    context.redis.eval.mockResolvedValue("10"); // phase 1 returns the live holder
+    context.redis.eval.mockResolvedValue(busyMusic("10")); // phase 1 returns the live holder
     context.clientManager.getSocketIdsByUserInRoom.mockReturnValue(["sock-live"]);
     const handler = getPlayHandler(socket, context);
 
@@ -247,10 +258,10 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
   it("dead-holder steal: different holder with zero live sockets → slot stolen, requester becomes DJ", async () => {
     const socket = createMockSocket(20); // requester
     const context = createMockContext("room-1");
-    // Phase 1 returns the dead holder "10"; phase-2 CAS steal returns requester "20".
+    // Phase 1 returns the dead holder "10"; phase-2 CAS steal acquires.
     context.redis.eval
-      .mockResolvedValueOnce("10")
-      .mockResolvedValueOnce("20");
+      .mockResolvedValueOnce(busyMusic("10"))
+      .mockResolvedValueOnce(ACQUIRED);
     context.clientManager.getSocketIdsByUserInRoom.mockReturnValue([]); // no live sockets
     const handler = getPlayHandler(socket, context);
 
@@ -262,11 +273,15 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
     expect(context.redis.eval).toHaveBeenCalledTimes(2);
     expect(context.redis.eval).toHaveBeenLastCalledWith(
       expect.any(String),
-      1,
+      3,
       "room:room-1:musicPlayer",
+      "room:room-1:videoPlayer",
+      "room:room-1:videoState",
       "20",
       "10", // steal only if key still equals the dead holder
       "7200",
+      "0",
+      "",
     );
     expect(broadcastToRoomMock).toHaveBeenCalledWith(
       context.io,
@@ -284,8 +299,8 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
     // Phase 1 sees dead holder "10"; between the liveness check and the CAS,
     // rival "30" acquired — phase-2 CAS returns "30", not the requester.
     context.redis.eval
-      .mockResolvedValueOnce("10")
-      .mockResolvedValueOnce("30");
+      .mockResolvedValueOnce(busyMusic("10"))
+      .mockResolvedValueOnce(busyMusic("30"));
     context.clientManager.getSocketIdsByUserInRoom.mockReturnValue([]);
     const handler = getPlayHandler(socket, context);
 
@@ -300,7 +315,7 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
   it("cross-instance denial: holder live only on another node (local empty, fetchSockets finds them) → denied, no steal", async () => {
     const socket = createMockSocket(20); // requester
     const context = createMockContext("room-1");
-    context.redis.eval.mockResolvedValue("10"); // phase 1 returns holder
+    context.redis.eval.mockResolvedValue(busyMusic("10")); // phase 1 returns holder
     // Local clientManager has no sockets for the holder on THIS instance…
     context.clientManager.getSocketIdsByUserInRoom.mockReturnValue([]);
     // …but the fleet-wide fetch finds the holder's socket on another node.
@@ -326,8 +341,8 @@ describe("audioPlayer:play — stale-proof slot acquisition (music-dj-queue/01)"
     const socket = createMockSocket(20);
     const context = createMockContext("room-1");
     context.redis.eval
-      .mockResolvedValueOnce("10") // phase 1: dead holder
-      .mockResolvedValueOnce("20"); // phase 2 CAS: requester wins
+      .mockResolvedValueOnce(busyMusic("10")) // phase 1: dead holder
+      .mockResolvedValueOnce(ACQUIRED); // phase 2 CAS: requester wins
     context.clientManager.getSocketIdsByUserInRoom.mockReturnValue([]); // local zero
     // Cluster fetch returns no socket for the holder (other participants only).
     context.io.in.mockReturnValue({
@@ -665,15 +680,15 @@ function makeFakeMusicRedis(initial: { holder?: string | null; queue?: string[] 
         if (head) state.holder = head;
         return head ?? "";
       }
-      // ACQUIRE_MUSIC_SLOT_LUA — free / reuse-if-mine / CAS-steal.
+      // ACQUIRE_MUSIC_SLOT_LUA — free / reuse-if-mine / CAS-steal (slot rule off).
       const me = argv[0]!;
       const steal = argv[1]!;
       const cur = state.holder;
       if (!cur || cur === me || (steal !== "" && cur === steal)) {
         state.holder = me;
-        return me;
+        return ["ok", ""];
       }
-      return cur;
+      return ["busy", "music", cur];
     },
   );
   return { state, evalFn };
@@ -1258,3 +1273,142 @@ describe("audioPlayer:takeover then stop — queue preserved, release serves (mu
   });
 });
 
+
+// ─────────────────────────────────────────────────────────────────
+// room-video-player/03 — one media slot: music ↔ Room Video
+// ─────────────────────────────────────────────────────────────────
+
+describe("audioPlayer:* — one media slot with the Room Video (room-video-player/03, flag on)", () => {
+  const videoNull = { roomId: "room-1", snapshot: null };
+
+  function slotContext(socketsByUser: Record<number, string[]> = {}) {
+    const context = createMockContext("room-1");
+    const emitMock = vi.fn();
+    context.io.to = vi.fn().mockReturnValue({ emit: emitMock });
+    context.clientManager.getSocketIdsByUserInRoom = vi.fn((uid: number) => socketsByUser[uid] ?? []);
+    return { context, emitMock };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+    verifyRoomManagerMock.mockResolvedValue({ allowed: true });
+    verifyRoomOwnerMock.mockResolvedValue({ allowed: true });
+  });
+
+  afterEach(() => {
+    delete mockConfig.VIDEO_PLAYER_ENABLED;
+  });
+
+  it("play passes the slot rule into the acquire script", async () => {
+    const { context } = slotContext();
+    context.redis.eval.mockResolvedValue(ACQUIRED);
+
+    const cb = vi.fn();
+    await getPlayHandler(createMockSocket(10), context)({ roomId: "room-1", title: "A", duration: 60 }, cb);
+
+    expect(context.redis.eval.mock.calls[0].slice(1)).toEqual([
+      3,
+      "room:room-1:musicPlayer",
+      "room:room-1:videoPlayer",
+      "room:room-1:videoState",
+      "10",
+      "",
+      "7200",
+      "1",
+      "",
+    ]);
+    expect(cb).toHaveBeenCalledWith({ success: true });
+  });
+
+  it("a live Room Video refuses music with MEDIA_SLOT_BUSY — never queued, even with enqueue:true", async () => {
+    const { context } = slotContext({ 77: ["s-77"] });
+    context.redis.eval.mockResolvedValue(["busy", "video", "77"]);
+
+    const cb = vi.fn();
+    await getPlayHandler(createMockSocket(20), context)(
+      { roomId: "room-1", title: "A", duration: 60, enqueue: true },
+      cb,
+    );
+
+    expect(cb).toHaveBeenCalledWith({
+      success: false,
+      error: Errors.MEDIA_SLOT_BUSY,
+      data: { heldBy: "video", userId: 77 },
+    });
+    expect(context.redis.eval).toHaveBeenCalledTimes(1); // no enqueue / promote script
+    expect(context.redis.setex).not.toHaveBeenCalled();
+    expect(broadcastToRoomMock).not.toHaveBeenCalled();
+  });
+
+  it("starting music while holding the video yourself clears the video for the room first", async () => {
+    const { context, emitMock } = slotContext({ 10: ["socket-1"] });
+    context.redis.eval.mockResolvedValue(["ok", "10"]);
+
+    const cb = vi.fn();
+    await getPlayHandler(createMockSocket(10), context)({ roomId: "room-1", title: "A", duration: 60 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: true });
+    expect(broadcastToRoomMock.mock.calls.map((c) => [c[2], c[3]])).toEqual([
+      ["videoPlayer:stateChanged", videoNull],
+      ["audioPlayer:stateChanged", expect.objectContaining({ state: "playing", userId: 10 })],
+    ]);
+    expect(emitMock).not.toHaveBeenCalled(); // no self-revoke: the null Snapshot clears your own panel
+  });
+
+  it("music steals the slot from a Controller with no live socket and revokes them", async () => {
+    const { context, emitMock } = slotContext();
+    // Phase 1: a video by 77 who is gone; phase 2: CAS-steal it.
+    context.redis.eval.mockResolvedValueOnce(["busy", "video", "77"]).mockResolvedValueOnce(["ok", "77"]);
+
+    const cb = vi.fn();
+    await getPlayHandler(createMockSocket(20), context)({ roomId: "room-1", title: "A", duration: 60 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: true });
+    expect(context.redis.eval.mock.calls[1][9]).toBe("77"); // video steal ARGV
+    expect(context.redis.eval.mock.calls[1][6]).toBe(""); // music steal untouched
+    expect(broadcastToRoomMock.mock.calls[0]?.[3]).toEqual(videoNull);
+    expect(emitMock).not.toHaveBeenCalled(); // the dead Controller has no socket to reach
+  });
+
+  it("owner music takeover clears a Room Video and revokes its Controller", async () => {
+    const { context, emitMock } = slotContext({ 77: ["s-77"] });
+    context.redis.eval.mockResolvedValue("77"); // CLEAR_VIDEO_SLOT_LUA → previous Controller
+
+    const cb = vi.fn();
+    await getTakeoverHandler(createMockSocket(10), context)({ roomId: "room-1", title: "Owner", duration: 60 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: true });
+    expect(context.redis.eval.mock.calls[0].slice(1)).toEqual([
+      2,
+      "room:room-1:videoPlayer",
+      "room:room-1:videoState",
+    ]);
+    // Cleared AFTER the music mutex SET (a racing video acquire then sees music).
+    expect(context.redis.set.mock.invocationCallOrder[0]).toBeLessThan(
+      context.redis.eval.mock.invocationCallOrder[0],
+    );
+    expect(context.io.to).toHaveBeenCalledWith(["s-77"]);
+    expect(emitMock).toHaveBeenCalledWith("videoPlayer:revoked", {
+      roomId: "room-1",
+      byUserId: 10,
+      reason: "music",
+    });
+    expect(broadcastToRoomMock.mock.calls.map((c) => c[2])).toEqual([
+      "videoPlayer:stateChanged",
+      "audioPlayer:stateChanged",
+    ]);
+  });
+
+  it("owner music takeover with no Room Video sends no video events", async () => {
+    const { context, emitMock } = slotContext();
+    context.redis.eval.mockResolvedValue("");
+
+    const cb = vi.fn();
+    await getTakeoverHandler(createMockSocket(10), context)({ roomId: "room-1", title: "Owner", duration: 60 }, cb);
+
+    expect(cb).toHaveBeenCalledWith({ success: true });
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(broadcastToRoomMock.mock.calls.map((c) => c[2])).toEqual(["audioPlayer:stateChanged"]);
+  });
+});

@@ -7,8 +7,9 @@
  *
  * Every check-then-act is ONE Lua script (the recurring MSAB bug shape is a GET,
  * an `await`, then a SET that a rival wrote in between). Unlike music:
- *   - acquire writes the mutex AND the Snapshot in one script, so there is never a
- *     mutex without a Snapshot (or a Snapshot without its holder);
+ *   - acquire (media-slot.redis.ts, ticket 03 — it also checks the music mutex)
+ *     writes the mutex AND the Snapshot in one script, so there is never a mutex
+ *     without a Snapshot (or a Snapshot without its holder);
  *   - every Controller write (pause/resume/seek/heartbeat) refreshes BOTH TTLs —
  *     the music heartbeat does not refresh its mutex; do not copy that;
  *   - every write bumps `revision` inside the script, so it is strictly monotonic
@@ -19,7 +20,7 @@
  * link as out-of-order. A cleared slot (`stateChanged null`) resets the client's
  * last-seen revision, so a fresh session starting at 1 is accepted.
  *
- * Media-slot exclusivity with music and owner takeover are ticket 03.
+ * Media-slot exclusivity with music and owner takeover: media-slot.redis.ts (03).
  */
 import type { Redis } from "ioredis";
 import { logger } from "@src/infrastructure/logger.js";
@@ -49,36 +50,6 @@ export interface VideoSnapshot {
 
 /** How a Controller write treats `paused`: set it, clear it, or keep the stored value (seek). */
 export type PausedMode = "pause" | "play" | "keep";
-
-/**
- * Acquire (or re-acquire) the video slot and write the Snapshot, atomically.
- *
- * KEYS[1] mutex, KEYS[2] state
- * ARGV[1] my userId, ARGV[2] steal holder ('' disables), ARGV[3] ttl,
- * ARGV[4] Snapshot JSON without a meaningful revision (set here).
- *
- * Returns `{ARGV[1], storedJson}` on success, `{currentHolder}` on denial.
- * Steal branch: CAS against a holder the caller proved has no live socket in the
- * room (same stale-proof shape as the music acquire).
- */
-const ACQUIRE_VIDEO_SLOT_LUA = `
-local cur = redis.call('GET', KEYS[1])
-if (not cur) or (cur == ARGV[1]) or (ARGV[2] ~= '' and cur == ARGV[2]) then
-  local rev = 0
-  local raw = redis.call('GET', KEYS[2])
-  if raw then
-    local ok, old = pcall(cjson.decode, raw)
-    if ok and type(old) == 'table' then rev = tonumber(old.revision) or 0 end
-  end
-  local s = cjson.decode(ARGV[4])
-  s.revision = rev + 1
-  local out = cjson.encode(s)
-  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
-  redis.call('SET', KEYS[2], out, 'EX', ARGV[3])
-  return {ARGV[1], out}
-end
-return {cur}
-`;
 
 /**
  * Controller write: holder check → mutate position/paused → revision+1 → refresh both TTLs.
@@ -115,39 +86,6 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 `;
-
-export type AcquireResult =
-  | { acquired: true; snapshot: VideoSnapshot }
-  | { acquired: false; holder: string };
-
-/**
- * One acquire attempt. `stealHolder` = '' for the plain free-or-mine attempt; a
- * holder id only after the caller proved that holder is gone from the room.
- */
-export async function acquireVideoSlotOnce(
-  redis: Redis,
-  roomId: string,
-  userId: number,
-  stealHolder: string,
-  draft: Omit<VideoSnapshot, "revision">,
-): Promise<AcquireResult> {
-  const me = String(userId);
-  const result = (await redis.eval(
-    ACQUIRE_VIDEO_SLOT_LUA,
-    2,
-    videoPlayerKey(roomId),
-    videoStateKey(roomId),
-    me,
-    stealHolder,
-    String(VIDEO_PLAYER_TTL_SECONDS),
-    JSON.stringify({ ...draft, revision: 0 }),
-  )) as [string, string?];
-
-  if (result[0] === me && typeof result[1] === "string") {
-    return { acquired: true, snapshot: JSON.parse(result[1]) as VideoSnapshot };
-  }
-  return { acquired: false, holder: result[0] };
-}
 
 /** Controller write; null when the caller does not hold the slot. */
 export async function updateVideoState(

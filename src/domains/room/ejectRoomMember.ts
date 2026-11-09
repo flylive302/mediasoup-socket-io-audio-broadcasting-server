@@ -24,6 +24,7 @@ import { config } from "@src/config/index.js";
 import { closeAllUserProducers } from "@src/shared/producer-cleanup.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { releaseMusicPlayerForUser } from "@src/domains/audio-player/audio-player.handler.js";
+import { releaseVideoPlayerForUser } from "@src/domains/video-player/index.js";
 import { dropLuckyNumberPick } from "@src/domains/lucky-number/index.js";
 
 export interface EjectRoomMemberDeps {
@@ -112,6 +113,11 @@ export async function ejectRoomMember(
   // No-op if redis/cascadeRelay deps weren't supplied.
   if (redis) {
     await releaseMusicPlayerForUser(redis, io, roomId, targetUserId, cascadeRelay ?? null);
+    // room-video-player/03: same for a kicked Controller's Room Video. No
+    // live-socket guard — every one of their sockets was just forced out.
+    if (config.VIDEO_PLAYER_ENABLED) {
+      await releaseVideoPlayerForUser(redis, io, roomId, targetUserId, cascadeRelay ?? null);
+    }
   }
 
   // 3. Update room state + Laravel status (coalesced) + clear cached room membership.

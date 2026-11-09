@@ -430,6 +430,9 @@ export const videoPlayerPlaySchema = z.object({
   durationSec: z.number().finite().positive().optional(),
 });
 
+// room-video-player/03: the owner's force-take carries the same Source as play.
+export const videoPlayerTakeoverSchema = videoPlayerPlaySchema;
+
 export const videoPlayerPositionSchema = z.object({
   roomId: roomIdSchema,
   positionSec: videoPositionSchema,

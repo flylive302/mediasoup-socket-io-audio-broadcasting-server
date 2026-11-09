@@ -332,3 +332,28 @@ describe("SHRINK_EVICT_SCRIPT invariants", () => {
     );
   });
 });
+
+describe("evictShrunkSeats — never ends the Room Video (room-video-player/03)", () => {
+  it("evicting the Controller's seat leaves both video keys untouched", async () => {
+    const io = makeIo();
+    const seatRepository = {
+      evictSeatsAboveCount: vi.fn().mockResolvedValue([{ seatIndex: 12, userId: 55 }]),
+    } as any;
+    const redis = makeRedis();
+    redis.get.mockImplementation(async (key: string) => (key.endsWith(":videoPlayer") ? "55" : null));
+
+    await evictShrunkSeats({
+      roomId: "r1",
+      newSeatCount: 10,
+      io,
+      redis,
+      cascadeRelay: null,
+      seatRepository,
+      clientManager: makeClientManager(),
+      getRoom: vi.fn(),
+    });
+
+    const calls = [...redis.get.mock.calls, ...redis.del.mock.calls, ...redis.eval.mock.calls];
+    expect(calls.flat().some((arg: unknown) => /:video(Player|State)$/.test(String(arg)))).toBe(false);
+  });
+});

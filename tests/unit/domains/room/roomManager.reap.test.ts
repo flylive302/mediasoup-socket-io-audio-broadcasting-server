@@ -8,9 +8,13 @@ vi.mock("@src/infrastructure/metrics.js", () => ({
   metrics: { roomsActive: { set: vi.fn() } },
 }));
 
-vi.mock("@src/config/index.js", () => ({
-  config: { INSTANCE_ID: "self", AWS_REGION: "ap-south-1", PORT: 3030 },
+const mockConfig = vi.hoisted(() => ({
+  INSTANCE_ID: "self",
+  AWS_REGION: "ap-south-1",
+  PORT: 3030,
+  VIDEO_PLAYER_ENABLED: false,
 }));
+vi.mock("@src/config/index.js", () => ({ config: mockConfig }));
 
 vi.mock("@src/domains/seat/seat.owner.js", () => ({
   clearRoomOwner: vi.fn(),
@@ -21,7 +25,7 @@ import { clearRoomOwner } from "@src/domains/seat/seat.owner.js";
 
 function makeRoomManager() {
   const workerManager = { setOnWorkerDied: vi.fn() } as any;
-  const redis = {} as any;
+  const redis = { del: vi.fn().mockResolvedValue(2) } as any;
   const emit = vi.fn();
   const io = { to: vi.fn(() => ({ emit })) } as any;
   const laravelClient = {} as any;
@@ -46,6 +50,7 @@ function makeRoomManager() {
   rm.setRoomRegistry(registry);
   return {
     rm,
+    redis,
     io,
     emit,
     statusCoalescer,
@@ -103,5 +108,57 @@ describe("RoomManager.closeRoom orphan reap (realtime-08 AC4)", () => {
     expect(h.emit).not.toHaveBeenCalled();
     expect(h.statusCoalescer.flushNow).not.toHaveBeenCalled();
     expect(stateRepo.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("RoomManager — Room Video keys die with the Room (room-video-player/03)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.VIDEO_PLAYER_ENABLED = true;
+  });
+
+  const videoKeys = (roomId: string) => [`room:${roomId}:videoPlayer`, `room:${roomId}:videoState`];
+
+  it("closeRoom on a local Room deletes both video keys", async () => {
+    const h = makeRoomManager();
+    (h.rm as any).stateRepo = { delete: vi.fn().mockResolvedValue(undefined) };
+    (h.rm as any).rooms.set("r1", { close: vi.fn().mockResolvedValue(undefined) });
+
+    await h.rm.closeRoom("r1", "host_left");
+
+    expect(h.redis.del).toHaveBeenCalledWith(...videoKeys("r1"));
+  });
+
+  it("an orphan reap deletes both video keys", async () => {
+    const h = makeRoomManager();
+    (h.rm as any).stateRepo = {
+      get: vi.fn().mockResolvedValue({ id: "orphan" }),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await h.rm.closeRoom("orphan", "region_died");
+
+    expect(h.redis.del).toHaveBeenCalledWith(...videoKeys("orphan"));
+  });
+
+  it("a failing video DEL never aborts the close", async () => {
+    const h = makeRoomManager();
+    h.redis.del.mockRejectedValue(new Error("redis down"));
+    (h.rm as any).stateRepo = { delete: vi.fn().mockResolvedValue(undefined) };
+    (h.rm as any).rooms.set("r1", { close: vi.fn().mockResolvedValue(undefined) });
+
+    await expect(h.rm.closeRoom("r1", "host_left")).resolves.toBeUndefined();
+    expect(clearRoomOwner).toHaveBeenCalledWith("r1");
+  });
+
+  it("flag absent: closing never touches the video keys", async () => {
+    mockConfig.VIDEO_PLAYER_ENABLED = false;
+    const h = makeRoomManager();
+    (h.rm as any).stateRepo = { delete: vi.fn().mockResolvedValue(undefined) };
+    (h.rm as any).rooms.set("r1", { close: vi.fn().mockResolvedValue(undefined) });
+
+    await h.rm.closeRoom("r1", "host_left");
+
+    expect(h.redis.del).not.toHaveBeenCalledWith(...videoKeys("r1"));
   });
 });

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock config + logger BEFORE importing the handler — `src/config` validates
 // env via Zod at module load and `process.env` is empty in CI.
-vi.mock("@src/config/index.js", () => ({ config: {} }));
+// room-video-player/03: flag on, so the "seat lock never ends the Room Video"
+// test below proves the absence with the feature live. Nothing else here reads it.
+vi.mock("@src/config/index.js", () => ({ config: { VIDEO_PLAYER_ENABLED: true } }));
 vi.mock("@src/infrastructure/logger.js", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -243,5 +245,21 @@ describe("seat:lock — occupant rank gate", () => {
     expect(cb).toHaveBeenCalledWith({ success: true });
     expect(verifyRoomManager).toHaveBeenCalledWith("room-1", "99", context);
     expect(verifyRoomModerationTarget).not.toHaveBeenCalled();
+  });
+});
+
+describe("seat:lock — never ends the Room Video (room-video-player/03)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("locking the Controller's seat leaves both video keys untouched", async () => {
+    const { context, socket, redis } = makeContext(7, 7);
+    redis.get.mockImplementation(async (key: string) => (key.endsWith(":videoPlayer") ? "7" : null));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = lockSeatHandler(socket as any, context as any);
+    await fn({ roomId: "room-1", seatIndex: 0 });
+
+    const calls = [...redis.get.mock.calls, ...redis.del.mock.calls, ...redis.eval.mock.calls];
+    expect(calls.flat().some((arg) => /:video(Player|State)$/.test(String(arg)))).toBe(false);
   });
 });
