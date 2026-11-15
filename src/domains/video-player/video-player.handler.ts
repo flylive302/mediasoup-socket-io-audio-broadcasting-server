@@ -14,7 +14,9 @@
  * Media slot (03): play refuses with MEDIA_SLOT_BUSY while another user holds
  * the music or the video; the owner's takeover overwrites both. Whoever is
  * displaced hears it on their own sockets (`audioPlayer:revoked` /
- * `videoPlayer:revoked`). Release paths beyond stop/ended: video-player.lifecycle.ts.
+ * `videoPlayer:revoked`). A started video also wipes the music waiting line; the
+ * room hears `audioPlayer:queueCleared {roomId, reason:'video'}` (room-music-playlist/04).
+ * Release paths beyond stop/ended: video-player.lifecycle.ts.
  */
 import type { Server, Socket } from "socket.io";
 import type { Redis } from "ioredis";
@@ -45,6 +47,7 @@ import {
 import { acquireVideoSlotOnce, NO_STEAL, type VideoSlotResult } from "./media-slot.redis.js";
 import {
   acquireWithStaleSteal,
+  announceMusicQueueCleared,
   announceMusicStoppedByVideo,
   emitToUserInRoom,
   slotBusyAck,
@@ -208,7 +211,8 @@ function newDraft(
 /**
  * Tell whoever the acquire displaced, before the new Snapshot goes out: a DJ
  * whose music was released (the starter themself included — see
- * announceMusicStoppedByVideo), and a different previous Controller.
+ * announceMusicStoppedByVideo), the room's music waiters when the acquire wiped
+ * their line (rule "A", room-music-playlist/04), and a different previous Controller.
  */
 async function announceSlotTaken(
   context: AppContext,
@@ -220,6 +224,9 @@ async function announceSlotTaken(
     await announceMusicStoppedByVideo(
       context.io, context.clientManager, roomId, Number(result.releasedMusic), userId, context.cascadeRelay,
     );
+  }
+  if (result.clearedMusicQueue > 0) {
+    announceMusicQueueCleared(context.io, roomId, result.clearedMusicQueue, context.cascadeRelay);
   }
   if (result.previousVideo !== null && result.previousVideo !== String(userId)) {
     await emitToUserInRoom(

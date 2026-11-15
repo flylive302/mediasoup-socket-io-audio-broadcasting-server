@@ -11,6 +11,7 @@
  */
 import { finalizeLeave } from "./leave-finalizer.js";
 import { releaseVideoOnRoomLeave } from "@src/domains/video-player/index.js";
+import { releaseMusicOnRoomLeave } from "@src/domains/audio-player/index.js";
 import type { Socket } from "socket.io";
 import type { AppContext } from "@src/context.js";
 
@@ -24,4 +25,9 @@ export async function performRoomLeave(
   // Room Video. Here, not in finalizeLeave — that also runs on disconnect, which
   // the video lifecycle hook covers. Never throws.
   await releaseVideoOnRoomLeave(socket, context, roomId);
+  // room-music-playlist/02: the leaver's music (mutex, queue spot) goes with them,
+  // behind the same "another live socket of this user in the room" guard as the
+  // disconnect hook. finalizeLeave cleared the client's room, so the disconnect
+  // hook can no longer see this room — nothing else would release it. Never throws.
+  await releaseMusicOnRoomLeave(socket, context, roomId);
 }

@@ -41,6 +41,7 @@ import {
   grantChain,
   hasLiveSocketInRoom,
 } from "./audio-player.queue.js";
+import { updateMusicPlaybackState } from "./audio-player.redis.js";
 import {
   acquireMusicSlotOnce,
   clearVideoSlot,
@@ -318,19 +319,12 @@ const stateUpdateHandler = createHandler(
     const { roomId, position, isPaused } = payload;
     const userId = socket.data.user.id;
 
-    // Verify this user is the current music player
-    const currentPlayer = await context.redis.get(musicPlayerKey(roomId));
-    if (currentPlayer !== String(userId)) {
+    // room-music-playlist/03: GATE (am I the music player?) + the state write for
+    // new joiners + the mutex TTL refresh are ONE atomic script — a release between
+    // separate round trips can no longer resurrect `musicState` without a holder.
+    const authorized = await updateMusicPlaybackState(context.redis, roomId, userId, position, isPaused);
+    if (!authorized) {
       return { success: false, error: Errors.NOT_AUTHORIZED };
-    }
-
-    // Update Redis state for new joiners
-    const stateRaw = await context.redis.get(musicStateKey(roomId));
-    if (stateRaw) {
-      const state = JSON.parse(stateRaw) as Record<string, unknown>;
-      state.position = position;
-      state.isPaused = isPaused;
-      await context.redis.setex(musicStateKey(roomId), MUSIC_PLAYER_TTL_SECONDS, JSON.stringify(state));
     }
 
     // V-4 FIX: Use cascade-aware emit so cross-region users see playback updates

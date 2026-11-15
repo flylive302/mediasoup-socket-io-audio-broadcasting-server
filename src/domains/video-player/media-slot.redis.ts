@@ -8,8 +8,9 @@
  * recurring MSAB bug shape.
  *
  *   video acquire  — video free-or-mine AND music free-or-mine; my own music is
- *                    released in the same script.
- *   video takeover — (owner) overwrite the video mutex, release any music.
+ *                    released, and the music waiting line cleared, in the same script.
+ *   video takeover — (owner) overwrite the video mutex, release any music, clear
+ *                    the music waiting line.
  *   music acquire  — music free-or-mine AND, when the slot rule is on, video
  *                    free-or-mine; my own video is released in the same script.
  *   music takeover — (owner, slot rule on) clear any video right after the music
@@ -20,9 +21,15 @@
  * ('' disables) — the CAS shape of the music-dj-queue/01 stale-proof acquire. The
  * caller proves "no live socket in the room" before passing it.
  *
- * The music waiting queue is deliberately untouched: releasing a DJ's music here
- * never pops or grants a waiter (a grantee could not play under a video anyway).
- * Stranded waiters are a follow-up in the epic index, not this slice.
+ * Rule "A" (room-music-playlist/04 + 05) — a Room Video starting CLEARS the music
+ * waiting line (`musicQueue`): the same script that grants the video (acquire,
+ * re-play, steal, owner takeover) DELs it and returns how many waiters it dropped.
+ * Releasing a DJ's music here never pops or grants a waiter — a grantee could not
+ * play under a video anyway — and nothing promotes anyone when the video ends, so
+ * a queue that survived would strand its waiters. The video handler tells the room
+ * (`audioPlayer:queueCleared`) so those waiters leave the "waiting" state. A REFUSED
+ * acquire (busy) never touches the line. Defence in depth: `promoteIfFree` grants
+ * nothing while the video key exists (audio-player.queue.ts).
  *
  * Lives in video-player because the slot rule is this epic's; it imports only the
  * two leaf key modules, so neither handler is in its import graph (no cycle).
@@ -31,6 +38,7 @@ import type { Redis } from "ioredis";
 import {
   musicPlayerKey,
   musicStateKey,
+  musicQueueKey,
   MUSIC_PLAYER_TTL_SECONDS,
 } from "@src/domains/audio-player/audio-player.queue.js";
 import {
@@ -65,6 +73,8 @@ export type VideoSlotResult =
       releasedMusic: string | null;
       /** Video holder before this acquire (me on a re-play, another user on a steal/takeover). */
       previousVideo: string | null;
+      /** Music waiters this acquire dropped (rule "A"); 0 when the line was empty. */
+      clearedMusicQueue: number;
     }
   | SlotBusy;
 
@@ -79,11 +89,14 @@ export type MusicSlotResult =
 /**
  * Acquire (or re-acquire) the video slot and write the Snapshot.
  *
- * KEYS[1] videoPlayer, KEYS[2] videoState, KEYS[3] musicPlayer, KEYS[4] musicState
+ * KEYS[1] videoPlayer, KEYS[2] videoState, KEYS[3] musicPlayer, KEYS[4] musicState,
+ * KEYS[5] musicQueue
  * ARGV[1] me, ARGV[2] steal video holder, ARGV[3] steal music holder, ARGV[4] ttl,
  * ARGV[5] Snapshot JSON (revision set here), ARGV[6] '1' = owner takeover (skip both checks)
  *
- * Returns {'ok', storedJson, releasedMusic|'', previousVideo|''} or {'busy', kind, holder}.
+ * Returns {'ok', storedJson, releasedMusic|'', previousVideo|'', clearedWaiters}
+ * (the music waiting-line length deleted with the grant, 0 when it was empty) or
+ * {'busy', kind, holder} — a refusal deletes nothing.
  * Revision continues from the stored Snapshot (old + 1) on re-play, steal and
  * takeover alike — a reset to 1 would be dropped by every client as out-of-order.
  */
@@ -110,7 +123,9 @@ local out = cjson.encode(s)
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[4])
 redis.call('SET', KEYS[2], out, 'EX', ARGV[4])
 if m then redis.call('DEL', KEYS[3], KEYS[4]) end
-return {'ok', out, m or '', v or ''}
+local cleared = redis.call('LLEN', KEYS[5])
+if cleared > 0 then redis.call('DEL', KEYS[5]) end
+return {'ok', out, m or '', v or '', cleared}
 `;
 
 /**
@@ -170,11 +185,12 @@ export async function acquireVideoSlotOnce(
 ): Promise<VideoSlotResult> {
   const reply = (await redis.eval(
     ACQUIRE_VIDEO_SLOT_LUA,
-    4,
+    5,
     videoPlayerKey(roomId),
     videoStateKey(roomId),
     musicPlayerKey(roomId),
     musicStateKey(roomId),
+    musicQueueKey(roomId),
     String(userId),
     steal.video,
     steal.music,
@@ -189,6 +205,7 @@ export async function acquireVideoSlotOnce(
     snapshot: JSON.parse(String(reply[1])) as VideoSnapshot,
     releasedMusic: orNull(reply[2]),
     previousVideo: orNull(reply[3]),
+    clearedMusicQueue: Number(reply[4]) || 0,
   };
 }
 

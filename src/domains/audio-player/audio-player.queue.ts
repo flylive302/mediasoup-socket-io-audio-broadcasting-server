@@ -4,7 +4,8 @@
  * The per-room FIFO of waiting userIds that sits alongside the music mutex, plus
  * the atomic Lua that pops/grants it and the grant-emission helpers. Extracted
  * from audio-player.handler.ts (ticket 05) so the handler file stays under the
- * size budget. Self-contained: it depends only on io/redis/logger, never on the
+ * size budget. Self-contained: it depends only on io/redis/logger (plus the
+ * videoPlayer key name from the video-player redis leaf module), never on the
  * handler, so the import graph stays acyclic (lifecycle → handler → queue).
  */
 import type { Server } from "socket.io";
@@ -13,6 +14,7 @@ import type { AppContext } from "@src/context.js";
 import { logger } from "@src/infrastructure/logger.js";
 import { fetchSocketsSafe } from "@src/shared/fetch-sockets-safe.js";
 import { reactError } from "@src/shared/react-error.js";
+import { videoPlayerKey } from "@src/domains/video-player/video-player.redis.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Redis key helpers + TTLs (shared with the handler)
@@ -89,18 +91,27 @@ return {'released', head or ''}
 /**
  * music-dj-queue/04: promote the queue head iff the slot is currently free.
  *
- * KEYS[1]=musicPlayer, KEYS[2]=musicQueue; ARGV[1]=graceTtl. If the slot exists →
- * return '' (someone holds it, nothing to do). Else LPOP the head and, if any,
- * SET the slot to them with the provisional grace TTL; return the head or ''.
+ * KEYS[1]=musicPlayer, KEYS[2]=musicQueue, KEYS[3]=videoPlayer;
+ * ARGV[1]=graceTtl. If the music slot exists → return '' (someone holds it,
+ * nothing to do). room-music-playlist/05: if a Room Video holds the shared media
+ * slot (videoPlayer exists) → return '' too and leave the queue untouched — a
+ * grant under a live video is useless (the grantee's play is refused with
+ * MEDIA_SLOT_BUSY). Else LPOP the head and, if any, SET the slot to them with the
+ * provisional grace TTL; return the head or ''.
  *
  * Rationale: closes the few-ms race where the holder releases BETWEEN a play
  * denial and the enqueue that follows it — without this the enqueuer would be
  * stranded in a queue that nobody will ever pop. ticket 05 also fires it from the
  * grace timer: a played grantee holds the slot (EXISTS → no-op), a silent one's
- * hold has expired (free → pop the next waiter).
+ * hold has expired (free → pop the next waiter). The video guard is defence in
+ * depth: rule "A" (media-slot.redis.ts) already deletes the waiting line the
+ * moment a video is granted, so a timer armed before the video finds it empty.
  */
 const PROMOTE_IF_FREE_LUA = `
 if redis.call('EXISTS', KEYS[1]) == 1 then
+  return ''
+end
+if redis.call('EXISTS', KEYS[3]) == 1 then
   return ''
 end
 local head = redis.call('LPOP', KEYS[2])
@@ -156,7 +167,7 @@ export async function releaseAndGrant(
 /**
  * music-dj-queue/04: promote the queue head only if the slot is free (provisional
  * grace-TTL SET). Returns the promoted head's userId, or '' if the slot is held
- * or the queue is empty.
+ * (by music, or — room-music-playlist/05 — by a Room Video) or the queue is empty.
  */
 export async function promoteIfFree(
   redis: Redis,
@@ -164,9 +175,10 @@ export async function promoteIfFree(
 ): Promise<string> {
   return (await redis.eval(
     PROMOTE_IF_FREE_LUA,
-    2,
+    3,
     musicPlayerKey(roomId),
     musicQueueKey(roomId),
+    videoPlayerKey(roomId),
     String(MUSIC_GRANT_GRACE_TTL_SECONDS),
   )) as string;
 }

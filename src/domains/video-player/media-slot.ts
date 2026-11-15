@@ -98,6 +98,24 @@ export async function announceMusicStoppedByVideo(
 }
 
 /**
+ * Rule "A" (room-music-playlist/04): a Room Video took the media slot and the same
+ * acquire script wiped the music waiting line. Every client in the room hears
+ * `audioPlayer:queueCleared { roomId, reason: 'video' }` — a broadcast, not a
+ * targeted emit: waiters may sit on any instance, and the starter can be a waiter
+ * themself. Whoever was queued drops out of the "waiting" state (their spot is gone,
+ * no `granted` will ever come). Caller gates on a cleared count > 0.
+ */
+export function announceMusicQueueCleared(
+  io: Server,
+  roomId: string,
+  clearedCount: number,
+  cascadeRelay: CascadeRelay | null,
+): void {
+  broadcastToRoom(io, roomId, "audioPlayer:queueCleared", { roomId, reason: "video" }, cascadeRelay);
+  logger.info({ roomId, clearedCount }, "Music waiting line cleared — the Room Video took the media slot");
+}
+
+/**
  * Music took the slot from a Room Video: the room gets `stateChanged null`; a
  * displaced Controller (not the DJ themself) also gets `videoPlayer:revoked`.
  */

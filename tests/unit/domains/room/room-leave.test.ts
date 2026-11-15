@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 // room-video-player/03 — an explicit room:leave (and the F-31 room switch, which
 // shares performRoomLeave) releases the Controller's Room Video AFTER the normal
 // teardown. The disconnect path never goes through here (lifecycle hook instead).
+// room-music-playlist/02 — the leaver's music (mutex + queue spot) is released
+// right after the video, the same way.
 
 const calls: string[] = [];
 const finalizeLeaveMock = vi.fn(async () => {
@@ -20,10 +22,17 @@ vi.mock("@src/domains/video-player/index.js", () => ({
   releaseVideoOnRoomLeave: (...args: unknown[]) => releaseVideoOnRoomLeaveMock(...(args as [])),
 }));
 
+const releaseMusicOnRoomLeaveMock = vi.fn(async () => {
+  calls.push("releaseMusic");
+});
+vi.mock("@src/domains/audio-player/index.js", () => ({
+  releaseMusicOnRoomLeave: (...args: unknown[]) => releaseMusicOnRoomLeaveMock(...(args as [])),
+}));
+
 import { performRoomLeave } from "@src/domains/room/room-leave.js";
 
 describe("performRoomLeave", () => {
-  it("runs the explicit-leave teardown, then the Room Video release", async () => {
+  it("runs the explicit-leave teardown, then the Room Video release, then the music release", async () => {
     const socket = { id: "s1" } as any;
     const context = {} as any;
 
@@ -31,6 +40,7 @@ describe("performRoomLeave", () => {
 
     expect(finalizeLeaveMock).toHaveBeenCalledWith(socket, context, "room-1", { viaDisconnect: false });
     expect(releaseVideoOnRoomLeaveMock).toHaveBeenCalledWith(socket, context, "room-1");
-    expect(calls).toEqual(["finalizeLeave", "releaseVideo"]);
+    expect(releaseMusicOnRoomLeaveMock).toHaveBeenCalledWith(socket, context, "room-1");
+    expect(calls).toEqual(["finalizeLeave", "releaseVideo", "releaseMusic"]);
   });
 });

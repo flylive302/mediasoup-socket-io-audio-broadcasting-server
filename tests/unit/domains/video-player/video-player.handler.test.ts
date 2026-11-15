@@ -58,12 +58,13 @@ function storedSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Acquire-script replies (media-slot.redis.ts). */
-const acquired = (stored: unknown, releasedMusic = "", previousVideo = "") => [
+/** Acquire-script replies (media-slot.redis.ts). `cleared` = music waiters the grant deleted. */
+const acquired = (stored: unknown, releasedMusic = "", previousVideo = "", cleared = 0) => [
   "ok",
   JSON.stringify(stored),
   releasedMusic,
   previousVideo,
+  cleared,
 ];
 const busy = (kind: "music" | "video", holder: string) => ["busy", kind, holder];
 
@@ -193,13 +194,14 @@ describe("videoPlayer:play — GATE order and acquire", () => {
 
     expect(ack).toEqual({ success: true });
     const [, numKeys, ...rest] = context.redis.eval.mock.calls[0];
-    const draftJson = rest[8];
-    expect([numKeys, ...rest.slice(0, 8), rest[9]]).toEqual([
-      4,
+    const draftJson = rest[9];
+    expect([numKeys, ...rest.slice(0, 9), rest[10]]).toEqual([
+      5,
       "room:room-1:videoPlayer",
       "room:room-1:videoState",
       "room:room-1:musicPlayer",
       "room:room-1:musicState",
+      "room:room-1:musicQueue", // room-music-playlist/04: the waiting line is deleted with the grant
       "10",
       "", // no video steal
       "", // no music steal
@@ -257,8 +259,8 @@ describe("videoPlayer:play — GATE order and acquire", () => {
     userHasLiveSocketInRoomMock.mockResolvedValue(false);
 
     expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
-    expect(context.redis.eval.mock.calls[1][7]).toBe("77"); // video steal ARGV
-    expect(context.redis.eval.mock.calls[1][8]).toBe(""); // music steal untouched
+    expect(context.redis.eval.mock.calls[1][8]).toBe("77"); // video steal ARGV
+    expect(context.redis.eval.mock.calls[1][9]).toBe(""); // music steal untouched
     expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
   });
 
@@ -429,8 +431,8 @@ describe("videoPlayer:play — one media slot with music (03)", () => {
     userHasLiveSocketInRoomMock.mockResolvedValue(false);
 
     expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
-    expect(context.redis.eval.mock.calls[1][7]).toBe(""); // video steal
-    expect(context.redis.eval.mock.calls[1][8]).toBe("55"); // music steal
+    expect(context.redis.eval.mock.calls[1][8]).toBe(""); // video steal
+    expect(context.redis.eval.mock.calls[1][9]).toBe("55"); // music steal
     expect(broadcastToRoomMock.mock.calls[0]?.[3]).toMatchObject({ state: "stopped", userId: 55 });
   });
 
@@ -444,7 +446,7 @@ describe("videoPlayer:play — one media slot with music (03)", () => {
 
     expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
     expect(context.redis.eval).toHaveBeenCalledTimes(3);
-    expect(context.redis.eval.mock.calls[2].slice(7, 9)).toEqual(["77", "55"]);
+    expect(context.redis.eval.mock.calls[2].slice(8, 10)).toEqual(["77", "55"]);
   });
 
   it("targets the displaced DJ fleet-wide: local sockets plus the adapter's view, deduplicated", async () => {
@@ -508,8 +510,8 @@ describe("videoPlayer:takeover — owner force-take (03)", () => {
     expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({ success: true });
 
     const args = context.redis.eval.mock.calls[0];
-    expect(args.slice(7, 9)).toEqual(["", ""]); // no steals — force needs none
-    expect(args[11]).toBe("1"); // forced
+    expect(args.slice(8, 10)).toEqual(["", ""]); // no steals — force needs none
+    expect(args[12]).toBe("1"); // forced
     expect(userHasLiveSocketInRoomMock).not.toHaveBeenCalled();
     expect(targeted(context, emit)).toEqual([
       [["s-55"], "audioPlayer:revoked", { roomId: ROOM, byUserId: ME, reason: "video" }],
@@ -529,5 +531,82 @@ describe("videoPlayer:takeover — owner force-take (03)", () => {
     expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({ success: true });
     expect(emit).not.toHaveBeenCalled();
     expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("videoPlayer:play / takeover — music waiting line cleared (room-music-playlist/04)", () => {
+  const queueCleared = () =>
+    broadcastToRoomMock.mock.calls.filter((c) => c[2] === "audioPlayer:queueCleared");
+
+  it("a start that wiped 2 waiters tells the room ONCE, before the new Snapshot", async () => {
+    const { context, handler } = setup();
+    const stored = storedSnapshot();
+    context.redis.eval.mockResolvedValue(acquired(stored, "", "", 2));
+
+    expect(await handler("videoPlayer:play")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+
+    expect(queueCleared()).toHaveLength(1);
+    expect(queueCleared()[0]).toEqual([
+      context.io,
+      ROOM,
+      "audioPlayer:queueCleared",
+      { roomId: ROOM, reason: "video" },
+      null,
+    ]);
+    expect(broadcastToRoomMock.mock.calls.map((c) => c[2])).toEqual([
+      "audioPlayer:queueCleared",
+      "videoPlayer:stateChanged",
+    ]);
+  });
+
+  it("a start with an empty waiting line emits no queueCleared", async () => {
+    const { context, handler } = setup();
+    context.redis.eval.mockResolvedValue(acquired(storedSnapshot(), "", "", 0));
+
+    await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(queueCleared()).toHaveLength(0);
+    expect(broadcastToRoomMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("an old-shape reply with no cleared count (4 elements) emits nothing", async () => {
+    const { context, handler } = setup();
+    context.redis.eval.mockResolvedValue(["ok", JSON.stringify(storedSnapshot()), "", ""]);
+
+    await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(queueCleared()).toHaveLength(0);
+  });
+
+  it("the DJ starting a video over their own music: music stopped, line cleared, then the Snapshot", async () => {
+    const { context, handler } = setup({ socketsByUser: { [ME]: ["socket-1"] } });
+    context.redis.eval.mockResolvedValue(acquired(storedSnapshot(), String(ME), "", 3));
+
+    await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(broadcastToRoomMock.mock.calls.map((c) => c[2])).toEqual([
+      "audioPlayer:stateChanged",
+      "audioPlayer:queueCleared",
+      "videoPlayer:stateChanged",
+    ]);
+  });
+
+  it("the owner's takeover clears the line too", async () => {
+    const { context, handler } = setup();
+    context.redis.eval.mockResolvedValue(acquired(storedSnapshot({ revision: 4 }), "55", "77", 2));
+
+    expect(await handler("videoPlayer:takeover")({ roomId: ROOM, source: YT })).toEqual({ success: true });
+
+    expect(queueCleared()).toHaveLength(1);
+    expect(queueCleared()[0][3]).toEqual({ roomId: ROOM, reason: "video" });
+  });
+
+  it("a refused start (slot busy) emits nothing — the line is still intact", async () => {
+    const { context, handler } = setup();
+    context.redis.eval.mockResolvedValue(busy("music", "55"));
+
+    await handler("videoPlayer:play")({ roomId: ROOM, source: YT });
+
+    expect(broadcastToRoomMock).not.toHaveBeenCalled();
   });
 });

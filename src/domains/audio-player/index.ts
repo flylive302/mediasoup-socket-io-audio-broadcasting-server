@@ -10,3 +10,4 @@ export {
   getMusicPlayerState,
   userHasLiveSocketInRoom,
 } from "./audio-player.handler.js";
+export { releaseMusicOnRoomLeave } from "./audio-player.lifecycle.js";
