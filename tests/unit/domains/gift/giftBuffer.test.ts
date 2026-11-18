@@ -110,6 +110,8 @@ function createMockRedis() {
     lrem: vi.fn().mockResolvedValue(1),
     ltrim: vi.fn().mockResolvedValue("OK"),
     llen: vi.fn().mockResolvedValue(0),
+    // gift-cashback-latency 08: the inline lucky path claims `SET … NX`; "OK" = won.
+    set: vi.fn().mockResolvedValue("OK"),
     pipeline: vi.fn().mockReturnValue(pipeline),
     _pipeline: pipeline,
     eval: vi.fn(),

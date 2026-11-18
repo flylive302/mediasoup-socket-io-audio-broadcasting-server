@@ -88,6 +88,16 @@ export const metrics = {
     registers: [metricsRegistry],
   }),
 
+  // gift-cashback-latency 08: Laravel delivers each lucky result twice (inline in
+  // the batch response AND through the outbox relay); MSAB shows it once. The
+  // path that arrives second drops its copy and is counted here.
+  giftLuckyDuplicateDroppedTotal: new Counter({
+    name: "flylive_gift_lucky_duplicate_dropped_total",
+    help: "Lucky results (lucky:result, lucky:no-draw, lucky:room-result) dropped because the other delivery path already showed them (gift-cashback-latency 08)",
+    labelNames: ["event", "path"] as const, // path: inline (batch response), queued (Laravel relay)
+    registers: [metricsRegistry],
+  }),
+
   giftBatchSize: new Histogram({
     name: "flylive_gift_batch_size",
     help: "Size of gift batches sent to Laravel",

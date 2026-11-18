@@ -8,6 +8,7 @@ import type {
   LuckyInlineEntry,
 } from "@src/integrations/types.js";
 import { GIFT_BATCH_RETRY_CODE } from "@src/integrations/types.js";
+import { RELAY_EVENTS } from "@src/integrations/laravel/types.js";
 import { config } from "@src/config/index.js";
 import { metrics } from "@src/infrastructure/metrics.js";
 import { recordRedisDegradation } from "@src/shared/redis-degradation.js";
@@ -21,6 +22,7 @@ import {
 } from "./balanceSync.js";
 import { deliverLuckyRoomResult } from "./luckyDelivery.js";
 import { observeLuckyResultLatency } from "./luckyLatency.js";
+import { claimLuckyShown } from "./luckyShownClaim.js";
 import { batchSnapshotsBySender } from "./batchSnapshot.js";
 import type { UserSocketRepository } from "@src/integrations/laravel/user-socket.repository.js";
 
@@ -899,28 +901,63 @@ export class GiftBuffer {
   }
 
   private emitLuckyInlineEntry(entry: LuckyInlineEntry): void {
-    void this.userSocketRepo.getSocketIds(entry.sender_id).then((socketIds) => {
-      if (socketIds.length === 0) return;
-      let target = this.io.to(socketIds[0]!);
-      for (let i = 1; i < socketIds.length; i++) {
-        target = target.to(socketIds[i]!);
-      }
-      target.emit(entry.kind === "result" ? "lucky:result" : "lucky:no-draw", entry.sender);
-      // gift-cashback-latency 01: tap → sender-sees-result, `result` only (a
-      // no-draw is not a result the sender is waiting to see). Never throws.
-      if (entry.kind === "result") observeLuckyResultLatency("inline", entry.sender);
-    }).catch((error) => {
+    void this.emitLuckyInlineSender(entry).catch((error) => {
       this.logger.warn(
         { error, senderId: entry.sender_id, kind: entry.kind },
-        "Failed to resolve sender sockets for inline lucky result",
+        "Failed to deliver inline lucky result to the sender",
       );
     });
 
     if (entry.room !== null) {
-      deliverLuckyRoomResult(this.io, String(entry.room_id), entry.room);
+      void this.emitLuckyInlineRoom(entry, entry.room).catch((error) => {
+        this.logger.warn(
+          { error, roomId: entry.room_id, kind: entry.kind },
+          "Failed to deliver inline lucky room result",
+        );
+      });
     }
 
     metrics.giftLuckyInlineTotal.inc({ kind: entry.kind });
+  }
+
+  /**
+   * Sender leg of an inline lucky entry. gift-cashback-latency 08: the claim
+   * (GATE) comes AFTER the socket lookup finds a socket and right before the
+   * emit (EXECUTE) — a sender with no socket does not claim, so the outbox copy
+   * can still show the win later. A lost claim means the queued path already
+   * showed it: no emit, no latency observation, counted instead.
+   */
+  private async emitLuckyInlineSender(entry: LuckyInlineEntry): Promise<void> {
+    const socketIds = await this.userSocketRepo.getSocketIds(entry.sender_id);
+    if (socketIds.length === 0) return;
+
+    const event = entry.kind === "result" ? RELAY_EVENTS.lucky.LUCKY_RESULT : RELAY_EVENTS.lucky.LUCKY_NO_DRAW;
+    if (!(await claimLuckyShown(this.redis, event, entry.sender))) {
+      metrics.giftLuckyDuplicateDroppedTotal.inc({ event, path: "inline" });
+      return;
+    }
+
+    let target = this.io.to(socketIds[0]!);
+    for (let i = 1; i < socketIds.length; i++) {
+      target = target.to(socketIds[i]!);
+    }
+    target.emit(event, entry.sender);
+    // gift-cashback-latency 01: tap → sender-sees-result, `result` only (a
+    // no-draw is not a result the sender is waiting to see). Never throws.
+    if (entry.kind === "result") observeLuckyResultLatency("inline", entry.sender);
+  }
+
+  /** Room leg of an inline lucky entry (a win only; `room` is null for a no-draw). */
+  private async emitLuckyInlineRoom(
+    entry: LuckyInlineEntry,
+    room: NonNullable<LuckyInlineEntry["room"]>,
+  ): Promise<void> {
+    const event = RELAY_EVENTS.lucky.LUCKY_ROOM_RESULT;
+    if (!(await claimLuckyShown(this.redis, event, room))) {
+      metrics.giftLuckyDuplicateDroppedTotal.inc({ event, path: "inline" });
+      return;
+    }
+    deliverLuckyRoomResult(this.io, String(entry.room_id), room);
   }
 
   private emitSenderBalances(

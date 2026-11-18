@@ -51,6 +51,11 @@ import {
 import { balanceAuthorityEnforcing, reconcileBalance, rewriteBalancePush } from "@src/domains/gift/balanceSync.js";
 import { deliverLuckyRoomResult } from "@src/domains/gift/luckyDelivery.js";
 import { observeLuckyResultLatency } from "@src/domains/gift/luckyLatency.js";
+import {
+  buildLuckyShownKey,
+  claimLuckyShown,
+  isLuckyShownEvent,
+} from "@src/domains/gift/luckyShownClaim.js";
 import { refreshNow as refreshGiftCatalogNow } from "@src/domains/gift/catalogCache.js";
 
 /** Payload for auth.force_disconnect relay event */
@@ -165,6 +170,23 @@ export class EventRouter {
       metrics.laravelEventsFanoutSuppressed.inc({ event_type: event.event });
     }
 
+    // gift-cashback-latency 08: a lucky result is also delivered inline in the
+    // gift batch response (giftBuffer.ts). Whichever path reaches MSAB first
+    // shows it; this copy loses if the inline path already did. Only asked once
+    // the fan-out claim is won (no point claiming for an emit we won't make) and
+    // folded into `shouldEmit`, so a dropped copy takes the same "delivered, 0
+    // targets" branch as a fan-out loser and skips the queued latency REACT.
+    // Fails open (no redis / no reference_id / Redis error → emit).
+    let luckyShownKey: string | null = null;
+    if (shouldEmit && this.redis && isLuckyShownEvent(event.event)) {
+      if (await claimLuckyShown(this.redis, event.event, event.payload)) {
+        luckyShownKey = buildLuckyShownKey(event.event, event.payload);
+      } else {
+        shouldEmit = false;
+        metrics.giftLuckyDuplicateDroppedTotal.inc({ event: event.event, path: "queued" });
+      }
+    }
+
     // gift-authority-tick-fanout 11: apply the backend's versioned snapshot
     // to the ledger BEFORE the client sees it, so a tap that races this push
     // is judged on the newer balance. Ordering across pushes is the script's
@@ -215,6 +237,15 @@ export class EventRouter {
             ? this.emitToAll(event.event, event.payload)
             : { delivered: true, targetCount: 0 };
           break;
+      }
+
+      // gift-cashback-latency 08: we won the lucky shown-once claim but the
+      // sender had no live socket, so nothing was shown. Hand the claim back so
+      // the inline copy can still show it (mirrors the inline rule: no socket,
+      // no claim). Only a user-targeted emit can come back undelivered. Fails
+      // silent — an unreleased claim just expires with its TTL.
+      if (luckyShownKey !== null && !result.delivered) {
+        await releaseClaim(this.redis, luckyShownKey);
       }
 
       const durationMs = Date.now() - startTime;
@@ -432,6 +463,12 @@ export class EventRouter {
       // fleet-wide for the claim TTL.
       if (shouldEmit && fanoutClaimKey !== null) {
         void releaseClaim(this.redis, fanoutClaimKey);
+      }
+      // gift-cashback-latency 08: same for the lucky shown-once claim — a
+      // redelivered (or inline) copy must not be dropped as a duplicate of an
+      // emit that never happened.
+      if (luckyShownKey !== null) {
+        void releaseClaim(this.redis, luckyShownKey);
       }
       this.logger.error(
         {
